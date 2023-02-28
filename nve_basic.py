@@ -3,6 +3,7 @@ import gsd.hoomd
 import math
 import torch
 from nff.utils.scatter import compute_grad
+from nff.nn.layers import GaussianSmearing
 from scipy.stats import maxwell
 from YParams import YParams
 import argparse
@@ -13,7 +14,7 @@ import pstats
 import pdb
 from torchmd.interface import GNNPotentials, PairPotentials, Stack
 from torchmd.potentials import ExcludedVolume, LennardJones, LJFamily,  pairMLP
-
+from torchmd.observable import rdf
 
 
 class MDSimulator:
@@ -31,6 +32,7 @@ class MDSimulator:
         self.t_total = params.t_total
         self.dr = params.dr
         self.nsteps = np.rint(self.t_total/self.dt).astype(np.int32)
+        self.nn = params.nn
 
         print("Input parameters")
         print("Number of particles %d" % self.n_particle)
@@ -70,10 +72,13 @@ class MDSimulator:
                 'nonlinear': params.nonlinear}
 
 
-        NN = pairMLP(**mlp_params)
-        prior = LJFamily(epsilon=2.0, sigma=params.sigma, rep_pow=6, attr_pow=3)
-        self.model = Stack({'pairnn': NN, 'pair': prior})
+        self.NN = pairMLP(**mlp_params)
 
+        #prior potential only contains repulsive term
+        self.prior = LJFamily(epsilon=params.epsilon, sigma=params.sigma, rep_pow=6, attr_pow=0)
+        self.model = Stack({'pairnn': self.NN, 'pair': self.prior})
+        self.model.requires_grad = True
+ 
         #Initialize forces/potential of starting configuration
         self.potential, self.forces = self.force_calc()
 
@@ -86,19 +91,7 @@ class MDSimulator:
         self.f = open("log.txt", "a+")
         print("Initial: ", initial_props, file = self.f)
         
-        #import pdb; pdb.set_trace()
-        # Define prior potential
-        mlp_params = {'n_gauss': int(params.cutoff//params.gaussian_width), 
-                'r_start': 0.0,
-                'r_end': params.cutoff, 
-                'n_width': params.n_width,
-                'n_layers': params.n_layers,
-                'nonlinear': params.nonlinear}
-
-
-        NN = pairMLP(**mlp_params)
-        prior = LJFamily(epsilon=2.0, sigma=params.sigma, rep_pow=6, attr_pow=3)
-        self.model = Stack({'pairnn': NN, 'pair': prior})
+        
 
         
 
@@ -138,8 +131,11 @@ class MDSimulator:
         return torch.Tensor(velocities)
 
 
-    def check_symmetric(self, a, tol=1e-8):
-        return np.all(np.abs(a-a.T) < tol)
+    def check_symmetric(self, a, mode, tol=1e-6):
+        if mode == 'opposite':
+            return np.all(np.abs(a + a.T) < tol)
+        
+        return np.all(np.abs(a - a.T) < tol)
 
     def force_calc(self):
         #TODO
@@ -153,10 +149,14 @@ class MDSimulator:
         
         #Enforce minimum image convention
         r = -1*torch.where(r > 0.5*self.box, r-self.box, torch.where(r<-0.5*self.box, r+self.box, r))
-        
+        try:
+            r.requires_grad = True
+        except RuntimeError:
+            pass
         #compute distance matrix:
         self.dists = torch.sqrt(torch.sum(r**2, axis=2))
-        #assert self.check_symmetric(self.dists)
+        d = self.dists.detach().numpy()
+        assert self.check_symmetric(d, mode = 'same')
         
         #print(np.min(dists + 100*np.identity(self.n_particle)))
         #problem: min of dists is going to zero, which is causing undefined forces and thus undefined radii
@@ -168,20 +168,30 @@ class MDSimulator:
         #zero out self-interactions
         dists = (self.dists + 10000000*torch.eye(self.n_particle)).unsqueeze(-1)
        
-        # energy = self.model(dists).sum()
-        # forces = -compute_grad(inputs=dists, output=energy.sum(-1))
-        
-        #compute potential and forces
-        r2i = (self.sigma/dists)**2
-        
-        r6i = r2i**3
-        potential = 2*self.epsilon*torch.sum(r6i*(r6i - 1))
+        if self.nn:
+            energy = self.model(dists).sum()
+            forces = -compute_grad(inputs=r, output=energy)
+            
+        else:
+            r2i = (self.sigma/dists)**2
+            r6i = r2i**3
+            energy = 2*self.epsilon*torch.sum(r6i*(r6i - 1))
+            #reuse components of potential to calculate virial and forces
+            self.internal_virial = -48*self.epsilon*r6i*(r6i - 0.5)/(self.sigma**2)
+            forces = -self.internal_virial*r*r2i
 
-        #reuse components of potential to calculate virial and forces
-        self.internal_virial = -48*self.epsilon*r6i*(r6i - 0.5)/(self.sigma**2)
-        forces = -self.internal_virial*r*r2i
+        forces = torch.where(torch.isnan(forces), 0 ,forces)
+        f = forces.detach().numpy()
+
+        #import pdb; pdb.set_trace()
+        assert(not torch.any(torch.isnan(forces)))
+        assert self.check_symmetric(f[:, :, 0], mode = 'opposite')
+        assert self.check_symmetric(f[:, :, 1], mode = 'opposite')
+        assert self.check_symmetric(f[:, :, 2], mode = 'opposite')
+       
+                
         #sum forces across particles
-        return potential, torch.sum(forces, axis = 1)
+        return energy, torch.sum(forces, axis = 1)
         
        
     # Function to dump simulation frame that is readable in Ovito
@@ -189,9 +199,9 @@ class MDSimulator:
     def create_frame(self, frame):
         # Particle positions, velocities, diameter
             
-        radii = self.radii
+        radii = self.radii.detach()
         partpos = radii.tolist()
-        velocities = self.velocities.tolist()
+        velocities = self.velocities.detach().tolist()
         diameter = self.diameter_viz*self.sigma*np.ones((self.n_particle,))
         diameter = diameter.tolist()
 
@@ -213,12 +223,13 @@ class MDSimulator:
         vel_squared = torch.sum(torch.square(self.velocities))
         ke = vel_squared/2
         temp = 2*ke/p_dof
-        w = -1/6*torch.sum(self.internal_virial)
-        pressure = w/self.vol + self.rho*self.kbt0
+        #w = -1/6*torch.sum(self.internal_virial)
+        #pressure = w/self.vol + self.rho*self.kbt0
+        pressure = torch.Tensor(0)
         return {"Temperature": temp.item(),
-                "Pressure": pressure.item(),
+                "Pressure": pressure,
                 "Total Energy": (ke+self.potential).item(),
-                "Momentum Magnitude": np.linalg.norm(torch.sum(self.velocities, axis =0)).item()}
+                "Momentum Magnitude": torch.norm(torch.sum(self.velocities, axis =0)).item()}
 
     def calc_rdf(self):
         #Calculate RDF histogram
@@ -238,8 +249,24 @@ class MDSimulator:
         freqs_id = 4*math.pi*self.rho/3 * ((r+self.dr)**3 - r**3)[0:-1]
 
         gr = freqs/freqs_id
-        np.save(f"rdf_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}.npy", gr)
+        np.save(f"rdf_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_nn={self.nn}.npy", gr)
         return gr
+
+    # def calc_rdf_differentiable(self):
+    #     self.running_dists = torch.cat(self.running_dists).numpy()
+        
+    #     rmax = np.max(self.running_dists)
+    #     rmin = np.min(self.running_dists)
+
+    #     smear = GaussianSmearing(
+    #         start=start,
+    #         stop=bins[-1],
+    #         n_gaussians=nbins,
+    #         width=width,
+    #         trainable=False
+    #     ).to(self.device)
+
+
 
 
     #top level MD simulation code
@@ -254,6 +281,7 @@ class MDSimulator:
         # Equilibration
         for step in tqdm(range(self.nsteps)):
             
+           
             # TODO: Velocity Verlet algorithm
             #import pdb; pdb.set_trace()
             self.velocities = self.velocities + 0.5*self.dt*self.forces
@@ -274,8 +302,8 @@ class MDSimulator:
                 print(step, props, file=self.f)
                 self.t.append(self.create_frame(frame = step/self.n_dump))
                 #append dists to running_dists for RDF calculation (remove diagonal entries)
-                self.running_dists.append(self.dists[~torch.eye(self.dists.shape[0],dtype=bool)].reshape(self.dists.shape[0],-1))
-
+                self.running_dists.append(self.dists[~torch.eye(self.dists.shape[0],dtype=bool)].detach().reshape(self.dists.shape[0],-1))
+                #import pdb; pdb.set_trace()
             
         # TODO
         # Things left to do    
