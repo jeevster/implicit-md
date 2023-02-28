@@ -1,6 +1,8 @@
 import numpy as np
 import gsd.hoomd
 import math
+import torch
+from nff.utils.scatter import compute_grad
 from scipy.stats import maxwell
 from YParams import YParams
 import argparse
@@ -9,6 +11,8 @@ from tqdm import tqdm
 import cProfile as profile
 import pstats
 import pdb
+from torchmd.interface import GNNPotentials, PairPotentials, Stack
+from torchmd.potentials import ExcludedVolume, LennardJones, LJFamily,  pairMLP
 
 
 
@@ -48,11 +52,27 @@ class MDSimulator:
         #Initialize positions
         self.radii = self.fcc_positions()
         self.radii -= self.box/2 # convert to -L/2 to L/2 space for ease with PBC
-        assert(np.max(self.radii) <=self.box/2 and np.min(self.radii) >= -1*self.box/2) #assert normalization conditions
+        assert(torch.max(self.radii) <=self.box/2 and torch.min(self.radii) >= -1*self.box/2) #assert normalization conditions
         self.running_dists = []
+
+
 
         #initialize velocities
         self.velocities = self.initialize_velocities()
+
+        #import pdb; pdb.set_trace()
+        # Define prior potential
+        mlp_params = {'n_gauss': int(params.cutoff//params.gaussian_width), 
+                'r_start': 0.0,
+                'r_end': params.cutoff, 
+                'n_width': params.n_width,
+                'n_layers': params.n_layers,
+                'nonlinear': params.nonlinear}
+
+
+        NN = pairMLP(**mlp_params)
+        prior = LJFamily(epsilon=2.0, sigma=params.sigma, rep_pow=6, attr_pow=3)
+        self.model = Stack({'pairnn': NN, 'pair': prior})
 
         #Initialize forces/potential of starting configuration
         self.potential, self.forces = self.force_calc()
@@ -65,6 +85,20 @@ class MDSimulator:
         initial_props = self.calc_properties()
         self.f = open("log.txt", "a+")
         print("Initial: ", initial_props, file = self.f)
+        
+        #import pdb; pdb.set_trace()
+        # Define prior potential
+        mlp_params = {'n_gauss': int(params.cutoff//params.gaussian_width), 
+                'r_start': 0.0,
+                'r_end': params.cutoff, 
+                'n_width': params.n_width,
+                'n_layers': params.n_layers,
+                'nonlinear': params.nonlinear}
+
+
+        NN = pairMLP(**mlp_params)
+        prior = LJFamily(epsilon=2.0, sigma=params.sigma, rep_pow=6, attr_pow=3)
+        self.model = Stack({'pairnn': NN, 'pair': prior})
 
         
 
@@ -85,7 +119,7 @@ class MDSimulator:
                 radius_[i,:] = radius_[i,:]*self.cell_size#/self.box # normalize to [0,1]
                 i = i+1
                 if(i==self.n_particle): #  break when we have n_particle in our box
-                    return radius_
+                    return torch.Tensor(radius_)
 
    
     # Procedure to initialize velocities
@@ -101,7 +135,7 @@ class MDSimulator:
         p_dof = 3*(self.n_particle-1)
         correction_factor = math.sqrt(p_dof*self.temp/sum_vsq)
         velocities *= correction_factor
-        return velocities
+        return torch.Tensor(velocities)
 
 
     def check_symmetric(self, a, tol=1e-8):
@@ -115,13 +149,13 @@ class MDSimulator:
         # You can get energy and the pressure for free out of this calculation if you do it right
         
          #Get rij matrix
-        r = np.expand_dims(self.radii, axis=0) - np.expand_dims(self.radii, axis=1)
+        r = self.radii.unsqueeze(0) - self.radii.unsqueeze(1)
         
         #Enforce minimum image convention
-        r = -1*np.where(r > 0.5*self.box, r-self.box, np.where(r<-0.5*self.box, r+self.box, r))
+        r = -1*torch.where(r > 0.5*self.box, r-self.box, torch.where(r<-0.5*self.box, r+self.box, r))
         
         #compute distance matrix:
-        self.dists = np.sqrt(np.sum(r**2, axis=2))
+        self.dists = torch.sqrt(torch.sum(r**2, axis=2))
         #assert self.check_symmetric(self.dists)
         
         #print(np.min(dists + 100*np.identity(self.n_particle)))
@@ -132,20 +166,22 @@ class MDSimulator:
         #assert(np.max(self.dists) <= self.box*math.sqrt(3)/2) #assert max possible distance with PBC
 
         #zero out self-interactions
-        dists = np.expand_dims(self.dists + 10000000*np.identity(self.n_particle), axis = -1) 
+        dists = (self.dists + 10000000*torch.eye(self.n_particle)).unsqueeze(-1)
        
+        # energy = self.model(dists).sum()
+        # forces = -compute_grad(inputs=dists, output=energy.sum(-1))
         
         #compute potential and forces
         r2i = (self.sigma/dists)**2
         
         r6i = r2i**3
-        potential = 2*self.epsilon*np.sum(r6i*(r6i - 1))
+        potential = 2*self.epsilon*torch.sum(r6i*(r6i - 1))
 
         #reuse components of potential to calculate virial and forces
         self.internal_virial = -48*self.epsilon*r6i*(r6i - 0.5)/(self.sigma**2)
         forces = -self.internal_virial*r*r2i
         #sum forces across particles
-        return potential, np.sum(forces, axis = 1)
+        return potential, torch.sum(forces, axis = 1)
         
        
     # Function to dump simulation frame that is readable in Ovito
@@ -174,19 +210,19 @@ class MDSimulator:
         #TODO
         # Calculate properties of interest in this function
         p_dof = 3*self.n_particle-3
-        vel_squared = np.sum(np.square(self.velocities))
+        vel_squared = torch.sum(torch.square(self.velocities))
         ke = vel_squared/2
         temp = 2*ke/p_dof
-        w = -1/6*np.sum(self.internal_virial)
+        w = -1/6*torch.sum(self.internal_virial)
         pressure = w/self.vol + self.rho*self.kbt0
-        return {"Temperature": temp,
-                "Pressure": pressure,
-                "Total Energy": ke+self.potential,
-                "Momentum Magnitude": np.linalg.norm(np.sum(self.velocities, axis =0))}
+        return {"Temperature": temp.item(),
+                "Pressure": pressure.item(),
+                "Total Energy": (ke+self.potential).item(),
+                "Momentum Magnitude": np.linalg.norm(torch.sum(self.velocities, axis =0)).item()}
 
     def calc_rdf(self):
         #Calculate RDF histogram
-        self.running_dists = np.concatenate(self.running_dists)
+        self.running_dists = torch.cat(self.running_dists).numpy()
         
         range = np.max(self.running_dists)
         
@@ -219,13 +255,13 @@ class MDSimulator:
         for step in tqdm(range(self.nsteps)):
             
             # TODO: Velocity Verlet algorithm
-            
+            #import pdb; pdb.set_trace()
             self.velocities = self.velocities + 0.5*self.dt*self.forces
             self.radii = self.radii + self.dt*self.velocities
             #PBC
             self.radii /= self.box
-            self.radii = self.box*np.where(self.radii-np.round(self.radii) >= 0, \
-                        (self.radii-np.round(self.radii)), (self.radii - np.floor(self.radii)-1))
+            self.radii = self.box*torch.where(self.radii-torch.round(self.radii) >= 0, \
+                        (self.radii-torch.round(self.radii)), (self.radii - torch.floor(self.radii)-1))
                                
             self.potential, self.forces = self.force_calc()
             
@@ -238,7 +274,7 @@ class MDSimulator:
                 print(step, props, file=self.f)
                 self.t.append(self.create_frame(frame = step/self.n_dump))
                 #append dists to running_dists for RDF calculation (remove diagonal entries)
-                self.running_dists.append(self.dists[~np.eye(self.dists.shape[0],dtype=bool)].reshape(self.dists.shape[0],-1))
+                self.running_dists.append(self.dists[~torch.eye(self.dists.shape[0],dtype=bool)].reshape(self.dists.shape[0],-1))
 
             
         # TODO

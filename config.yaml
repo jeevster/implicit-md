@@ -1,7 +1,7 @@
 default: &DEFAULT
 
   n_particle: 256 # number of particles
-  temp: 5 # temperature in reduced units
+  temp: 1 # temperature in reduced units
   seed: 123 # random seed used to initialize velocities
   kbt0: 1.8 #multiplier for pressure calculation
   box: 7 #box size
@@ -9,9 +9,17 @@ default: &DEFAULT
   sigma: 1.0 # LJ sigma
   dt: 0.005 # time step for integration
   dr: 0.01 #bin size for RDF calculation
-  t_total: 10 # total time
+  t_total: 100 # total time
   diameter_viz: 0.3 #particle diameter for Ovito visualization
   n_dump: 10 #save frequency of configurations (also used for RDF calculation)
+
+
+  #learnable potential stuff
+  cutoff: 2.5
+  gaussian_width: 0.1
+  n_width: 128
+  n_layers: 3
+  nonlinear: 'ELU'
 
 
 
