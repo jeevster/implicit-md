@@ -103,7 +103,7 @@ class MDSimulator:
         self.NN = pairMLP(**mlp_params)
 
         #prior potential only contains repulsive term
-        self.prior = LJFamily(epsilon=params.epsilon, sigma=params.sigma, rep_pow=12, attr_pow=4)
+        self.prior = LJFamily(epsilon=params.epsilon, sigma=params.sigma, rep_pow=6, attr_pow=0)
 
         self.model = Stack({'pairnn': self.NN, 'pair': self.prior})
 
@@ -112,7 +112,7 @@ class MDSimulator:
         #     module.register_backward_hook(backward_hook)
 
         self.model.requires_grad = True
-        self.optimizer = torch.optim.Adam(list(self.model.parameters()), lr=1e-6)
+        self.optimizer = torch.optim.Adam(list(self.model.parameters()), lr=1e-3)
 
         #define differentiable rdf function
         self.diff_rdf = DifferentiableRDF(params)
@@ -340,15 +340,16 @@ class MDSimulator:
         loss = (self.gr - self.gt_rdf).pow(2).mean()
         print(f"Loss: {loss}")
         
-        #loss.backward()
-        # max_norm = 0
-        # for param in self.model.parameters():
-        #     norm = torch.linalg.vector_norm(param.grad, dim=-1).max()
-        #     if  norm > max_norm:
-        #         max_norm = norm
-        # print("Max norm: ", max_norm.item())
+        loss.backward()
+        max_norm = 0
+        for param in self.model.parameters():
+            if param.grad is not None:
+                norm = torch.linalg.vector_norm(param.grad, dim=-1).max()
+                if  norm > max_norm:
+                    max_norm = norm
+        print("Max norm: ", max_norm.item())
         
-        #self.optimizer.step()
+        self.optimizer.step()
             
         np.save(f"epoch{epoch+1}_rdf_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_nn={self.nn}.npy", self.gr.detach().numpy())
 
@@ -367,7 +368,7 @@ if __name__ == "__main__":
     #initialize simulator
     simulator = MDSimulator(params)
 
-    for epoch in range(1):
+    for epoch in range(10):
         print(f"Epoch {epoch+1}")
         simulator.simulate(epoch)
         simulator.reset_system()
