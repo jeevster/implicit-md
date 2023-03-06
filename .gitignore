@@ -1,0 +1,4 @@
+results/
+*.npy
+log.txt
+test.gsd

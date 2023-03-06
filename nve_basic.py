@@ -113,12 +113,14 @@ class MDSimulator:
 
         self.model.requires_grad = True
         self.optimizer = torch.optim.Adam(list(self.model.parameters()), lr=1e-3)
+        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', factor=0.2, patience=5)
 
         #define differentiable rdf function
         self.diff_rdf = DifferentiableRDF(params)
 
         #load ground truth rdf
-        self.gt_rdf = torch.Tensor(np.load(f"rdf_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_nn=False.npy"))
+        if self.nn:
+            self.gt_rdf = torch.Tensor(np.load(f"epoch1_rdf_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_nn=False.npy"))
 
 
         self.reset_system()
@@ -220,18 +222,17 @@ class MDSimulator:
             #energy = self.model(dists).sum()
             energy = self.model(self.dists)
             forces = -compute_grad(inputs=r, output=energy)
-            new_forces = torch.zeros((self.dists.shape[0], self.dists.shape[0], 3))
-            for i in range(self.dists.shape[0]):
-                new_forces[i] = torch.cat(([forces[i, :i], torch.zeros((1,3)), forces[i, i:]]), dim=0)
-    
         else:
-            r2i = (self.sigma/dists)**2
+            r2i = (self.sigma/self.dists)**2
             r6i = r2i**3
             energy = 2*self.epsilon*torch.sum(r6i*(r6i - 1))
             #reuse components of potential to calculate virial and forces
             self.internal_virial = -48*self.epsilon*r6i*(r6i - 0.5)/(self.sigma**2)
             forces = -self.internal_virial*r*r2i
-        
+
+        new_forces = torch.zeros((self.dists.shape[0], self.dists.shape[0], 3))
+        for i in range(self.dists.shape[0]):
+            new_forces[i] = torch.cat(([forces[i, :i], torch.zeros((1,3)), forces[i, i:]]), dim=0)
         f = new_forces.detach().numpy()
 
         #import pdb; pdb.set_trace()
@@ -336,20 +337,22 @@ class MDSimulator:
          
         # RDF Calculation
         self.gr = self.diff_rdf(self.running_dists)
-        self.optimizer.zero_grad()
-        loss = (self.gr - self.gt_rdf).pow(2).mean()
-        print(f"Loss: {loss}")
-        
-        loss.backward()
-        max_norm = 0
-        for param in self.model.parameters():
-            if param.grad is not None:
-                norm = torch.linalg.vector_norm(param.grad, dim=-1).max()
-                if  norm > max_norm:
-                    max_norm = norm
-        print("Max norm: ", max_norm.item())
-        
-        self.optimizer.step()
+        if self.nn:
+            self.optimizer.zero_grad()
+            loss = (self.gr - self.gt_rdf).pow(2).mean()
+            print(f"Loss: {loss}")
+            
+            loss.backward()
+            max_norm = 0
+            for param in self.model.parameters():
+                if param.grad is not None:
+                    norm = torch.linalg.vector_norm(param.grad, dim=-1).max()
+                    if  norm > max_norm:
+                        max_norm = norm
+            print("Max norm: ", max_norm.item())
+            
+            self.optimizer.step()
+            self.scheduler.step(loss)
             
         np.save(f"epoch{epoch+1}_rdf_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_nn={self.nn}.npy", self.gr.detach().numpy())
 
@@ -368,7 +371,7 @@ if __name__ == "__main__":
     #initialize simulator
     simulator = MDSimulator(params)
 
-    for epoch in range(10):
+    for epoch in range(100):
         print(f"Epoch {epoch+1}")
         simulator.simulate(epoch)
         simulator.reset_system()
