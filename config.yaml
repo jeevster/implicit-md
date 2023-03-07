@@ -9,7 +9,7 @@ default: &DEFAULT
   sigma: 1.0 # LJ sigma
   dt: 0.005 # time step for integration
   dr: 0.01 #bin size for RDF calculation (non-differentiable version)
-  t_total: 0.1 # total time
+  t_total: 1.2 # total time
   diameter_viz: 0.3 #particle diameter for Ovito visualization
   n_dump: 5 #save frequency of configurations (also frequency of frames used for RDF calculation)
 

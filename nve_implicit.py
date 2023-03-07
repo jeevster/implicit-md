@@ -270,16 +270,17 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         
         return tuple(new_dists) # return the new distance matrix 
 
-    def optimality(self, args):
-        import pdb; pdb.set_trace()
+    '''def optimality(self, args):
         # Stationary condition construction for calculating implicit gradient
         
         #Stationarity of the RDF - doesn't change if we do another step of MD
-        import pdb; pdb.set_trace()
         old_rdf = self.diff_rdf(tuple(self.dists))
-        new_rdf = self.diff_rdf(self.forward())
-        return (old_rdf - new_rdf).pow(2).mean()
+        new_dists = self.forward()
+        new_rdf = self.diff_rdf(new_dists)
+        return (old_rdf - new_rdf).pow(2).mean()'''
 
+    def objective(self, args):
+        return (self.calc_rdf - self.gt_rdf).pow(2).mean()
     #Question: should we instead define objective function and let torchopt detect optimality conditions?
     
     #top level MD simulation code (i.e the "solver") that returns the optimal "parameter" -aka the equilibriated radii
@@ -337,7 +338,7 @@ if __name__ == "__main__":
     
 
     #outer training loop
-    for epoch in range(10):
+    for epoch in range(50):
         print(f"Epoch {epoch+1}")
         optimizer.zero_grad()
 
@@ -355,13 +356,14 @@ if __name__ == "__main__":
         max_norm = 0
         for param in model.parameters():
             if param.grad is not None:
+                import pdb; pdb.set_trace()
                 norm = torch.linalg.vector_norm(param.grad, dim=-1).max()
                 if  norm > max_norm:
                     max_norm = norm
-        print("Max norm: ", max_norm.item())
+        print("Max norm: ", max_norm)
 
         optimizer.step()
-        scheduler.step(outer_loss)
+        #scheduler.step(outer_loss)
 
         #reset system back to initial state
         simulator.reset_system()
