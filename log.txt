@@ -18214,3 +18214,82 @@ Start MD trajectory
 8 {'Temperature': 1.2624338865280151, 'Pressure': tensor([]), 'Total Energy': -8770785.0, 'Momentum Magnitude': 4.507561607169919e-05}
 9 {'Temperature': 1.3228504657745361, 'Pressure': tensor([]), 'Total Energy': -8770930.0, 'Momentum Magnitude': 5.538705227081664e-05}
 Initial:  {'Temperature': 1.0000001192092896, 'Pressure': tensor([]), 'Total Energy': -8770156.0, 'Momentum Magnitude': 7.67396795708919e-06}
+Initial:  {'Temperature': 0.9999999403953552, 'Pressure': tensor([]), 'Total Energy': -242840.484375, 'Momentum Magnitude': 3.82214057026431e-06}
+Start MD trajectory
+0 {'Temperature': 0.9977374076843262, 'Pressure': tensor([]), 'Total Energy': -242839.546875, 'Momentum Magnitude': 2.431401981084491e-06}
+5 {'Temperature': 0.9218212962150574, 'Pressure': tensor([]), 'Total Energy': -242810.515625, 'Momentum Magnitude': 4.598451141646365e-06}
+10 {'Temperature': 0.7522037029266357, 'Pressure': tensor([]), 'Total Energy': -242745.546875, 'Momentum Magnitude': 4.1019084164872766e-06}
+15 {'Temperature': 0.5392460823059082, 'Pressure': tensor([]), 'Total Energy': -242663.921875, 'Momentum Magnitude': 5.713347036362393e-06}
+20 {'Temperature': 0.37366560101509094, 'Pressure': tensor([]), 'Total Energy': -242600.4375, 'Momentum Magnitude': 8.23493792267982e-06}
+25 {'Temperature': 0.3195674419403076, 'Pressure': tensor([]), 'Total Energy': -242579.796875, 'Momentum Magnitude': 8.86728048499208e-06}
+30 {'Temperature': 0.35432177782058716, 'Pressure': tensor([]), 'Total Energy': -242593.234375, 'Momentum Magnitude': 8.40657958178781e-06}
+35 {'Temperature': 0.4157555401325226, 'Pressure': tensor([]), 'Total Energy': -242616.796875, 'Momentum Magnitude': 7.950464350869879e-06}
+40 {'Temperature': 0.45773765444755554, 'Pressure': tensor([]), 'Total Energy': -242632.890625, 'Momentum Magnitude': 7.008046395640122e-06}
+45 {'Temperature': 0.46506398916244507, 'Pressure': tensor([]), 'Total Energy': -242635.65625, 'Momentum Magnitude': 6.645851044595474e-06}
+50 {'Temperature': 0.4468323290348053, 'Pressure': tensor([]), 'Total Energy': -242628.65625, 'Momentum Magnitude': 7.79728088673437e-06}
+55 {'Temperature': 0.4231204390525818, 'Pressure': tensor([]), 'Total Energy': -242619.5625, 'Momentum Magnitude': 3.620215466071386e-06}
+60 {'Temperature': 0.4099828004837036, 'Pressure': tensor([]), 'Total Energy': -242614.53125, 'Momentum Magnitude': 1.5266238051481196e-06}
+65 {'Temperature': 0.4127948582172394, 'Pressure': tensor([]), 'Total Energy': -242615.59375, 'Momentum Magnitude': 4.53622305940371e-06}
+70 {'Temperature': 0.43020111322402954, 'Pressure': tensor([]), 'Total Energy': -242622.28125, 'Momentum Magnitude': 3.870632099278737e-06}
+75 {'Temperature': 0.45164915919303894, 'Pressure': tensor([]), 'Total Energy': -242630.515625, 'Momentum Magnitude': 4.839735538553214e-06}
+80 {'Temperature': 0.46562904119491577, 'Pressure': tensor([]), 'Total Energy': -242635.84375, 'Momentum Magnitude': 2.718390078371158e-06}
+85 {'Temperature': 0.47028815746307373, 'Pressure': tensor([]), 'Total Energy': -242637.625, 'Momentum Magnitude': 4.523674306255998e-06}
+90 {'Temperature': 0.4667733907699585, 'Pressure': tensor([]), 'Total Energy': -242636.28125, 'Momentum Magnitude': 6.070316885598004e-06}
+95 {'Temperature': 0.4553379416465759, 'Pressure': tensor([]), 'Total Energy': -242631.90625, 'Momentum Magnitude': 6.747708994225832e-06}
+100 {'Temperature': 0.44212037324905396, 'Pressure': tensor([]), 'Total Energy': -242626.8125, 'Momentum Magnitude': 7.270789410540601e-06}
+105 {'Temperature': 0.43880414962768555, 'Pressure': tensor([]), 'Total Energy': -242625.53125, 'Momentum Magnitude': 6.185112852108432e-06}
+110 {'Temperature': 0.4505079984664917, 'Pressure': tensor([]), 'Total Energy': -242630.046875, 'Momentum Magnitude': 7.950464350869879e-06}
+115 {'Temperature': 0.4700636565685272, 'Pressure': tensor([]), 'Total Energy': -242637.53125, 'Momentum Magnitude': 8.106231689453125e-06}
+120 {'Temperature': 0.4868128299713135, 'Pressure': tensor([]), 'Total Energy': -242643.953125, 'Momentum Magnitude': 8.389658432861324e-06}
+125 {'Temperature': 0.49350136518478394, 'Pressure': tensor([]), 'Total Energy': -242646.515625, 'Momentum Magnitude': 7.807070687704254e-06}
+130 {'Temperature': 0.4881480634212494, 'Pressure': tensor([]), 'Total Energy': -242644.46875, 'Momentum Magnitude': 9.728530130814761e-06}
+135 {'Temperature': 0.4753260314464569, 'Pressure': tensor([]), 'Total Energy': -242639.546875, 'Momentum Magnitude': 9.959506314771716e-06}
+140 {'Temperature': 0.46315255761146545, 'Pressure': tensor([]), 'Total Energy': -242634.875, 'Momentum Magnitude': 7.607010047649965e-06}
+145 {'Temperature': 0.4589097499847412, 'Pressure': tensor([]), 'Total Energy': -242633.25, 'Momentum Magnitude': 7.00094551575603e-06}
+150 {'Temperature': 0.464420348405838, 'Pressure': tensor([]), 'Total Energy': -242635.359375, 'Momentum Magnitude': 8.805564903013874e-06}
+155 {'Temperature': 0.4765109121799469, 'Pressure': tensor([]), 'Total Energy': -242639.984375, 'Momentum Magnitude': 9.57318115979433e-06}
+160 {'Temperature': 0.49445098638534546, 'Pressure': tensor([]), 'Total Energy': -242646.859375, 'Momentum Magnitude': 1.0748024578788318e-05}
+165 {'Temperature': 0.512549102306366, 'Pressure': tensor([]), 'Total Energy': -242653.8125, 'Momentum Magnitude': 1.0255464076180942e-05}
+170 {'Temperature': 0.5219085216522217, 'Pressure': tensor([]), 'Total Energy': -242657.390625, 'Momentum Magnitude': 1.1390727195248473e-05}
+175 {'Temperature': 0.5215973854064941, 'Pressure': tensor([]), 'Total Energy': -242657.234375, 'Momentum Magnitude': 1.1383238415874075e-05}
+180 {'Temperature': 0.5174655318260193, 'Pressure': tensor([]), 'Total Energy': -242655.65625, 'Momentum Magnitude': 1.2557215086417273e-05}
+185 {'Temperature': 0.5136083960533142, 'Pressure': tensor([]), 'Total Energy': -242654.1875, 'Momentum Magnitude': 1.4185404324962292e-05}
+190 {'Temperature': 0.5120840668678284, 'Pressure': tensor([]), 'Total Energy': -242653.59375, 'Momentum Magnitude': 1.7080241377698258e-05}
+195 {'Temperature': 0.5165584683418274, 'Pressure': tensor([]), 'Total Energy': -242655.296875, 'Momentum Magnitude': 1.664154842728749e-05}
+200 {'Temperature': 0.5255922675132751, 'Pressure': tensor([]), 'Total Energy': -242658.796875, 'Momentum Magnitude': 1.2876810615125578e-05}
+205 {'Temperature': 0.5282095670700073, 'Pressure': tensor([]), 'Total Energy': -242659.78125, 'Momentum Magnitude': 1.4209427718014922e-05}
+210 {'Temperature': 0.5165418386459351, 'Pressure': tensor([]), 'Total Energy': -242655.328125, 'Momentum Magnitude': 1.4177388038660865e-05}
+215 {'Temperature': 0.49587196111679077, 'Pressure': tensor([]), 'Total Energy': -242647.390625, 'Momentum Magnitude': 1.357782821287401e-05}
+220 {'Temperature': 0.4770260453224182, 'Pressure': tensor([]), 'Total Energy': -242640.1875, 'Momentum Magnitude': 1.3719203707296401e-05}
+225 {'Temperature': 0.4696001410484314, 'Pressure': tensor([]), 'Total Energy': -242637.328125, 'Momentum Magnitude': 1.2859140952059533e-05}
+230 {'Temperature': 0.4783673882484436, 'Pressure': tensor([]), 'Total Energy': -242640.6875, 'Momentum Magnitude': 1.4959697182348464e-05}
+235 {'Temperature': 0.49698203802108765, 'Pressure': tensor([]), 'Total Energy': -242647.8125, 'Momentum Magnitude': 1.3869323083781637e-05}
+Start MD trajectory
+Start MD trajectory
+Start MD trajectory
+Start MD trajectory
+Start MD trajectory
+Start MD trajectory
+Start MD trajectory
+Start MD trajectory
+Start MD trajectory
+Start MD trajectory
+Start MD trajectory
+Start MD trajectory
+Start MD trajectory
+Start MD trajectory
+Start MD trajectory
+Start MD trajectory
+Start MD trajectory
+Start MD trajectory
+Start MD trajectory
+Start MD trajectory
+Start MD trajectory
+Start MD trajectory
+Start MD trajectory
+Initial:  {'Temperature': 0.9999999403953552, 'Pressure': tensor([]), 'Total Energy': -242939.796875, 'Momentum Magnitude': 3.82214057026431e-06}
+Start MD trajectory
+0 {'Temperature': 0.9976010322570801, 'Pressure': tensor([]), 'Total Energy': -242938.828125, 'Momentum Magnitude': 4.76837158203125e-07}
+Start MD trajectory
+Start MD trajectory
+Start MD trajectory

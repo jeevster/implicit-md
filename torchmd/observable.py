@@ -75,6 +75,38 @@ class rdf(Observable):
 
         return count, self.bins, rdf 
 
+'''Sanjeev's DiffRDF implementation - doesn't use system stuff'''
+class DifferentiableRDF(torch.nn.Module):
+    def __init__(self, params):
+        super(DifferentiableRDF, self).__init__()
+        start = 0
+        range =  params.box #torch.max(self.running_dists)
+        nbins = int(range/params.dr)
+
+
+        V, vol_bins, bins = generate_vol_bins(start, range, nbins, dim=3)
+
+        self.V = V
+        self.vol_bins = vol_bins
+        #self.device = system.device
+        self.bins = bins
+
+        self.smear = GaussianSmearing(
+            start=start,
+            stop=bins[-1],
+            n_gaussians=nbins,
+            width=params.gaussian_width,
+            trainable=False
+        )
+
+    def forward(self, running_dists):
+        running_dists = torch.cat(running_dists)
+        count = self.smear(running_dists.reshape(-1).squeeze()[..., None]).sum(0) 
+        norm = count.sum()   # normalization factor for histogram 
+        count = count / norm   # normalize 
+        gr =  count / (self.vol_bins / self.V )  
+        return gr
+
 class Angles(Observable):
     def __init__(self, system, nbins, angle_range, cutoff=3.0,index_tuple=None, width=None):
         super(Angles, self).__init__(system)

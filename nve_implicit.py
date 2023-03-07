@@ -14,48 +14,22 @@ import pstats
 import pdb
 from torchmd.interface import GNNPotentials, PairPotentials, Stack
 from torchmd.potentials import ExcludedVolume, LennardJones, LJFamily,  pairMLP
-from torchmd.observable import rdf, generate_vol_bins
+from torchmd.observable import rdf, generate_vol_bins, DifferentiableRDF
+import torchopt
+from torchopt.nn import ImplicitMetaGradientModule
+
+from utils import radii_to_dists
+
 
 def backward_hook(module, grad_input, grad_output):
     print('Module:', module)
     print('Grad Input:', grad_input)
     print('Grad Output:', grad_output)
 
-class DifferentiableRDF(torch.nn.Module):
-    def __init__(self, params):
-        super(DifferentiableRDF, self).__init__()
-        start = 0
-        range =  params.box #torch.max(self.running_dists)
-        nbins = int(range/params.dr)
 
-
-        V, vol_bins, bins = generate_vol_bins(start, range, nbins, dim=3)
-
-        self.V = V
-        self.vol_bins = vol_bins
-        #self.device = system.device
-        self.bins = bins
-
-        self.smear = GaussianSmearing(
-            start=start,
-            stop=bins[-1],
-            n_gaussians=nbins,
-            width=params.gaussian_width,
-            trainable=False
-        )
-
-    def forward(self, running_dists):
-        running_dists = torch.cat(running_dists)
-        count = self.smear(running_dists.reshape(-1).squeeze()[..., None]).sum(0) 
-        norm = count.sum()   # normalization factor for histogram 
-        count = count / norm   # normalize 
-        gr =  count / (self.vol_bins / self.V )  
-        return gr
-
-
-
-class MDSimulator:
-    def __init__(self, params):
+class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.linear_solve.solve_normal_cg(maxiter=5, atol=0)):
+    def __init__(self, params, model):
+        super(ImplicitMDSimulator, self).__init__()
         # Initial parameters
         np.random.seed(seed=params.seed)
         self.n_particle = params.n_particle
@@ -91,29 +65,13 @@ class MDSimulator:
         self.vol = self.box**3.0
         self.rho = self.n_particle/self.vol
 
-        # Define prior potential
-        mlp_params = {'n_gauss': int(params.cutoff//params.gaussian_width), 
-                'r_start': 0.0,
-                'r_end': params.cutoff, 
-                'n_width': params.n_width,
-                'n_layers': params.n_layers,
-                'nonlinear': params.nonlinear}
+        #Initialize pair potentials model - this gets registered as a "meta-parameter" since it was passed in as input to init
+        self.model = model
+        self.model.requires_grad = True
 
-
-        self.NN = pairMLP(**mlp_params)
-
-        #prior potential only contains repulsive term
-        self.prior = LJFamily(epsilon=params.epsilon, sigma=params.sigma, rep_pow=6, attr_pow=0)
-
-        self.model = Stack({'pairnn': self.NN, 'pair': self.prior})
-
-        #register backwards hook
+        #register backwards hook for debugging
         # for module in self.model.modules():
         #     module.register_backward_hook(backward_hook)
-
-        self.model.requires_grad = True
-        self.optimizer = torch.optim.Adam(list(self.model.parameters()), lr=1e-3)
-        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', factor=0.2, patience=5)
 
         #define differentiable rdf function
         self.diff_rdf = DifferentiableRDF(params)
@@ -123,32 +81,37 @@ class MDSimulator:
             self.results_dir = f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}"
             self.gt_rdf = torch.Tensor(np.load(os.path.join('results', self.results_dir, "epoch1_rdf_" + self.results_dir + "_nn=False.npy")))
 
-
+        #reset positions and velocities to initial FCC lattice 
         self.reset_system()
         
-        
+
     def reset_system(self):
         #Initialize positions
         self.radii = self.fcc_positions()
-        self.radii -= self.box/2 # convert to -L/2 to L/2 space for ease with PBC
+        self.radii.requires_grad = True
+        self.radii = self.radii - self.box/2 # convert to -L/2 to L/2 space for ease with PBC
         assert(torch.max(self.radii) <=self.box/2 and torch.min(self.radii) >= -1*self.box/2) #assert normalization conditions
         self.running_dists = []
 
         #initialize velocities
         self.velocities = self.initialize_velocities()
+        self.velocities.requires_grad = True
 
         #Initialize forces/potential of starting configuration
+        self.potential = torch.zeros((1, ))
+        self.forces = torch.zeros((self.n_particle, 3))
+        self.potential.requires_grad = True
+        self.forces.requires_grad = True
         self.potential, self.forces = self.force_calc()
-        #import pdb; pdb.set_trace()
 
         #File dump stuff
         self.t = gsd.hoomd.open(name='test.gsd', mode='wb') 
         self.n_dump = params.n_dump # dump for configuration
         
         #check if inital momentum is zero
-        initial_props = self.calc_properties()
+        #initial_props = self.calc_properties()
         self.f = open("log.txt", "a+")
-        print("Initial: ", initial_props, file = self.f)
+        #print("Initial: ", initial_props, file = self.f)
 
 
     # Initialize configuration
@@ -193,59 +156,6 @@ class MDSimulator:
         
         return np.all(np.abs(a - a.T) < tol)
 
-    def force_calc(self):
-        #TODO
-        # Evaluate forces
-        # Using LJ potential
-        # u_lj(r_ij) = 4*epsilon*[(sigma/r_ij)^12-(sigma/r_ij)^6]
-        # You can get energy and the pressure for free out of this calculation if you do it right
-        
-         #Get rij matrix
-        r = self.radii.unsqueeze(0) - self.radii.unsqueeze(1)
-        import pdb; pdb.set_trace()
-        
-        #Enforce minimum image convention
-        r = -1*torch.where(r > 0.5*self.box, r-self.box, torch.where(r<-0.5*self.box, r+self.box, r))
-        r = r[~torch.eye(r.shape[0],dtype=bool)].reshape(r.shape[0], -1, 3)
-        try:
-            r.requires_grad = True
-        except RuntimeError:
-            pass
-        #compute distance matrix:
-        self.dists = torch.sqrt(torch.sum(r**2, axis=2)).unsqueeze(-1)
-        d = self.dists.detach().numpy()
-
-        #zero out self-interactions
-        #dists = (self.dists + 10000000*torch.eye(self.n_particle)).unsqueeze(-1)
-       
-        if self.nn:
-            #energy = self.model(dists).sum()
-            energy = self.model(self.dists)
-            forces = -compute_grad(inputs=r, output=energy)
-        else:
-            r2i = (self.sigma/self.dists)**2
-            r6i = r2i**3
-            energy = 2*self.epsilon*torch.sum(r6i*(r6i - 1))
-            #reuse components of potential to calculate virial and forces
-            self.internal_virial = -48*self.epsilon*r6i*(r6i - 0.5)/(self.sigma**2)
-            forces = -self.internal_virial*r*r2i
-
-        new_forces = torch.zeros((self.dists.shape[0], self.dists.shape[0], 3))
-        for i in range(self.dists.shape[0]):
-            new_forces[i] = torch.cat(([forces[i, :i], torch.zeros((1,3)), forces[i, i:]]), dim=0)
-        f = new_forces.detach().numpy()
-
-        #import pdb; pdb.set_trace()
-        assert(not torch.any(torch.isnan(new_forces)))
-        assert self.check_symmetric(f[:, :, 0], mode = 'opposite')
-        assert self.check_symmetric(f[:, :, 1], mode = 'opposite')
-        assert self.check_symmetric(f[:, :, 2], mode = 'opposite')
-       
-                
-        #sum forces across particles
-        return energy, torch.sum(new_forces, axis = 1)
-        
-       
     # Function to dump simulation frame that is readable in Ovito
     # Also stores radii and velocities in a compressed format which is nice
     def create_frame(self, frame):
@@ -267,7 +177,6 @@ class MDSimulator:
         s.configuration.box=[self.box,self.box,self.box,0,0,0]
         return s
 
-
     def calc_properties(self):
         #TODO
         # Calculate properties of interest in this function
@@ -283,82 +192,114 @@ class MDSimulator:
                 "Total Energy": (ke+self.potential).item(),
                 "Momentum Magnitude": torch.norm(torch.sum(self.velocities, axis =0)).item()}
 
-    def calc_rdf(self):
-        #Calculate RDF histogram
-        self.running_dists = torch.cat(self.running_dists).numpy()
+
+    '''CORE MD OPERATIONS'''
+    def force_calc(self):
         
-        range = np.max(self.running_dists)
+        #Get rij matrix
+        import pdb; pdb.set_trace()
+        r = self.radii.unsqueeze(0) - self.radii.unsqueeze(1)
+        try:
+            r.requires_grad = True
+        except:
+            pass
+        #gradients getting detached here for some reason
+       
+        #Enforce minimum image convention
+        r = -1*torch.where(r > 0.5*self.box, r-self.box, torch.where(r<-0.5*self.box, r+self.box, r))
+
+        #get rid of diagonal 0 entries of r matrix (for gradient stability)
+        r = r[~torch.eye(r.shape[0],dtype=bool)].reshape(r.shape[0], -1, 3)
         
+        #compute distance matrix:
+        if hasattr(self, 'dists'):
+            self.dists.copy_(torch.sqrt(torch.sum(r**2, axis=2)).unsqueeze(-1))
+        else:
+            self.dists = torch.sqrt(torch.sum(r**2, axis=2)).unsqueeze(-1)
 
-        freqs, bins = np.histogram(self.running_dists, bins=int(range/self.dr), range = (0, range))
-        #normalize
-        n_log = self.nsteps/self.n_dump
-        freqs = np.float64(freqs/(self.n_particle*n_log))
-        
-
-        #compute ideal gas equivalent
-        r = np.arange(len(bins))*self.dr
-        freqs_id = 4*math.pi*self.rho/3 * ((r+self.dr)**3 - r**3)[0:-1]
-
-        gr = freqs/freqs_id
-        
-
-        return gr
-
-    #top level MD simulation code
-    def simulate(self, epoch):
-    
-        print("Start MD trajectory", file=self.f)
-
-        # Velocity Verlet integrator
-        for step in tqdm(range(self.nsteps)):
-            
-            self.velocities = self.velocities + 0.5*self.dt*self.forces
-            #import pdb; pdb.set_trace()
-            self.radii = self.radii + self.dt*self.velocities
-            #PBC
-            self.radii /= self.box
-            self.radii = self.box*torch.where(self.radii-torch.round(self.radii) >= 0, \
-                        (self.radii-torch.round(self.radii)), (self.radii - torch.floor(self.radii)-1))
-                               
-            self.potential, self.forces = self.force_calc()
-            
-            self.velocities = self.velocities + 0.5*self.dt*self.forces
-            
-            props = self.calc_properties()
-
-            # dump frame
-            if step%self.n_dump == 0:
-                print(step, props, file=self.f)
-                self.t.append(self.create_frame(frame = step/self.n_dump))
-                #append dists to running_dists for RDF calculation (remove diagonal entries)
-                self.running_dists.append(self.dists)
-            
-         
-        # RDF Calculation
-        self.gr = self.diff_rdf(self.running_dists)
+        #compute energy
         if self.nn:
-            self.optimizer.zero_grad()
-            loss = (self.gr - self.gt_rdf).pow(2).mean()
-            print(f"Loss: {loss}")
-            
-            loss.backward()
-            max_norm = 0
-            for param in self.model.parameters():
-                if param.grad is not None:
-                    norm = torch.linalg.vector_norm(param.grad, dim=-1).max()
-                    if  norm > max_norm:
-                        max_norm = norm
-            print("Max norm: ", max_norm.item())
-            
-            self.optimizer.step()
-            self.scheduler.step(loss)
-            
-        np.save(f"epoch{epoch+1}_rdf_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_nn={self.nn}.npy", self.gr.detach().numpy())
+            energy = self.model(self.dists)
+            forces = -compute_grad(inputs=r, output=energy) #getting assertion error here since r.requires_grad = False for some reason
+        else:
+            r2i = (self.sigma/self.dists)**2
+            r6i = r2i**3
+            energy = 2*self.epsilon*torch.sum(r6i*(r6i - 1))
+            #reuse components of potential to calculate virial and forces
+            self.internal_virial = -48*self.epsilon*r6i*(r6i - 0.5)/(self.sigma**2)
+            forces = -self.internal_virial*r*r2i
 
+        #insert 0s back in diagonal entries of force matrix
+        new_forces = torch.zeros((self.dists.shape[0], self.dists.shape[0], 3))
+        for i in range(self.dists.shape[0]):
+            new_forces[i] = torch.cat(([forces[i, :i], torch.zeros((1,3)), forces[i, i:]]), dim=0)
+        f = new_forces.detach().numpy()
+
+        #Ensure symmetries
+        assert(not torch.any(torch.isnan(new_forces)))
+        assert self.check_symmetric(f[:, :, 0], mode = 'opposite')
+        assert self.check_symmetric(f[:, :, 1], mode = 'opposite')
+        assert self.check_symmetric(f[:, :, 2], mode = 'opposite')
+       
                 
-        self.f.close()            
+        #sum forces across particles
+        return energy, torch.sum(new_forces, axis = 1)
+        
+    
+    def forward(self):
+        # Forward process - 1 MD step with Velocity-Verlet integration
+        #half-step in velocity
+        self.velocities = self.velocities + 0.5*self.dt*self.forces
 
+        #full step in position
+        import pdb; pdb.set_trace()
+        self.radii.copy_(self.radii + self.dt*self.velocities)
+
+        #PBC correction
+        self.radii.copy_(self.radii/self.box)
+        
+        self.radii.copy_(self.box*torch.where(self.radii-torch.round(self.radii) >= 0, \
+                    (self.radii-torch.round(self.radii)), (self.radii - torch.floor(self.radii)-1)))
+
+        #calculate force
+        self.potential, self.forces = self.force_calc()
+        
+        
+        #another half-step in velocity
+        self.velocities = (self.velocities + 0.5*self.dt*self.forces) 
+        props = self.calc_properties()
+
+        # dump frame
+        if step%self.n_dump == 0:
+            print(step, props, file=self.f)
+            self.t.append(self.create_frame(frame = step/self.n_dump))
+            #append dists to running_dists for RDF calculation (remove diagonal entries)
+            self.running_dists.append(self.dists)
+        
+        new_dists = radii_to_dists(self.radii, self.box)
+        self.calc_rdf = self.diff_rdf(new_dists) #calculate the RDF
+        return new_dists # return the new distance matrix 
+
+    def optimality(self):
+        # Stationary condition construction for calculating implicit gradient
+        
+        #Stationarity of the RDF - doesn't change if we do another step of MD
+        return (self.diff_rdf(self.forward()) - self.diff_rdf(self.dists)).pow(2).mean()
+
+    #Question: should we instead define objective function and let torchopt detect optimality conditions?
+    
+    #top level MD simulation code (i.e the "solver") that returns the optimal "parameter" -aka the equilibriated radii
+    def solve(self, epoch):
+        #Run MD
+        print("Start MD trajectory", file=self.f)
+        for step in tqdm(range(self.nsteps)):
+            self.forward()
+        
+        np.save(f"epoch{epoch+1}_rdf_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_nn={self.nn}.npy", self.gr.detach().numpy())
+        self.f.close()
+        return self
+
+    
 if __name__ == "__main__":
 
     #parse args
@@ -368,12 +309,48 @@ if __name__ == "__main__":
     args = parser.parse_args()
     params = YParams(os.path.abspath(args.yaml_config), args.config)
 
-    #initialize simulator
-    simulator = MDSimulator(params)
+    #initialize model
+    mlp_params = {'n_gauss': int(params.cutoff//params.gaussian_width), 
+                'r_start': 0.0,
+                'r_end': params.cutoff, 
+                'n_width': params.n_width,
+                'n_layers': params.n_layers,
+                'nonlinear': params.nonlinear}
 
-    for epoch in range(100):
+
+    NN = pairMLP(**mlp_params)
+
+    #prior potential only contains repulsive term
+    prior = LJFamily(epsilon=params.epsilon, sigma=params.sigma, rep_pow=6, attr_pow=0)
+
+    model = Stack({'nn': NN, 'prior': prior})
+
+    #initialize simulator
+    simulator = ImplicitMDSimulator(params, model)
+
+    #initialize optimizer/scheduler
+    optimizer = torch.optim.Adam(list(model.parameters()), lr=1e-3)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=5)
+    
+
+    #outer training loop
+    for epoch in range(1):
         print(f"Epoch {epoch+1}")
-        simulator.simulate(epoch)
+        optimizer.zero_grad()
+
+        #run MD simulation to get equilibriated radii
+        optimal_simulator = simulator.solve(epoch)
+
+        #compute RDF loss at the end of the trajectory
+        outer_loss = (optimal_simulator.calc_rdf - optimal_simulator.gt_rdf).pow(2).mean()
+
+        #compute (implicit gradient of loss wrt model parameters)
+        print(torch.autograd.grad(outer_loss, simulator.model.parameters())) # dL/dtheta
+
+        optimizer.step()
+        import pdb; pdb.set_trace()
+
+        #reset system back to initial state
         simulator.reset_system()
     print('Done!')
     
