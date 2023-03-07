@@ -1,3 +1,5 @@
+import torch
+
 def radii_to_dists(radii, box_size):
     #Get rij matrix
     r = radii.unsqueeze(0) - radii.unsqueeze(1)
