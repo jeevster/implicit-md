@@ -97,7 +97,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.velocities = nn.Parameter(self.initialize_velocities().clone().detach_(), requires_grad=True)
 
         
-
         #File dump stuff
         self.t = gsd.hoomd.open(name='test.gsd', mode='wb') 
         self.n_dump = params.n_dump # dump for configuration
@@ -192,12 +191,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         
         #Get rij matrix
         r = self.radii.unsqueeze(0) - self.radii.unsqueeze(1)
-        try:
-            r.requires_grad = True
-        except:
-            pass
-        #gradients getting detached here for some reason
-       
+        
         #Enforce minimum image convention
         r = -1*torch.where(r > 0.5*self.box, r-self.box, torch.where(r<-0.5*self.box, r+self.box, r))
 
@@ -210,8 +204,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #compute energy
         if self.nn:
             energy = self.model(self.dists)
-            forces = -compute_grad(inputs=r, output=energy) #getting assertion error here since r.requires_grad = False for some reason
-        else:
+            forces = -compute_grad(inputs=r, output=energy)
+            #LJ potential
             r2i = (self.sigma/self.dists)**2
             r6i = r2i**3
             energy = 2*self.epsilon*torch.sum(r6i*(r6i - 1))
@@ -247,9 +241,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
         #PBC correction
         self.radii = self.radii/self.box 
-        
-        self.radii = (self.box*torch.where(self.radii-torch.round(self.radii) >= 0, \
-                    (self.radii-torch.round(self.radii)), (self.radii - torch.floor(self.radii)-1)))
+        self.radii = self.box*torch.where(self.radii-torch.round(self.radii) >= 0, \
+                    (self.radii-torch.round(self.radii)), (self.radii - torch.floor(self.radii)-1))
 
         #calculate force at new position
         self.potential, self.forces = self.force_calc()
@@ -270,18 +263,19 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         
         return tuple(new_dists) # return the new distance matrix 
 
-    '''def optimality(self, args):
-        # Stationary condition construction for calculating implicit gradient
+    #doesn't currently work to define optimality function - getting weird error:  "DispatchKey FuncTorchGradWrapper doesn't correspond to a device"
+    # def optimality(self, args):
+    #     # Stationary condition construction for calculating implicit gradient
         
-        #Stationarity of the RDF - doesn't change if we do another step of MD
-        old_rdf = self.diff_rdf(tuple(self.dists))
-        new_dists = self.forward()
-        new_rdf = self.diff_rdf(new_dists)
-        return (old_rdf - new_rdf).pow(2).mean()'''
+    #     #Stationarity of the RDF - doesn't change if we do another step of MD
+    #     with torch.enable_grad():
+    #         old_rdf = self.diff_rdf(tuple(self.dists))
+    #         new_dists = self.forward()
+    #         new_rdf = self.diff_rdf(new_dists)
+    #     return (old_rdf - new_rdf).pow(2).mean()
 
     def objective(self, args):
         return (self.calc_rdf - self.gt_rdf).pow(2).mean()
-    #Question: should we instead define objective function and let torchopt detect optimality conditions?
     
     #top level MD simulation code (i.e the "solver") that returns the optimal "parameter" -aka the equilibriated radii
     def solve(self, epoch):
@@ -290,11 +284,10 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         with torch.enable_grad():
             self.potential, self.forces = self.force_calc()
 
-        #Run MD
-        print("Start MD trajectory", file=self.f)
-        for step in tqdm(range(self.nsteps)):
-            self.step = step
-            with torch.enable_grad():
+            #Run MD
+            print("Start MD trajectory", file=self.f)
+            for step in tqdm(range(self.nsteps)):
+                self.step = step
                 self.forward()
         
         #compute final rdf averaged over entire trajectory
@@ -343,20 +336,21 @@ if __name__ == "__main__":
         optimizer.zero_grad()
 
         #run MD simulation to get equilibriated radii
-        
         equilibriated_simulator = simulator.solve(epoch)
     
         #compute RDF loss at the end of the trajectory
         outer_loss = (equilibriated_simulator.calc_rdf - equilibriated_simulator.gt_rdf).pow(2).mean()
         print("Final RDF Loss: ", outer_loss.item())
 
-        #compute (implicit) gradient of outer loss wrt model parameters)
+        #compute (implicit) gradient of outer loss wrt model parameters - grads are zero after the first iteration 
         torch.autograd.backward(tensors = outer_loss, inputs = list(model.parameters()))
+
+        #with Adam optimizer, we're able to learn the RDF reasonably well since it keeps the old gradients around
+        #with SGD, there are no parameter updates after the first iteration so no change in the loss function
 
         max_norm = 0
         for param in model.parameters():
             if param.grad is not None:
-                import pdb; pdb.set_trace()
                 norm = torch.linalg.vector_norm(param.grad, dim=-1).max()
                 if  norm > max_norm:
                     max_norm = norm
