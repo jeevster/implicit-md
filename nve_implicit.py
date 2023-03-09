@@ -206,6 +206,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             energy = self.model(self.dists)
             forces = -compute_grad(inputs=r, output=energy)
             #LJ potential
+        else:
             r2i = (self.sigma/self.dists)**2
             r6i = r2i**3
             energy = 2*self.epsilon*torch.sum(r6i*(r6i - 1))
@@ -252,7 +253,14 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         props = self.calc_properties()
 
         new_dists = radii_to_dists(self.radii, self.box)
-        self.calc_rdf = self.diff_rdf(tuple(new_dists)) #calculate the RDF from a single frame
+        new_rdf = self.diff_rdf(tuple(new_dists)) #calculate the RDF from a single frame
+        # try:
+        #     diff = (torch.abs(new_rdf - self.calc_rdf)/ self.calc_rdf).mean()
+        #     print("mean relative difference in rdf: ", diff)
+        #     self.running_diffs.append(diff.item())
+        # except:
+        #     pass
+        self.calc_rdf = new_rdf
 
         # dump frame
         if self.step%self.n_dump == 0:
@@ -265,21 +273,23 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
     #doesn't currently work to define optimality function - getting weird error:  "DispatchKey FuncTorchGradWrapper doesn't correspond to a device"
     # def optimality(self, args):
+    #     #old_rdf, new_rdf = args
     #     # Stationary condition construction for calculating implicit gradient
-        
+    #     print("optimality")
     #     #Stationarity of the RDF - doesn't change if we do another step of MD
     #     with torch.enable_grad():
     #         old_rdf = self.diff_rdf(tuple(self.dists))
     #         new_dists = self.forward()
     #         new_rdf = self.diff_rdf(new_dists)
-    #     return (old_rdf - new_rdf).pow(2).mean()
+    #     return (old_rdf - new_rdf, )
 
     def objective(self, args):
+        print("objective")
         return (self.calc_rdf - self.gt_rdf).pow(2).mean()
     
     #top level MD simulation code (i.e the "solver") that returns the optimal "parameter" -aka the equilibriated radii
     def solve(self, epoch):
-        
+        self.running_diffs = []
         #Initialize forces/potential of starting configuration
         with torch.enable_grad():
             self.potential, self.forces = self.force_calc()
@@ -293,6 +303,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #compute final rdf averaged over entire trajectory
         self.final_rdf = self.diff_rdf(self.running_dists)
         np.save(f"epoch{epoch+1}_rdf_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_nn={self.nn}.npy", self.final_rdf.detach().numpy())
+        #np.save(f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_nn={self.nn}.npy", np.array(self.running_diffs))
         self.f.close()
         return self
 
@@ -331,7 +342,7 @@ if __name__ == "__main__":
     
 
     #outer training loop
-    for epoch in range(50):
+    for epoch in range(1):
         print(f"Epoch {epoch+1}")
         optimizer.zero_grad()
 
