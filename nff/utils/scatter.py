@@ -2,7 +2,7 @@ from itertools import repeat
 from torch.autograd import grad
 
 
-def compute_grad(inputs, output, normal = True, create_graph=True, retain_graph=True):
+def compute_grad(inputs, output, create_graph=True, retain_graph=True):
     """Compute gradient of the scalar output with respect to inputs.
     
     Args:
@@ -16,12 +16,12 @@ def compute_grad(inputs, output, normal = True, create_graph=True, retain_graph=
     assert inputs.requires_grad
     
     #import pdb; pdb.set_trace()
-    if normal:
-        gradspred, = grad(output, inputs, grad_outputs=output.data.new(output.shape).fill_(1),
-                    create_graph=create_graph, retain_graph=retain_graph)
-    else:
-        gradspred, = grad(output, inputs)
 
+    # gradspred, = grad(output, inputs, grad_outputs=output.data.new(output.shape).fill_(1),
+    #             create_graph=create_graph, retain_graph=retain_graph)
+    
+    gradspred, = grad(output, inputs,
+                create_graph=create_graph, retain_graph=retain_graph)
     
     return gradspred
 

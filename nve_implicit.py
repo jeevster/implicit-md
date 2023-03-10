@@ -154,7 +154,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
 
     '''CORE MD OPERATIONS'''
-    def force_calc(self, radii, normal = True):
+    def force_calc(self, radii):
         
         #Get rij matrix
         r = radii.unsqueeze(0) - radii.unsqueeze(1)
@@ -171,7 +171,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #compute energy
         if self.nn:
             energy = self.model(dists)
-            forces = -compute_grad(inputs=r, output=energy, normal = normal)
+            forces = -compute_grad(inputs=r, output=energy)
             #LJ potential
         else:
             r2i = (self.sigma/dists)**2
@@ -198,7 +198,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         return energy, torch.sum(new_forces, axis = 1)
         
     
-    def forward(self, radii, velocities, forces, normal = True):
+    def forward(self, radii, velocities, forces):
         # Forward process - 1 MD step with Velocity-Verlet integration
         #half-step in velocity
         velocities = velocities + 0.5*self.dt*forces
@@ -212,7 +212,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                     (radii-torch.round(radii)), (radii - torch.floor(radii)-1))
 
         #calculate force at new position
-        _, forces = self.force_calc(radii, normal = normal)
+        _, forces = self.force_calc(radii)
         
         #another half-step in velocity
         velocities = (velocities + 0.5*self.dt*forces) 
@@ -241,16 +241,25 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
 
 
-    #doesn't currently work to define optimality function - getting weird error:  "DispatchKey FuncTorchGradWrapper doesn't correspond to a device"
     def optimality(self):
         # Stationary condition construction for calculating implicit gradient
         print("optimality")
         #Stationarity of the RDF - doesn't change if we do another step of MD
-        #with torch.enable_grad():
+        #Need to compute a residual with respect to every inner param, and each residual has to be the 
+        #same shape as the corresponding parameter. 
+        #TODO: currently, radii, velocity, and rdf are all params - need to make only rdf a parameter so we can 
+        #just compute the rdf residual
         import pdb; pdb.set_trace()
-        forces = self.force_calc(self.radii, normal = False)[1]
-        fixed_point_residual = self.rdf - self(self.radii, self.velocities, forces, normal = False)[-1]
-        return (fixed_point_residual, fixed_point_residual, fixed_point_residual)
+
+        #for some reason, optimality gets called twice, and on the second time the gradients of r are getting detached inside force calc
+        with torch.enable_grad():
+            forces = self.force_calc(self.radii)[1]
+            new_radii, new_velocities, _, new_rdf = self(self.radii, self.velocities, forces)
+        radii_residual  = self.radii - new_radii
+        velocity_residual  = self.velocities - new_velocities
+        rdf_residual = self.rdf - new_rdf
+        
+        return (radii_residual, velocity_residual, rdf_residual)
 
 
     #top level MD simulation code (i.e the "solver") that returns the optimal "parameter" -aka the equilibriated radii
@@ -311,9 +320,9 @@ if __name__ == "__main__":
     simulator = ImplicitMDSimulator(params, model, radii_0, velocities_0, rdf_0)
 
     #load ground truth rdf
-    if params.nn:
-        results_dir = f"n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}"
-        gt_rdf = torch.Tensor(np.load(os.path.join('results', results_dir, "epoch1_rdf_" + results_dir + "_nn=False.npy")))
+    #if params.nn:
+    results_dir = f"n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}"
+    gt_rdf = torch.Tensor(np.load(os.path.join('results', results_dir, "epoch1_rdf_" + results_dir + "_nn=False.npy")))
 
     #initialize outer loop optimizer/scheduler
     optimizer = torch.optim.Adam(list(model.parameters()), lr=1e-3)
@@ -331,9 +340,8 @@ if __name__ == "__main__":
     #compute RDF loss at the end of the trajectory
     outer_loss = (equilibriated_simulator.rdf - gt_rdf).pow(2).mean()
     print("Final RDF Loss: ", outer_loss.item())
-
+    import pdb; pdb.set_trace()
     #compute (implicit) gradient of outer loss wrt model parameters - grads are zero after the first iteration 
-    #import pdb; pdb.set_trace()
     torch.autograd.backward(tensors = outer_loss, inputs = list(model.parameters()))
 
     max_norm = 0
@@ -348,7 +356,7 @@ if __name__ == "__main__":
     scheduler.step(outer_loss)
 
     #reset system back to initial state
-    simulator.reset_system()
+    #simulator.reset_system()
     print('Done!')
     
     

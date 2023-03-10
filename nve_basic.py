@@ -298,7 +298,6 @@ class MDSimulator:
         #compute ideal gas equivalent
         r = np.arange(len(bins))*self.dr
         freqs_id = 4*math.pi*self.rho/3 * ((r+self.dr)**3 - r**3)[0:-1]
-        import pdb; pdb.set_trace()
         gr = freqs/freqs_id
         
 
