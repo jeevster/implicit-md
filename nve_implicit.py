@@ -158,7 +158,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         
         #Get rij matrix
         r = radii.unsqueeze(0) - radii.unsqueeze(1)
-        
+        if not r.requires_grad:
+            r.requires_grad = True
         #Enforce minimum image convention
         r = -1*torch.where(r > 0.5*self.box, r-self.box, torch.where(r<-0.5*self.box, r+self.box, r))
 
@@ -249,7 +250,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #same shape as the corresponding parameter. 
         #TODO: currently, radii, velocity, and rdf are all params - need to make only rdf a parameter so we can 
         #just compute the rdf residual
-        import pdb; pdb.set_trace()
 
         #for some reason, optimality gets called twice, and on the second time the gradients of r are getting detached inside force calc
         with torch.enable_grad():
