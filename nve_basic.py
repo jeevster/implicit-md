@@ -202,7 +202,6 @@ class MDSimulator:
         
          #Get rij matrix
         r = self.radii.unsqueeze(0) - self.radii.unsqueeze(1)
-        import pdb; pdb.set_trace()
         
         #Enforce minimum image convention
         r = -1*torch.where(r > 0.5*self.box, r-self.box, torch.where(r<-0.5*self.box, r+self.box, r))
@@ -285,7 +284,7 @@ class MDSimulator:
 
     def calc_rdf(self):
         #Calculate RDF histogram
-        self.running_dists = torch.cat(self.running_dists).numpy()
+        self.running_dists = torch.cat(self.running_dists).detach().numpy()
         
         range = np.max(self.running_dists)
         
@@ -299,7 +298,7 @@ class MDSimulator:
         #compute ideal gas equivalent
         r = np.arange(len(bins))*self.dr
         freqs_id = 4*math.pi*self.rho/3 * ((r+self.dr)**3 - r**3)[0:-1]
-
+        import pdb; pdb.set_trace()
         gr = freqs/freqs_id
         
 
@@ -337,6 +336,7 @@ class MDSimulator:
          
         # RDF Calculation
         self.gr = self.diff_rdf(self.running_dists)
+        self.hist_gr = self.calc_rdf()
         if self.nn:
             self.optimizer.zero_grad()
             loss = (self.gr - self.gt_rdf).pow(2).mean()
@@ -355,6 +355,7 @@ class MDSimulator:
             self.scheduler.step(loss)
             
         np.save(f"epoch{epoch+1}_rdf_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_nn={self.nn}.npy", self.gr.detach().numpy())
+        np.save(f"epoch{epoch+1}_histrdf_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_nn={self.nn}.npy", self.hist_gr)
 
                 
         self.f.close()            
@@ -371,7 +372,7 @@ if __name__ == "__main__":
     #initialize simulator
     simulator = MDSimulator(params)
 
-    for epoch in range(100):
+    for epoch in range(1):
         print(f"Epoch {epoch+1}")
         simulator.simulate(epoch)
         simulator.reset_system()
