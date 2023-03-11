@@ -50,15 +50,15 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.n_layers = params.n_layers
         self.nonlinear = params.nonlinear
 
-        print("Input parameters")
-        print("Number of particles %d" % self.n_particle)
-        print("Initial temperature %8.8e" % self.temp)
-        print("Box size %8.8e" % self.box)
-        print("epsilon %8.8e" % self.epsilon)
-        print("sigma %8.8e" % self.sigma)
-        print("dt %8.8e" % self.dt)
-        print("Total time %8.8e" % self.t_total)
-        print("Number of steps %d" % self.nsteps)
+        # print("Input parameters")
+        # print("Number of particles %d" % self.n_particle)
+        # print("Initial temperature %8.8e" % self.temp)
+        # print("Box size %8.8e" % self.box)
+        # print("epsilon %8.8e" % self.epsilon)
+        # print("sigma %8.8e" % self.sigma)
+        # print("dt %8.8e" % self.dt)
+        # print("Total time %8.8e" % self.t_total)
+        # print("Number of steps %d" % self.nsteps)
 
         # Constant box properties
         self.vol = self.box**3.0
@@ -241,10 +241,9 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
 
 
-
     def optimality(self):
         # Stationary condition construction for calculating implicit gradient
-        print("optimality")
+        #print("optimality")
         #Stationarity of the RDF - doesn't change if we do another step of MD
         #Need to compute a residual with respect to every inner param, and each residual has to be the 
         #same shape as the corresponding parameter. 
@@ -316,9 +315,6 @@ if __name__ == "__main__":
     velocities_0  = initialize_velocities(params.n_particle, params.temp)
     rdf_0  = diff_rdf(tuple(radii_to_dists(radii_0, params.box)))
 
-    #initialize simulator parameterized by a NN model
-    simulator = ImplicitMDSimulator(params, model, radii_0, velocities_0, rdf_0)
-
     #load ground truth rdf
     #if params.nn:
     results_dir = f"n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}"
@@ -327,36 +323,38 @@ if __name__ == "__main__":
     #initialize outer loop optimizer/scheduler
     optimizer = torch.optim.Adam(list(model.parameters()), lr=1e-3)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=5)
-    
+
 
     #outer training loop
-    # for epoch in range(10):
-    #     print(f"Epoch {epoch+1}")
-    optimizer.zero_grad()
+    for epoch in range(10):
+        print(f"Epoch {epoch+1}")
+        #initialize simulator parameterized by a NN model
+        simulator = ImplicitMDSimulator(params, model, radii_0, velocities_0, rdf_0)
 
-    #run MD simulation to get equilibriated radii
-    equilibriated_simulator = simulator.solve()
+        optimizer.zero_grad()
 
-    #compute RDF loss at the end of the trajectory
-    outer_loss = (equilibriated_simulator.rdf - gt_rdf).pow(2).mean()
-    print("Final RDF Loss: ", outer_loss.item())
-    import pdb; pdb.set_trace()
-    #compute (implicit) gradient of outer loss wrt model parameters - grads are zero after the first iteration 
-    torch.autograd.backward(tensors = outer_loss, inputs = list(model.parameters()))
+        #run MD simulation to get equilibriated radii
+        equilibriated_simulator = simulator.solve()
 
-    max_norm = 0
-    for param in model.parameters():
-        if param.grad is not None:
-            norm = torch.linalg.vector_norm(param.grad, dim=-1).max()
-            if  norm > max_norm:
-                max_norm = norm
-    print("Max norm: ", max_norm)
+        #compute RDF loss at the end of the trajectory
+        outer_loss = (equilibriated_simulator.rdf - gt_rdf).pow(2).mean()
+        print("Final RDF Loss: ", outer_loss.item())
+        #compute (implicit) gradient of outer loss wrt model parameters - grads are zero after the first iteration 
+        torch.autograd.backward(tensors = outer_loss, inputs = list(model.parameters()))
 
-    optimizer.step()
-    scheduler.step(outer_loss)
+        max_norm = 0
+        for param in model.parameters():
+            if param.grad is not None:
+                norm = torch.linalg.vector_norm(param.grad, dim=-1).max()
+                if  norm > max_norm:
+                    max_norm = norm
+        print("Max norm: ", max_norm)
 
-    #reset system back to initial state
-    #simulator.reset_system()
+        optimizer.step()
+        scheduler.step(outer_loss)
+
+        #reset system back to initial state
+        #simulator.reset_system()
     print('Done!')
     
     
