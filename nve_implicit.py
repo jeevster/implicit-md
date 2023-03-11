@@ -278,7 +278,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         
         #compute final rdf averaged over entire trajectory
         #self.final_rdf = self.diff_rdf(self.running_dists)
-        #np.save(f"epoch{epoch+1}_rdf_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_nn={self.nn}.npy", self.final_rdf.detach().numpy())
+        save_dir = f"IMPLICIT_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}"
+        np.save(os.path.join('results', save_dir, f"rdf_epoch{epoch+1}"), self.rdf.detach().numpy())
         #np.save(f"diffrdf_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_nn={self.nn}.npy", np.array(self.running_diffs))
         self.f.close()
         return self
