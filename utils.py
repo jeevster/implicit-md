@@ -26,7 +26,7 @@ def radii_to_dists(radii, box_size):
 # Initialize configuration
 # Radii
 # FCC lattice
-def fcc_positions(n_particle, box):
+def fcc_positions(n_particle, box, device):
     
     # round-up to nearest fcc box
     cells = np.ceil((n_particle/4.0)**(1.0/3.0)).astype(np.int32) #cells in each dimension (assume 4 particles per unit cell)
@@ -40,7 +40,7 @@ def fcc_positions(n_particle, box):
             radius_[i,:] = radius_[i,:]*cell_size#/self.box # normalize to [0,1]
             i = i+1
             if(i==n_particle): #  break when we have n_particle in our box
-                return torch.Tensor(radius_ - box/2) # convert to -L/2 to L/2 space for ease with PBC
+                return torch.Tensor(radius_ - box/2).to(device) # convert to -L/2 to L/2 space for ease with PBC
 
 
    

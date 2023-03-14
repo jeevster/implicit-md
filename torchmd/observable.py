@@ -83,11 +83,16 @@ class DifferentiableRDF(torch.nn.Module):
         range =  params.box #torch.max(self.running_dists)
         nbins = int(range/params.dr)
 
+        #GPU
+        try:
+            self.device = torch.device(torch.cuda.current_device())
+        except:
+            self.device = "cpu"
 
         V, vol_bins, bins = generate_vol_bins(start, range, nbins, dim=3)
 
         self.V = V
-        self.vol_bins = vol_bins
+        self.vol_bins = vol_bins.to(self.device)
         #self.device = system.device
         self.bins = bins
 
@@ -97,7 +102,7 @@ class DifferentiableRDF(torch.nn.Module):
             n_gaussians=nbins,
             width=params.gaussian_width,
             trainable=False
-        )
+        ).to(self.device)
 
     def forward(self, running_dists):
         running_dists = torch.cat(running_dists)

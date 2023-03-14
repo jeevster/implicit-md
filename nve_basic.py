@@ -8,6 +8,7 @@ from scipy.stats import maxwell
 from YParams import YParams
 import argparse
 import os
+import time
 from tqdm import tqdm
 import cProfile as profile
 import pstats
@@ -340,8 +341,12 @@ class MDSimulator:
             self.optimizer.zero_grad()
             loss = (self.gr - self.gt_rdf).pow(2).mean()
             print(f"Loss: {loss}")
-            
+
+            start = time.time()
             loss.backward()
+            end = time.time()
+
+            print("gradient calculation time (s): ",  end - start)
             max_norm = 0
             for param in self.model.parameters():
                 if param.grad is not None:

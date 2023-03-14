@@ -16,6 +16,9 @@ from torchmd.potentials import ExcludedVolume, LennardJones, LJFamily,  pairMLP
 from torchmd.observable import rdf, generate_vol_bins, DifferentiableRDF
 import torchopt
 from torchopt.nn import ImplicitMetaGradientModule
+import time
+from torch.profiler import profile, record_function, ProfilerActivity
+
 
 from utils import radii_to_dists, fcc_positions, initialize_velocities
 
@@ -29,7 +32,7 @@ def backward_hook(module, grad_input, grad_output):
 class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.linear_solve.solve_normal_cg(maxiter=5, atol=0)):
     def __init__(self, params, model, radii_0, velocities_0, rdf_0):
         super(ImplicitMDSimulator, self).__init__()
-        # Initial parameters
+        # Initial MD parameters
         np.random.seed(seed=params.seed)
         self.n_particle = params.n_particle
         self.temp = params.temp
@@ -64,12 +67,18 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.vol = self.box**3.0
         self.rho = self.n_particle/self.vol
 
+        #GPU
+        try:
+            self.device = torch.device(torch.cuda.current_device())
+        except:
+            self.device = "cpu"
+
         #Register inner parameters
-        self.model = model
-        model.train()
-        self.radii = nn.Parameter(radii_0.clone().detach_(), requires_grad=True)
-        self.velocities = nn.Parameter(velocities_0.clone().detach_(), requires_grad=True)
-        self.rdf = nn.Parameter(rdf_0.clone().detach_(), requires_grad=True)
+        self.model = model.to(self.device)
+        #model.train()
+        self.radii = nn.Parameter(radii_0.clone().detach_(), requires_grad=True).to(self.device)
+        self.velocities = nn.Parameter(velocities_0.clone().detach_(), requires_grad=True).to(self.device)
+        self.rdf = nn.Parameter(rdf_0.clone().detach_(), requires_grad=True).to(self.device)
 
 
         #register backwards hook for debugging
@@ -87,28 +96,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #initial_props = self.calc_properties()
         self.f = open("log.txt", "a+")
 
-        
-
-        
-
-    def reset_system(self):
-        #Initialize positions
-        self.radii = nn.Parameter(self.fcc_positions().clone().detach_(), requires_grad=True)
-        assert(torch.max(self.radii) <=self.box/2 and torch.min(self.radii) >= -1*self.box/2) #assert normalization conditions
-        self.running_dists = []
-
-        #initialize velocities
-        self.velocities = nn.Parameter(self.initialize_velocities().clone().detach_(), requires_grad=True)
-
-        
-        #File dump stuff
-        self.t = gsd.hoomd.open(name='test.gsd', mode='wb') 
-        self.n_dump = params.n_dump # dump for configuration
-        
-        #check if inital momentum is zero
-        #initial_props = self.calc_properties()
-        self.f = open("log.txt", "a+")
-        #print("Initial: ", initial_props, file = self.f)
 
     def check_symmetric(self, a, mode, tol=1e-4):
         if mode == 'opposite':
@@ -171,9 +158,16 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
         #compute energy
         if self.nn:
+            #with profile(activities=[ProfilerActivity.CUDA], record_shapes=True, profile_memory = True) as prof:
+                #with record_function("energy_inference"):
             energy = self.model(dists)
+                #with record_function("force_inference"):
             forces = -compute_grad(inputs=r, output=energy)
-            #LJ potential
+            #print(prof.key_averages().table(sort_by="cuda_memory_usage"))
+            #prof.export_chrome_trace("trace.json")
+
+        
+        #LJ potential
         else:
             r2i = (self.sigma/dists)**2
             r6i = r2i**3
@@ -185,7 +179,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #insert 0s back in diagonal entries of force matrix
         new_forces = torch.zeros((dists.shape[0], dists.shape[0], 3))
         for i in range(dists.shape[0]):
-            new_forces[i] = torch.cat(([forces[i, :i], torch.zeros((1,3)), forces[i, i:]]), dim=0)
+            new_forces[i] = torch.cat(([forces[i, :i], torch.zeros((1,3)).to(self.device), forces[i, i:]]), dim=0)
         # f = new_forces.detach().numpy()
 
         # #Ensure symmetries
@@ -196,7 +190,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
        
                 
         #sum forces across particles
-        return energy, torch.sum(new_forces, axis = 1)
+        return energy, torch.sum(new_forces, axis = 1).to(self.device)
         
     
     def forward(self, radii, velocities, forces):
@@ -213,14 +207,14 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                     (radii-torch.round(radii)), (radii - torch.floor(radii)-1))
 
         #calculate force at new position
-        _, forces = self.force_calc(radii)
+        _, forces = self.force_calc(radii.to(self.device))
         
         #another half-step in velocity
         velocities = (velocities + 0.5*self.dt*forces) 
         #props = self.calc_properties()
 
         new_dists = radii_to_dists(radii, self.box)
-        new_rdf = self.diff_rdf(tuple(new_dists)) #calculate the RDF from a single frame
+        new_rdf = self.diff_rdf(tuple(new_dists.to(self.device))) #calculate the RDF from a single frame
         # try:
         #     diff = (torch.abs(new_rdf - self.calc_rdf)/ self.calc_rdf).mean()
         #     print("mean relative difference in rdf: ", diff)
@@ -279,7 +273,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #compute final rdf averaged over entire trajectory
         #self.final_rdf = self.diff_rdf(self.running_dists)
         save_dir = f"IMPLICIT_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}"
-        np.save(os.path.join('results', save_dir, f"rdf_epoch{epoch+1}"), self.rdf.detach().numpy())
+        np.save(os.path.join('results', save_dir, f"rdf_epoch{epoch+1}"), self.rdf.cpu().detach().numpy())
         #np.save(f"diffrdf_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_nn={self.nn}.npy", np.array(self.running_diffs))
         self.f.close()
         return self
@@ -297,6 +291,13 @@ if __name__ == "__main__":
     #initialize RDF calculator
     diff_rdf = DifferentiableRDF(params)
 
+    #GPU
+    try:
+        device = torch.device(torch.cuda.current_device())
+    except:
+        device = "cpu"
+
+
     #initialize model
     mlp_params = {'n_gauss': int(params.cutoff//params.gaussian_width), 
                 'r_start': 0.0,
@@ -312,9 +313,9 @@ if __name__ == "__main__":
     prior = LJFamily(epsilon=params.epsilon, sigma=params.sigma, rep_pow=6, attr_pow=0)
 
     model = Stack({'nn': NN, 'prior': prior})
-    radii_0 = fcc_positions(params.n_particle, params.box)
+    radii_0 = fcc_positions(params.n_particle, params.box, device)
     velocities_0  = initialize_velocities(params.n_particle, params.temp)
-    rdf_0  = diff_rdf(tuple(radii_to_dists(radii_0, params.box)))
+    rdf_0  = diff_rdf(tuple(radii_to_dists(radii_0.to(device), params.box)))
 
     #load ground truth rdf
     #if params.nn:
@@ -335,13 +336,19 @@ if __name__ == "__main__":
         optimizer.zero_grad()
 
         #run MD simulation to get equilibriated radii
+        
         equilibriated_simulator = simulator.solve()
 
+
+
         #compute RDF loss at the end of the trajectory
-        outer_loss = (equilibriated_simulator.rdf - gt_rdf).pow(2).mean()
+        outer_loss = (equilibriated_simulator.rdf.cpu() - gt_rdf).pow(2).mean()
         print("Final RDF Loss: ", outer_loss.item())
         #compute (implicit) gradient of outer loss wrt model parameters - grads are zero after the first iteration 
+        start = time.time()
         torch.autograd.backward(tensors = outer_loss, inputs = list(model.parameters()))
+        end = time.time()
+        print("gradient calculation time (s): ",  end - start)
 
         max_norm = 0
         for param in model.parameters():
@@ -349,7 +356,7 @@ if __name__ == "__main__":
                 norm = torch.linalg.vector_norm(param.grad, dim=-1).max()
                 if  norm > max_norm:
                     max_norm = norm
-        print("Max norm: ", max_norm)
+        print("Max norm: ", max_norm.item())
 
         optimizer.step()
         scheduler.step(outer_loss)
