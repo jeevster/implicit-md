@@ -93,10 +93,10 @@ class MDSimulator:
         self.diff_rdf = DifferentiableRDF(params, self.device)
         self.diff_rdf_cpu = DifferentiableRDF(params, "cpu")
 
-        #load ground truth rdf
+        #load ground truth rdf (load from implicit dir for now for consistency)
         if self.nn:
             self.results_dir = f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}"
-            self.gt_rdf = torch.Tensor(np.load(os.path.join('results', self.results_dir, "epoch1_rdf_nn=False.npy"))).to(self.device)
+            self.gt_rdf = torch.Tensor(np.load(os.path.join('results', "IMPLICIT_"+self.results_dir, "rdf_epoch1_nn=False.npy"))).to(self.device)
 
 
         self.reset_system()
@@ -285,6 +285,7 @@ class MDSimulator:
     
         print("Start MD trajectory", file=self.f)
         
+        start = time.time()
         # Velocity Verlet integrator
         for step in tqdm(range(self.nsteps)):
             
@@ -308,11 +309,14 @@ class MDSimulator:
                 self.t.append(self.create_frame(frame = step/self.n_dump))
                 #append dists to running_dists for RDF calculation (remove diagonal entries)
                 self.running_dists.append(self.dists.cpu().detach())
-            
-         
+
+        end = time.time()
+        sim_time = end-start
+        print("simulation time (s): ",  sim_time)
+
         # RDF Calculation
         if self.nn: #compute RDF from final frame only
-            self.gr = self.diff_rdf(tuple(radii_to_dists(radii, self.box)))
+            self.gr = self.diff_rdf(tuple(radii_to_dists(self.radii, self.box)))
         else: # compute RDF from entire trajectory except for burn-in (do it on CPU to avoid memory issues)
             length = len(self.running_dists)
             self.gr = self.diff_rdf_cpu(self.running_dists[int(self.burn_in_frac*length):])
@@ -326,8 +330,8 @@ class MDSimulator:
             start = time.time()
             loss.backward()
             end = time.time()
-
-            print("gradient calculation time (s): ",  end - start)
+            grad_time = end - start
+            print("gradient calculation time (s): ",  grad_time)
             max_norm = 0
             for param in self.model.parameters():
                 if param.grad is not None:
@@ -340,14 +344,15 @@ class MDSimulator:
             self.scheduler.step(loss)
         
         #logging
-        save_dir = f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}"
-        os.makedirs(os.path.join('results', save_dir), exist_ok = True)
+        self.save_dir = f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}"
+        os.makedirs(os.path.join('results', self.save_dir), exist_ok = True)
         add = "_nn=False.npy" if not self.nn else ".npy"
-        np.save(os.path.join('results', save_dir, f"rdf_epoch{epoch+1}" + add), self.gr.cpu().detach().numpy())
-        shutil.copy("config.yaml", os.path.join('results', save_dir))
+        np.save(os.path.join('results', self.save_dir, f"rdf_epoch{epoch+1}" + add), self.gr.cpu().detach().numpy())
+        shutil.copy("config.yaml", os.path.join('results', self.save_dir))
 
                 
-        self.f.close()            
+        self.f.close()
+        return loss.item(), sim_time, grad_time, max_norm.item()            
 
 if __name__ == "__main__":
 
@@ -364,10 +369,28 @@ if __name__ == "__main__":
     if not params.nn:
         params.n_epochs = 1
 
+    losses = []
+    grad_times = []
+    sim_times = []
+    grad_norms = []
     for epoch in range(params.n_epochs):
         print(f"Epoch {epoch+1}")
-        simulator.simulate(epoch)
+        loss, sim_time, grad_time, max_norm = simulator.simulate(epoch)
+        losses.append(loss)
+        sim_times.append(sim_time)
+        grad_times.append(grad_time)
+        grad_norms.append(max_norm)
         simulator.reset_system()
+
+    #log losses
+    if params.nn:
+        stats_write_file = os.path.join('results', simulator.save_dir, 'stats.txt')
+        with open(stats_write_file, "w") as output:
+            output.write("Losses: " + str(losses) + "\n")
+            output.write("Simulation times: " + str(sim_times) + "\n")
+            output.write("Gradient calculation times: " + str(grad_times) + "\n")
+            output.write("Max gradient norms: " + str(grad_norms))
+
     print('Done!')
     
     

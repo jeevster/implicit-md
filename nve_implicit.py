@@ -277,12 +277,12 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         length = len(self.running_dists)
         save_rdf = self.diff_rdf_cpu(self.running_dists[int(self.burn_in_frac*length):]) if not self.nn else self.rdf
 
-        save_dir = f"IMPLICIT_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}"
-        os.makedirs(os.path.join('results', save_dir), exist_ok = True)
+        self.save_dir = f"IMPLICIT_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}"
+        os.makedirs(os.path.join('results', self.save_dir), exist_ok = True)
         add = "_nn=False.npy" if not self.nn else ".npy"
             
-        np.save(os.path.join('results', save_dir, f"rdf_epoch{epoch+1}" + add), self.rdf.cpu().detach().numpy())
-        shutil.copy("config.yaml", os.path.join('results', save_dir))
+        np.save(os.path.join('results', self.save_dir, f"rdf_epoch{epoch+1}" + add), self.rdf.cpu().detach().numpy())
+        shutil.copy("config.yaml", os.path.join('results', self.save_dir))
 
         self.f.close()
         return self
@@ -330,8 +330,8 @@ if __name__ == "__main__":
 
     #load ground truth rdf
     if params.nn:
-        results_dir = f"n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}"
-        gt_rdf = torch.Tensor(np.load(os.path.join('results', results_dir, "epoch1_rdf_nn=False.npy"))).to(device)
+        results_dir = f"IMPLICIT_n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}"
+        gt_rdf = torch.Tensor(np.load(os.path.join('results', results_dir, "rdf_epoch1_nn=False.npy"))).to(device)
 
     #initialize outer loop optimizer/scheduler
     optimizer = torch.optim.Adam(list(model.parameters()), lr=1e-3)
@@ -341,6 +341,10 @@ if __name__ == "__main__":
         params.n_epochs = 1
 
     #outer training loop
+    losses = []
+    grad_times = []
+    sim_times = []
+    grad_norms = []
     for epoch in range(params.n_epochs):
         print(f"Epoch {epoch+1}")
         #initialize simulator parameterized by a NN model
@@ -349,7 +353,11 @@ if __name__ == "__main__":
         optimizer.zero_grad()
 
         #run MD simulation to get equilibriated radii
+        start = time.time()
         equilibriated_simulator = simulator.solve()
+        end = time.time()
+        sim_time = end-start
+        print("MD simulation time (s): ",  sim_time)
         
         #compute RDF loss at the end of the trajectory
         if params.nn:
@@ -359,7 +367,8 @@ if __name__ == "__main__":
             start = time.time()
             torch.autograd.backward(tensors = outer_loss, inputs = list(model.parameters()))
             end = time.time()
-            print("gradient calculation time (s): ",  end - start)
+            grad_time = end-start
+            print("gradient calculation time (s): ",  grad_time)
 
             max_norm = 0
             for param in model.parameters():
@@ -374,6 +383,18 @@ if __name__ == "__main__":
 
             optimizer.step()
             scheduler.step(outer_loss)
+            #log stats
+            losses.append(outer_loss.item())
+            sim_times.append(sim_time)
+            grad_times.append(grad_time)
+            grad_norms.append(max_norm.item())
+            
+    stats_write_file = os.path.join('results', simulator.save_dir, 'stats.txt')
+    with open(stats_write_file, "w") as output:
+        output.write("Losses: " + str(losses) + "\n")
+        output.write("Simulation times: " +  str(sim_times) + "\n")
+        output.write("Gradient calculation times: " +  str(grad_times) + "\n")
+        output.write("Max gradient norms: " + str(grad_norms))
 
     print('Done!')
     
