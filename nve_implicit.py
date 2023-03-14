@@ -27,7 +27,7 @@ def backward_hook(module, grad_input, grad_output):
 
 
 class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.linear_solve.solve_normal_cg(maxiter=5, atol=0)):
-    def __init__(self, params, model, radii_0, velocities_0, rdf_0):
+    def __init__(self, params, model, rdf_0):
         super(ImplicitMDSimulator, self).__init__()
         # Initial parameters
         np.random.seed(seed=params.seed)
@@ -67,8 +67,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #Register inner parameters
         self.model = model
         model.train()
-        self.radii = nn.Parameter(radii_0.clone().detach_(), requires_grad=True)
-        self.velocities = nn.Parameter(velocities_0.clone().detach_(), requires_grad=True)
+        #self.radii = nn.Parameter(radii_0.clone().detach_(), requires_grad=True)
+        #self.velocities = nn.Parameter(velocities_0.clone().detach_(), requires_grad=True)
         self.rdf = nn.Parameter(rdf_0.clone().detach_(), requires_grad=True)
 
 
@@ -253,29 +253,30 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #for some reason, optimality gets called twice, and on the second time the gradients of r are getting detached inside force calc
         with torch.enable_grad():
             forces = self.force_calc(self.radii)[1]
-            new_radii, new_velocities, _, new_rdf = self(self.radii, self.velocities, forces)
-        radii_residual  = self.radii - new_radii
-        velocity_residual  = self.velocities - new_velocities
+            _, _, _, new_rdf = self(self.radii, self.velocities, forces)
         rdf_residual = self.rdf - new_rdf
         
-        return (radii_residual, velocity_residual, rdf_residual)
+        return rdf_residual
 
 
     #top level MD simulation code (i.e the "solver") that returns the optimal "parameter" -aka the equilibriated radii
     def solve(self):
         #self.running_diffs = []
         with torch.enable_grad():
-            #Initialize forces/potential of starting configuration
-            _, forces = self.force_calc(self.radii)
+            #Initialize  starting configuration
+            radii = fcc_positions(self.n_particle, self.box)
+            velocities  = initialize_velocities(self.n_particle, self.temp)
+            _, forces = self.force_calc(radii)
             #Run MD
             print("Start MD trajectory", file=self.f)
             for step in tqdm(range(self.nsteps)):
                 self.step = step
-                radii, velocities, forces, rdf = self(self.radii, self.velocities, forces)
+                radii, velocities, forces, rdf = self(radii, velocities, forces)
                 self.radii = radii
-                self.velocities  = velocities
+                self.velocities = velocities
                 self.rdf = rdf
-        
+            import pdb; pdb.set_trace()
+            
         #compute final rdf averaged over entire trajectory
         #self.final_rdf = self.diff_rdf(self.running_dists)
         save_dir = f"IMPLICIT_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}"
@@ -312,9 +313,8 @@ if __name__ == "__main__":
     prior = LJFamily(epsilon=params.epsilon, sigma=params.sigma, rep_pow=6, attr_pow=0)
 
     model = Stack({'nn': NN, 'prior': prior})
-    radii_0 = fcc_positions(params.n_particle, params.box)
-    velocities_0  = initialize_velocities(params.n_particle, params.temp)
-    rdf_0  = diff_rdf(tuple(radii_to_dists(radii_0, params.box)))
+    radii = fcc_positions(params.n_particle, params.box)
+    rdf_0  = diff_rdf(tuple(radii_to_dists(radii, params.box)))
 
     #load ground truth rdf
     #if params.nn:
@@ -330,7 +330,7 @@ if __name__ == "__main__":
     for epoch in range(10):
         print(f"Epoch {epoch+1}")
         #initialize simulator parameterized by a NN model
-        simulator = ImplicitMDSimulator(params, model, radii_0, velocities_0, rdf_0)
+        simulator = ImplicitMDSimulator(params, model, rdf_0)
 
         optimizer.zero_grad()
 
