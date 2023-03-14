@@ -325,7 +325,7 @@ if __name__ == "__main__":
     #load ground truth rdf
     #if params.nn:
     results_dir = f"n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}"
-    gt_rdf = torch.Tensor(np.load(os.path.join('results', results_dir, "epoch1_rdf_" + results_dir + "_nn=False.npy")))
+    gt_rdf = torch.Tensor(np.load(os.path.join('results', results_dir, "epoch1_rdf_" + results_dir + "_nn=False.npy"))).to(device)
 
     #initialize outer loop optimizer/scheduler
     optimizer = torch.optim.Adam(list(model.parameters()), lr=1e-3)
@@ -344,11 +344,8 @@ if __name__ == "__main__":
         
         equilibriated_simulator = simulator.solve()
         
-
-
-
         #compute RDF loss at the end of the trajectory
-        outer_loss = (equilibriated_simulator.rdf.cpu() - gt_rdf).pow(2).mean()
+        outer_loss = (equilibriated_simulator.rdf - gt_rdf).pow(2).mean()
         print("Final RDF Loss: ", outer_loss.item())
         #compute (implicit) gradient of outer loss wrt model parameters - grads are zero after the first iteration 
         start = time.time()
