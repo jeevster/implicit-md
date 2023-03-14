@@ -8,7 +8,6 @@ from YParams import YParams
 import argparse
 import os
 from tqdm import tqdm
-import cProfile as profile
 import pstats
 import pdb
 from torchmd.interface import GNNPotentials, PairPotentials, Stack
@@ -19,6 +18,7 @@ from torchopt.nn import ImplicitMetaGradientModule
 import time
 from torch.profiler import profile, record_function, ProfilerActivity
 import gc
+import shutil
 
 
 from utils import radii_to_dists, fcc_positions, initialize_velocities
@@ -41,6 +41,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.t_total = params.t_total
         self.dr = params.dr
         self.nsteps = np.rint(self.t_total/self.dt).astype(np.int32)
+        self.burn_in_frac = params.burn_in_frac
         self.nn = params.nn
 
         self.cutoff = params.cutoff
@@ -82,7 +83,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #     module.register_backward_hook(backward_hook)
 
         #define differentiable rdf function
-        self.diff_rdf = DifferentiableRDF(params)
+        self.diff_rdf = DifferentiableRDF(params, self.device)
+        self.diff_rdf_cpu = DifferentiableRDF(params, "cpu")
 
         #File dump stuff
         self.t = gsd.hoomd.open(name='test.gsd', mode='wb') 
@@ -155,14 +157,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
             #compute energy
             if self.nn:
-                #with profile(activities=[ProfilerActivity.CUDA], record_shapes=True, profile_memory = True) as prof:
-                    #with record_function("energy_inference"):
                 energy = self.model(dists)
-                    #with record_function("force_inference"):
                 forces = -compute_grad(inputs=r, output=energy)
-                #print(prof.key_averages().table(sort_by="cuda_memory_usage"))
-                #prof.export_chrome_trace("trace.json")
-
             
             #LJ potential
             else:
@@ -180,7 +176,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         # f = new_forces.detach().numpy()
 
         # #Ensure symmetries
-        # assert(not torch.any(torch.isnan(new_forces)))
+        assert(not torch.any(torch.isnan(new_forces)))
         # assert self.check_symmetric(f[:, :, 0], mode = 'opposite')
         # assert self.check_symmetric(f[:, :, 1], mode = 'opposite')
         # assert self.check_symmetric(f[:, :, 2], mode = 'opposite')
@@ -221,11 +217,12 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #calc_rdf = new_rdf
 
         # dump frame
-        #if self.step%self.n_dump == 0:
+        if self.step%self.n_dump == 0:
             #print(self.step, props, file=self.f)
-            #self.t.append(self.create_frame(frame = self.step/self.n_dump))
+            self.t.append(self.create_frame(frame = self.step/self.n_dump))
             #append dists to running_dists for RDF calculation (remove diagonal entries)
-            #self.running_dists.append(new_dists)
+            if not self.nn:
+                self.running_dists.append(new_dists.cpu().detach())
             #np.save(f"inst_rdf_nn/t={self.step}_inst_rdf_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_nn={self.nn}.npy", self.calc_rdf.detach().numpy())
 
         return radii, velocities, forces, new_rdf # return the new distance matrix 
@@ -254,7 +251,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
     #top level MD simulation code (i.e the "solver") that returns the optimal "parameter" -aka the equilibriated radii
     def solve(self):
-        #self.running_diffs = []
+        self.running_dists = []
         
         #Initialize forces/potential of starting configuration
         with torch.no_grad():
@@ -275,11 +272,18 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #             print(type(obj), obj.size())
         #     except:
         #         pass
-        #compute final rdf averaged over entire trajectory
-        #self.final_rdf = self.diff_rdf(self.running_dists)
+
+        #compute ground truth rdf over entire trajectory (do it on CPU to avoid memory issues)
+        length = len(self.running_dists)
+        save_rdf = self.diff_rdf_cpu(self.running_dists[int(self.burn_in_frac*length):]) if not self.nn else self.rdf
+
         save_dir = f"IMPLICIT_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}"
-        np.save(os.path.join('results', save_dir, f"rdf_epoch{epoch+1}"), self.rdf.cpu().detach().numpy())
-        #np.save(f"diffrdf_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_nn={self.nn}.npy", np.array(self.running_diffs))
+        os.makedirs(os.path.join('results', save_dir), exist_ok = True)
+        add = "_nn=False.npy" if not self.nn else ".npy"
+            
+        np.save(os.path.join('results', save_dir, f"rdf_epoch{epoch+1}" + add), self.rdf.cpu().detach().numpy())
+        shutil.copy("config.yaml", os.path.join('results', save_dir))
+
         self.f.close()
         return self
 
@@ -293,14 +297,16 @@ if __name__ == "__main__":
     args = parser.parse_args()
     params = YParams(os.path.abspath(args.yaml_config), args.config)
 
-    #initialize RDF calculator
-    diff_rdf = DifferentiableRDF(params)
+    
 
     #GPU
     try:
         device = torch.device(torch.cuda.current_device())
     except:
         device = "cpu"
+
+    #initialize RDF calculator
+    diff_rdf = DifferentiableRDF(params, device)
 
 
     #initialize model
@@ -323,17 +329,19 @@ if __name__ == "__main__":
     rdf_0  = diff_rdf(tuple(radii_to_dists(radii_0.to(device), params.box)))
 
     #load ground truth rdf
-    #if params.nn:
-    results_dir = f"n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}"
-    gt_rdf = torch.Tensor(np.load(os.path.join('results', results_dir, "epoch1_rdf_" + results_dir + "_nn=False.npy"))).to(device)
+    if params.nn:
+        results_dir = f"n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}"
+        gt_rdf = torch.Tensor(np.load(os.path.join('results', results_dir, "epoch1_rdf_nn=False.npy"))).to(device)
 
     #initialize outer loop optimizer/scheduler
     optimizer = torch.optim.Adam(list(model.parameters()), lr=1e-3)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=5)
 
+    if not params.nn:
+        params.n_epochs = 1
 
     #outer training loop
-    for epoch in range(1):
+    for epoch in range(params.n_epochs):
         print(f"Epoch {epoch+1}")
         #initialize simulator parameterized by a NN model
         simulator = ImplicitMDSimulator(params, model, radii_0, velocities_0, rdf_0)
@@ -341,34 +349,32 @@ if __name__ == "__main__":
         optimizer.zero_grad()
 
         #run MD simulation to get equilibriated radii
-        
         equilibriated_simulator = simulator.solve()
         
         #compute RDF loss at the end of the trajectory
-        outer_loss = (equilibriated_simulator.rdf - gt_rdf).pow(2).mean()
-        print("Final RDF Loss: ", outer_loss.item())
-        #compute (implicit) gradient of outer loss wrt model parameters - grads are zero after the first iteration 
-        start = time.time()
-        torch.autograd.backward(tensors = outer_loss, inputs = list(model.parameters()))
-        end = time.time()
-        print("gradient calculation time (s): ",  end - start)
+        if params.nn:
+            outer_loss = (equilibriated_simulator.rdf - gt_rdf).pow(2).mean()
+            print("Final RDF Loss: ", outer_loss.item())
+            #compute (implicit) gradient of outer loss wrt model parameters - grads are zero after the first iteration 
+            start = time.time()
+            torch.autograd.backward(tensors = outer_loss, inputs = list(model.parameters()))
+            end = time.time()
+            print("gradient calculation time (s): ",  end - start)
 
-        max_norm = 0
-        for param in model.parameters():
-            if param.grad is not None:
-                norm = torch.linalg.vector_norm(param.grad, dim=-1).max()
-                if  norm > max_norm:
-                    max_norm = norm
-        try:
-            print("Max norm: ", max_norm.item())
-        except AttributeError:
-            print("Max norm: ", max_norm)
+            max_norm = 0
+            for param in model.parameters():
+                if param.grad is not None:
+                    norm = torch.linalg.vector_norm(param.grad, dim=-1).max()
+                    if  norm > max_norm:
+                        max_norm = norm
+            try:
+                print("Max norm: ", max_norm.item())
+            except AttributeError:
+                print("Max norm: ", max_norm)
 
-        optimizer.step()
-        scheduler.step(outer_loss)
+            optimizer.step()
+            scheduler.step(outer_loss)
 
-        #reset system back to initial state
-        #simulator.reset_system()
     print('Done!')
     
     

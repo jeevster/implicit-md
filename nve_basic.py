@@ -10,12 +10,12 @@ import argparse
 import os
 import time
 from tqdm import tqdm
-import cProfile as profile
 import pstats
-import pdb
 from torchmd.interface import GNNPotentials, PairPotentials, Stack
 from torchmd.potentials import ExcludedVolume, LennardJones, LJFamily,  pairMLP
 from torchmd.observable import rdf, generate_vol_bins, DifferentiableRDF
+import shutil
+from utils import radii_to_dists
 
 
 
@@ -34,13 +34,16 @@ class MDSimulator:
         self.t_total = params.t_total
         self.dr = params.dr
         self.nsteps = np.rint(self.t_total/self.dt).astype(np.int32)
+        self.burn_in_frac = params.burn_in_frac
         self.nn = params.nn
+
 
         self.cutoff = params.cutoff
         self.gaussian_width = params.gaussian_width
         self.n_width = params.n_width
         self.n_layers = params.n_layers
         self.nonlinear = params.nonlinear
+        
 
         # print("Input parameters")
         # print("Number of particles %d" % self.n_particle)
@@ -87,12 +90,13 @@ class MDSimulator:
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', factor=0.2, patience=5)
 
         #define differentiable rdf function
-        self.diff_rdf = DifferentiableRDF(params)
+        self.diff_rdf = DifferentiableRDF(params, self.device)
+        self.diff_rdf_cpu = DifferentiableRDF(params, "cpu")
 
         #load ground truth rdf
         if self.nn:
             self.results_dir = f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}"
-            self.gt_rdf = torch.Tensor(np.load(os.path.join('results', self.results_dir, "epoch1_rdf_" + self.results_dir + "_nn=False.npy"))).to(self.device)
+            self.gt_rdf = torch.Tensor(np.load(os.path.join('results', self.results_dir, "epoch1_rdf_nn=False.npy"))).to(self.device)
 
 
         self.reset_system()
@@ -115,6 +119,7 @@ class MDSimulator:
         #File dump stuff
         self.t = gsd.hoomd.open(name='test.gsd', mode='wb') 
         self.n_dump = params.n_dump # dump for configuration
+        
         
         #check if inital momentum is zero
         initial_props = self.calc_properties()
@@ -302,12 +307,17 @@ class MDSimulator:
                 print(step, props, file=self.f)
                 self.t.append(self.create_frame(frame = step/self.n_dump))
                 #append dists to running_dists for RDF calculation (remove diagonal entries)
-                self.running_dists.append(self.dists)
+                self.running_dists.append(self.dists.cpu().detach())
             
          
         # RDF Calculation
-        self.gr = self.diff_rdf(self.running_dists)
-        self.hist_gr = self.calc_rdf()
+        if self.nn: #compute RDF from final frame only
+            self.gr = self.diff_rdf(tuple(radii_to_dists(radii, self.box)))
+        else: # compute RDF from entire trajectory except for burn-in (do it on CPU to avoid memory issues)
+            length = len(self.running_dists)
+            self.gr = self.diff_rdf_cpu(self.running_dists[int(self.burn_in_frac*length):])
+
+        #self.hist_gr = self.calc_rdf()
         if self.nn:
             self.optimizer.zero_grad()
             loss = (self.gr - self.gt_rdf).pow(2).mean()
@@ -328,9 +338,13 @@ class MDSimulator:
             
             self.optimizer.step()
             self.scheduler.step(loss)
-            
-        np.save(f"epoch{epoch+1}_rdf_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_nn={self.nn}.npy", self.gr.cpu().detach().numpy())
-        np.save(f"epoch{epoch+1}_histrdf_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_nn={self.nn}.npy", self.hist_gr)
+        
+        #logging
+        save_dir = f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}"
+        os.makedirs(os.path.join('results', save_dir), exist_ok = True)
+        add = "_nn=False.npy" if not self.nn else ".npy"
+        np.save(os.path.join('results', save_dir, f"rdf_epoch{epoch+1}" + add), self.gr.cpu().detach().numpy())
+        shutil.copy("config.yaml", os.path.join('results', save_dir))
 
                 
         self.f.close()            
@@ -347,7 +361,10 @@ if __name__ == "__main__":
     #initialize simulator
     simulator = MDSimulator(params)
 
-    for epoch in range(1):
+    if not params.nn:
+        params.n_epochs = 1
+
+    for epoch in range(params.n_epochs):
         print(f"Epoch {epoch+1}")
         simulator.simulate(epoch)
         simulator.reset_system()

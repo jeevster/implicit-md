@@ -77,17 +77,14 @@ class rdf(Observable):
 
 '''Sanjeev's DiffRDF implementation - doesn't use system stuff'''
 class DifferentiableRDF(torch.nn.Module):
-    def __init__(self, params):
+    def __init__(self, params, device):
         super(DifferentiableRDF, self).__init__()
         start = 0
         range =  params.box #torch.max(self.running_dists)
         nbins = int(range/params.dr)
 
         #GPU
-        try:
-            self.device = torch.device(torch.cuda.current_device())
-        except:
-            self.device = "cpu"
+        self.device = device
 
         V, vol_bins, bins = generate_vol_bins(start, range, nbins, dim=3)
 
