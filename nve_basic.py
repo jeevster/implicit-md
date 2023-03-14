@@ -15,43 +15,7 @@ import pstats
 import pdb
 from torchmd.interface import GNNPotentials, PairPotentials, Stack
 from torchmd.potentials import ExcludedVolume, LennardJones, LJFamily,  pairMLP
-from torchmd.observable import rdf, generate_vol_bins
-
-def backward_hook(module, grad_input, grad_output):
-    print('Module:', module)
-    print('Grad Input:', grad_input)
-    print('Grad Output:', grad_output)
-
-class DifferentiableRDF(torch.nn.Module):
-    def __init__(self, params):
-        super(DifferentiableRDF, self).__init__()
-        start = 0
-        range =  params.box #torch.max(self.running_dists)
-        nbins = int(range/params.dr)
-
-
-        V, vol_bins, bins = generate_vol_bins(start, range, nbins, dim=3)
-
-        self.V = V
-        self.vol_bins = vol_bins
-        #self.device = system.device
-        self.bins = bins
-
-        self.smear = GaussianSmearing(
-            start=start,
-            stop=bins[-1],
-            n_gaussians=nbins,
-            width=params.gaussian_width,
-            trainable=False
-        )
-
-    def forward(self, running_dists):
-        running_dists = torch.cat(running_dists)
-        count = self.smear(running_dists.reshape(-1).squeeze()[..., None]).sum(0) 
-        norm = count.sum()   # normalization factor for histogram 
-        count = count / norm   # normalize 
-        gr =  count / (self.vol_bins / self.V )  
-        return gr
+from torchmd.observable import rdf, generate_vol_bins, DifferentiableRDF
 
 
 
@@ -78,19 +42,25 @@ class MDSimulator:
         self.n_layers = params.n_layers
         self.nonlinear = params.nonlinear
 
-        print("Input parameters")
-        print("Number of particles %d" % self.n_particle)
-        print("Initial temperature %8.8e" % self.temp)
-        print("Box size %8.8e" % self.box)
-        print("epsilon %8.8e" % self.epsilon)
-        print("sigma %8.8e" % self.sigma)
-        print("dt %8.8e" % self.dt)
-        print("Total time %8.8e" % self.t_total)
-        print("Number of steps %d" % self.nsteps)
+        # print("Input parameters")
+        # print("Number of particles %d" % self.n_particle)
+        # print("Initial temperature %8.8e" % self.temp)
+        # print("Box size %8.8e" % self.box)
+        # print("epsilon %8.8e" % self.epsilon)
+        # print("sigma %8.8e" % self.sigma)
+        # print("dt %8.8e" % self.dt)
+        # print("Total time %8.8e" % self.t_total)
+        # print("Number of steps %d" % self.nsteps)
 
         # Constant box properties
         self.vol = self.box**3.0
         self.rho = self.n_particle/self.vol
+
+        #GPU
+        try:
+            self.device = torch.device(torch.cuda.current_device())
+        except:
+            self.device = "cpu"
 
         # Define prior potential
         mlp_params = {'n_gauss': int(params.cutoff//params.gaussian_width), 
@@ -106,7 +76,7 @@ class MDSimulator:
         #prior potential only contains repulsive term
         self.prior = LJFamily(epsilon=params.epsilon, sigma=params.sigma, rep_pow=6, attr_pow=0)
 
-        self.model = Stack({'pairnn': self.NN, 'pair': self.prior})
+        self.model = Stack({'pairnn': self.NN, 'pair': self.prior}).to(self.device)
 
         #register backwards hook
         # for module in self.model.modules():
@@ -122,7 +92,7 @@ class MDSimulator:
         #load ground truth rdf
         if self.nn:
             self.results_dir = f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}"
-            self.gt_rdf = torch.Tensor(np.load(os.path.join('results', self.results_dir, "epoch1_rdf_" + self.results_dir + "_nn=False.npy")))
+            self.gt_rdf = torch.Tensor(np.load(os.path.join('results', self.results_dir, "epoch1_rdf_" + self.results_dir + "_nn=False.npy"))).to(self.device)
 
 
         self.reset_system()
@@ -169,7 +139,7 @@ class MDSimulator:
                 radius_[i,:] = radius_[i,:]*self.cell_size#/self.box # normalize to [0,1]
                 i = i+1
                 if(i==self.n_particle): #  break when we have n_particle in our box
-                    return torch.Tensor(radius_)
+                    return torch.Tensor(radius_).to(self.device)
 
    
     # Procedure to initialize velocities
@@ -185,7 +155,7 @@ class MDSimulator:
         p_dof = 3*(self.n_particle-1)
         correction_factor = math.sqrt(p_dof*self.temp/sum_vsq)
         velocities *= correction_factor
-        return torch.Tensor(velocities)
+        return torch.Tensor(velocities).to(self.device)
 
 
     def check_symmetric(self, a, mode, tol=1e-4):
@@ -202,38 +172,39 @@ class MDSimulator:
         # You can get energy and the pressure for free out of this calculation if you do it right
         
          #Get rij matrix
-        r = self.radii.unsqueeze(0) - self.radii.unsqueeze(1)
-        
-        #Enforce minimum image convention
-        r = -1*torch.where(r > 0.5*self.box, r-self.box, torch.where(r<-0.5*self.box, r+self.box, r))
-        r = r[~torch.eye(r.shape[0],dtype=bool)].reshape(r.shape[0], -1, 3)
-        try:
-            r.requires_grad = True
-        except RuntimeError:
-            pass
-        #compute distance matrix:
-        self.dists = torch.sqrt(torch.sum(r**2, axis=2)).unsqueeze(-1)
-        d = self.dists.detach().numpy()
+        with torch.enable_grad():
+            r = self.radii.unsqueeze(0) - self.radii.unsqueeze(1)
+            
+            #Enforce minimum image convention
+            r = -1*torch.where(r > 0.5*self.box, r-self.box, torch.where(r<-0.5*self.box, r+self.box, r))
+            r = r[~torch.eye(r.shape[0],dtype=bool)].reshape(r.shape[0], -1, 3)
+            try:
+                r.requires_grad = True
+            except RuntimeError:
+                pass
+            #compute distance matrix:
+            self.dists = torch.sqrt(torch.sum(r**2, axis=2)).unsqueeze(-1)
+            #d = self.dists.detach().numpy()
 
-        #zero out self-interactions
-        #dists = (self.dists + 10000000*torch.eye(self.n_particle)).unsqueeze(-1)
-       
-        if self.nn:
-            #energy = self.model(dists).sum()
-            energy = self.model(self.dists)
-            forces = -compute_grad(inputs=r, output=energy)
-        else:
-            r2i = (self.sigma/self.dists)**2
-            r6i = r2i**3
-            energy = 2*self.epsilon*torch.sum(r6i*(r6i - 1))
-            #reuse components of potential to calculate virial and forces
-            self.internal_virial = -48*self.epsilon*r6i*(r6i - 0.5)/(self.sigma**2)
-            forces = -self.internal_virial*r*r2i
+            #zero out self-interactions
+            #dists = (self.dists + 10000000*torch.eye(self.n_particle)).unsqueeze(-1)
+        
+            if self.nn:
+                #energy = self.model(dists).sum()
+                energy = self.model(self.dists)
+                forces = -compute_grad(inputs=r, output=energy)
+            else:
+                r2i = (self.sigma/self.dists)**2
+                r6i = r2i**3
+                energy = 2*self.epsilon*torch.sum(r6i*(r6i - 1))
+                #reuse components of potential to calculate virial and forces
+                self.internal_virial = -48*self.epsilon*r6i*(r6i - 0.5)/(self.sigma**2)
+                forces = -self.internal_virial*r*r2i
 
         new_forces = torch.zeros((self.dists.shape[0], self.dists.shape[0], 3))
         for i in range(self.dists.shape[0]):
-            new_forces[i] = torch.cat(([forces[i, :i], torch.zeros((1,3)), forces[i, i:]]), dim=0)
-        f = new_forces.detach().numpy()
+            new_forces[i] = torch.cat(([forces[i, :i], torch.zeros((1,3)).to(self.device), forces[i, i:]]), dim=0)
+        f = new_forces.cpu().detach().numpy()
 
         #import pdb; pdb.set_trace()
         assert(not torch.any(torch.isnan(new_forces)))
@@ -243,7 +214,7 @@ class MDSimulator:
        
                 
         #sum forces across particles
-        return energy, torch.sum(new_forces, axis = 1)
+        return energy, torch.sum(new_forces, axis = 1).to(self.device)
         
        
     # Function to dump simulation frame that is readable in Ovito
@@ -285,7 +256,7 @@ class MDSimulator:
 
     def calc_rdf(self):
         #Calculate RDF histogram
-        self.running_dists = torch.cat(self.running_dists).detach().numpy()
+        self.running_dists = torch.cat(self.running_dists).cpu().detach().numpy()
         
         range = np.max(self.running_dists)
         
@@ -308,7 +279,7 @@ class MDSimulator:
     def simulate(self, epoch):
     
         print("Start MD trajectory", file=self.f)
-
+        
         # Velocity Verlet integrator
         for step in tqdm(range(self.nsteps)):
             
@@ -358,7 +329,7 @@ class MDSimulator:
             self.optimizer.step()
             self.scheduler.step(loss)
             
-        np.save(f"epoch{epoch+1}_rdf_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_nn={self.nn}.npy", self.gr.detach().numpy())
+        np.save(f"epoch{epoch+1}_rdf_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_nn={self.nn}.npy", self.gr.cpu().detach().numpy())
         np.save(f"epoch{epoch+1}_histrdf_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_nn={self.nn}.npy", self.hist_gr)
 
                 

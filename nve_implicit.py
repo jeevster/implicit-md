@@ -24,11 +24,6 @@ import gc
 from utils import radii_to_dists, fcc_positions, initialize_velocities
 
 
-def backward_hook(module, grad_input, grad_output):
-    print('Module:', module)
-    print('Grad Input:', grad_input)
-    print('Grad Output:', grad_output)
-
 
 class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.linear_solve.solve_normal_cg(maxiter=5, atol=0)):
     def __init__(self, params, model, radii_0, velocities_0, rdf_0):
