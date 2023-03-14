@@ -18,6 +18,7 @@ import torchopt
 from torchopt.nn import ImplicitMetaGradientModule
 import time
 from torch.profiler import profile, record_function, ProfilerActivity
+import gc
 
 
 from utils import radii_to_dists, fcc_positions, initialize_velocities
@@ -144,37 +145,38 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
     def force_calc(self, radii):
         
         #Get rij matrix
-        r = radii.unsqueeze(0) - radii.unsqueeze(1)
-        if not r.requires_grad:
-            r.requires_grad = True
-        #Enforce minimum image convention
-        r = -1*torch.where(r > 0.5*self.box, r-self.box, torch.where(r<-0.5*self.box, r+self.box, r))
+        with torch.enable_grad():
+            r = radii.unsqueeze(0) - radii.unsqueeze(1)
+            if not r.requires_grad:
+                r.requires_grad = True
+            #Enforce minimum image convention
+            r = -1*torch.where(r > 0.5*self.box, r-self.box, torch.where(r<-0.5*self.box, r+self.box, r))
 
-        #get rid of diagonal 0 entries of r matrix (for gradient stability)
-        r = r[~torch.eye(r.shape[0],dtype=bool)].reshape(r.shape[0], -1, 3)
-        
-        #compute distance matrix:
-        dists = torch.sqrt(torch.sum(r**2, axis=2)).unsqueeze(-1)
+            #get rid of diagonal 0 entries of r matrix (for gradient stability)
+            r = r[~torch.eye(r.shape[0],dtype=bool)].reshape(r.shape[0], -1, 3)
+            
+            #compute distance matrix:
+            dists = torch.sqrt(torch.sum(r**2, axis=2)).unsqueeze(-1)
 
-        #compute energy
-        if self.nn:
-            #with profile(activities=[ProfilerActivity.CUDA], record_shapes=True, profile_memory = True) as prof:
-                #with record_function("energy_inference"):
-            energy = self.model(dists)
-                #with record_function("force_inference"):
-            forces = -compute_grad(inputs=r, output=energy)
-            #print(prof.key_averages().table(sort_by="cuda_memory_usage"))
-            #prof.export_chrome_trace("trace.json")
+            #compute energy
+            if self.nn:
+                #with profile(activities=[ProfilerActivity.CUDA], record_shapes=True, profile_memory = True) as prof:
+                    #with record_function("energy_inference"):
+                energy = self.model(dists)
+                    #with record_function("force_inference"):
+                forces = -compute_grad(inputs=r, output=energy)
+                #print(prof.key_averages().table(sort_by="cuda_memory_usage"))
+                #prof.export_chrome_trace("trace.json")
 
-        
-        #LJ potential
-        else:
-            r2i = (self.sigma/dists)**2
-            r6i = r2i**3
-            energy = 2*self.epsilon*torch.sum(r6i*(r6i - 1))
-            #reuse components of potential to calculate virial and forces
-            internal_virial = -48*self.epsilon*r6i*(r6i - 0.5)/(self.sigma**2)
-            forces = -internal_virial*r*r2i
+            
+            #LJ potential
+            else:
+                r2i = (self.sigma/dists)**2
+                r6i = r2i**3
+                energy = 2*self.epsilon*torch.sum(r6i*(r6i - 1))
+                #reuse components of potential to calculate virial and forces
+                internal_virial = -48*self.epsilon*r6i*(r6i - 0.5)/(self.sigma**2)
+                forces = -internal_virial*r*r2i
 
         #insert 0s back in diagonal entries of force matrix
         new_forces = torch.zeros((dists.shape[0], dists.shape[0], 3))
@@ -258,18 +260,26 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
     #top level MD simulation code (i.e the "solver") that returns the optimal "parameter" -aka the equilibriated radii
     def solve(self):
         #self.running_diffs = []
-        with torch.enable_grad():
-            #Initialize forces/potential of starting configuration
+        
+        #Initialize forces/potential of starting configuration
+        with torch.no_grad():
             _, forces = self.force_calc(self.radii)
             #Run MD
             print("Start MD trajectory", file=self.f)
             for step in tqdm(range(self.nsteps)):
                 self.step = step
+                
                 radii, velocities, forces, rdf = self(self.radii, self.velocities, forces)
-                self.radii = radii
-                self.velocities  = velocities
-                self.rdf = rdf
+                self.radii.copy_(radii)
+                self.velocities.copy_(velocities)
+                self.rdf.copy_(rdf)
         
+        # for obj in gc.get_objects():
+        #     try:
+        #         if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
+        #             print(type(obj), obj.size())
+        #     except:
+        #         pass
         #compute final rdf averaged over entire trajectory
         #self.final_rdf = self.diff_rdf(self.running_dists)
         save_dir = f"IMPLICIT_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}"
@@ -328,7 +338,7 @@ if __name__ == "__main__":
 
 
     #outer training loop
-    for epoch in range(10):
+    for epoch in range(1):
         print(f"Epoch {epoch+1}")
         #initialize simulator parameterized by a NN model
         simulator = ImplicitMDSimulator(params, model, radii_0, velocities_0, rdf_0)
@@ -338,6 +348,7 @@ if __name__ == "__main__":
         #run MD simulation to get equilibriated radii
         
         equilibriated_simulator = simulator.solve()
+        
 
 
 
@@ -356,7 +367,10 @@ if __name__ == "__main__":
                 norm = torch.linalg.vector_norm(param.grad, dim=-1).max()
                 if  norm > max_norm:
                     max_norm = norm
-        print("Max norm: ", max_norm.item())
+        try:
+            print("Max norm: ", max_norm.item())
+        except AttributeError:
+            print("Max norm: ", max_norm)
 
         optimizer.step()
         scheduler.step(outer_loss)
