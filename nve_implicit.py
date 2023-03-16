@@ -19,9 +19,11 @@ import time
 from torch.profiler import profile, record_function, ProfilerActivity
 import gc
 import shutil
+from torch.utils.tensorboard import SummaryWriter
 
 
-from utils import radii_to_dists, fcc_positions, initialize_velocities
+
+from utils import radii_to_dists, fcc_positions, initialize_velocities, dump_params_to_yml
 
 
 
@@ -30,6 +32,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         super(ImplicitMDSimulator, self).__init__()
         # Initial MD parameters
         np.random.seed(seed=params.seed)
+        self.params = params
         self.n_particle = params.n_particle
         self.temp = params.temp
         self.kbt0 = params.kbt0
@@ -87,13 +90,20 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.diff_rdf_cpu = DifferentiableRDF(params, "cpu")
 
         #File dump stuff
-        self.t = gsd.hoomd.open(name='test.gsd', mode='wb') 
+        self.t = gsd.hoomd.open(name='test2.gsd', mode='wb') 
         self.n_dump = params.n_dump # dump for configuration
         
         #check if inital momentum is zero
         #initial_props = self.calc_properties()
         self.f = open("log.txt", "a+")
 
+        if self.nn:
+            self.save_dir = os.path.join('results', f"IMPLICIT_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_dt={self.dt}_ttotal={self.t_total}")
+        else: 
+            self.save_dir = os.path.join('ground_truth', f"IMPLICIT_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}")
+        os.makedirs(self.save_dir, exist_ok = True)
+        dump_params_to_yml(self.params, self.save_dir)
+        #shutil.copy("config.yaml", self.save_dir)
 
     def check_symmetric(self, a, mode, tol=1e-4):
         if mode == 'opposite':
@@ -219,7 +229,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         # dump frame
         if self.step%self.n_dump == 0:
             #print(self.step, props, file=self.f)
-            self.t.append(self.create_frame(frame = self.step/self.n_dump))
+            #self.t.append(self.create_frame(frame = self.step/self.n_dump))
             #append dists to running_dists for RDF calculation (remove diagonal entries)
             if not self.nn:
                 self.running_dists.append(new_dists.cpu().detach())
@@ -277,13 +287,11 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         length = len(self.running_dists)
         save_rdf = self.diff_rdf_cpu(self.running_dists[int(self.burn_in_frac*length):]) if not self.nn else self.rdf
 
-        self.save_dir = f"IMPLICIT_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}"
-        os.makedirs(os.path.join('results', self.save_dir), exist_ok = True)
-        add = "_nn=False.npy" if not self.nn else ".npy"
-            
-        np.save(os.path.join('results', self.save_dir, f"rdf_epoch{epoch+1}" + add), self.rdf.cpu().detach().numpy())
-        shutil.copy("config.yaml", os.path.join('results', self.save_dir))
-
+        
+        filename ="gt_rdf.npy" if not self.nn else f"rdf_epoch{epoch+1}.npy"
+        np.save(os.path.join(self.save_dir, filename), save_rdf.cpu().detach().numpy())
+        
+        
         self.f.close()
         return self
 
@@ -294,8 +302,31 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--yaml_config", default='config.yaml', type=str)
     parser.add_argument("--config", default='default', type=str)
-    args = parser.parse_args()
-    params = YParams(os.path.abspath(args.yaml_config), args.config)
+    parser.add_argument('--n_particle', type=int, default=256, help='number of particles')
+    parser.add_argument('--temp', type=int, default=1, help='temperature in reduced units')
+    parser.add_argument('--seed', type=int, default=123, help='random seed used to initialize velocities')
+    parser.add_argument('--kbt0', type=float, default=1.8, help='multiplier for pressure calculation')
+    parser.add_argument('--box', type=int, default=7, help='box size')
+    parser.add_argument('--epsilon', type=float, default=1.0, help='LJ epsilon')
+    parser.add_argument('--sigma', type=float, default=1.0, help='LJ sigma')
+    parser.add_argument('--dt', type=float, default=0.005, help='time step for integration')
+    parser.add_argument('--dr', type=float, default=0.01, help='bin size for RDF calculation (non-differentiable version)')
+    parser.add_argument('--t_total', type=float, default=5, help='total time')
+    parser.add_argument('--diameter_viz', type=float, default=0.3, help='particle diameter for Ovito visualization')
+    parser.add_argument('--n_dump', type=int, default=10, help='save frequency of configurations (also frequency of frames used for ground truth RDF calculation)')
+    parser.add_argument('--burn_in_frac', type=float, default=0.2, help='initial fraction of trajectory to discount when calculating ground truth rdf')
+
+    #learnable potential stuff
+    parser.add_argument('--n_epochs', type=int, default=30, help='number of outer loop training epochs')
+    parser.add_argument('--nn', action='store_true', help='use neural network potential')
+    parser.add_argument('--cutoff', type=float, default=2.5, help='LJ cutoff distance')
+    parser.add_argument('--gaussian_width', type=float, default=0.1, help='width of the Gaussian used in the RDF')
+    parser.add_argument('--n_width', type=int, default=128, help='number of Gaussian functions used in the RDF')
+    parser.add_argument('--n_layers', type=int, default=3, help='number of hidden layers in the neural network potential')
+    parser.add_argument('--nonlinear', type=str, default='ELU', help='type of nonlinearity used in the neural network potential')
+
+
+    params = parser.parse_args()
 
     
 
@@ -330,8 +361,9 @@ if __name__ == "__main__":
 
     #load ground truth rdf
     if params.nn:
-        results_dir = f"IMPLICIT_n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}"
-        gt_rdf = torch.Tensor(np.load(os.path.join('results', results_dir, "rdf_epoch1_nn=False.npy"))).to(device)
+        gt_dir = os.path.join('ground_truth', f"n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}")
+        gt_rdf = torch.Tensor(np.load(os.path.join(gt_dir, "gt_rdf.npy"))).to(device)
+        results_dir = os.path.join('results', f"IMPLICIT_n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}_dt={params.dt}_ttotal={params.t_total}")
 
     #initialize outer loop optimizer/scheduler
     optimizer = torch.optim.Adam(list(model.parameters()), lr=1e-3)
@@ -345,6 +377,8 @@ if __name__ == "__main__":
     grad_times = []
     sim_times = []
     grad_norms = []
+    if params.nn:
+        writer = SummaryWriter(log_dir = results_dir)
     for epoch in range(params.n_epochs):
         print(f"Epoch {epoch+1}")
         #initialize simulator parameterized by a NN model
@@ -388,14 +422,21 @@ if __name__ == "__main__":
             sim_times.append(sim_time)
             grad_times.append(grad_time)
             grad_norms.append(max_norm.item())
-            
-    stats_write_file = os.path.join('results', simulator.save_dir, 'stats.txt')
-    with open(stats_write_file, "w") as output:
-        output.write("Losses: " + str(losses) + "\n")
-        output.write("Simulation times: " +  str(sim_times) + "\n")
-        output.write("Gradient calculation times: " +  str(grad_times) + "\n")
-        output.write("Max gradient norms: " + str(grad_norms))
 
+            writer.add_scalar('Loss', losses[-1], global_step=epoch+1)
+            writer.add_scalar('Simulation Time', sim_times[-1], global_step=epoch+1)
+            writer.add_scalar('Gradient Time', grad_times[-1], global_step=epoch+1)
+            writer.add_scalar('Gradient Norm', grad_norms[-1], global_step=epoch+1)
+    
+    if params.nn:
+        stats_write_file = os.path.join(simulator.save_dir, 'stats.txt')
+        with open(stats_write_file, "w") as output:
+            output.write("Losses: " + str(losses) + "\n")
+            output.write("Simulation times: " +  str(sim_times) + "\n")
+            output.write("Gradient calculation times: " +  str(grad_times) + "\n")
+            output.write("Max gradient norms: " + str(grad_norms))
+
+        writer.close()
     print('Done!')
     
     

@@ -11,11 +11,11 @@ default: &DEFAULT
   dr: 0.01 #bin size for RDF calculation (non-differentiable version)
   t_total: 5 # total time
   diameter_viz: 0.3 #particle diameter for Ovito visualization
-  n_dump: 100 #save frequency of configurations (also frequency of frames used for ground truth RDF calculation)
+  n_dump: 10 #save frequency of configurations (also frequency of frames used for ground truth RDF calculation)
   burn_in_frac: 0.2 #initial fraction of trajectory to discount when calculating ground truth rdf
 
   #learnable potential stuff
-  n_epochs: 5 #number of outer loop training epochs
+  n_epochs: 30 #number of outer loop training epochs
   nn: True
   cutoff: 2.5
   gaussian_width: 0.1

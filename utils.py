@@ -3,6 +3,8 @@ import numpy as np
 from itertools import product
 from scipy.stats import maxwell
 import math
+import yaml
+import os
 
 
 def radii_to_dists(radii, box_size):
@@ -58,3 +60,7 @@ def initialize_velocities(n_particle, temp):
     correction_factor = math.sqrt(p_dof*temp/sum_vsq)
     velocities *= correction_factor
     return torch.Tensor(velocities)
+
+def dump_params_to_yml(params, filepath):
+    with open(os.path.join(filepath, "config.yaml"), 'w') as f:
+        yaml.dump(params, f)
