@@ -46,6 +46,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.nsteps = np.rint(self.t_total/self.dt).astype(np.int32)
         self.burn_in_frac = params.burn_in_frac
         self.nn = params.nn
+        self.save_intermediate_rdf = params.save_intermediate_rdf
 
         self.cutoff = params.cutoff
         self.gaussian_width = params.gaussian_width
@@ -100,7 +101,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         if self.nn:
             self.save_dir = os.path.join('results', f"IMPLICIT_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_dt={self.dt}_ttotal={self.t_total}")
         else: 
-            self.save_dir = os.path.join('ground_truth', f"IMPLICIT_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}")
+            self.save_dir = os.path.join('ground_truth', f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}")
         os.makedirs(self.save_dir, exist_ok = True)
         dump_params_to_yml(self.params, self.save_dir)
         #shutil.copy("config.yaml", self.save_dir)
@@ -275,6 +276,10 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                 self.radii.copy_(radii)
                 self.velocities.copy_(velocities)
                 self.rdf.copy_(rdf)
+                if not self.nn and self.save_intermediate_rdf and step % self.n_dump == 0:
+                    filename = f"step{step+1}_rdf.npy"
+                    np.save(os.path.join(self.save_dir, filename), self.rdf.cpu().detach().numpy())
+
         
         # for obj in gc.get_objects():
         #     try:
@@ -314,6 +319,7 @@ if __name__ == "__main__":
     parser.add_argument('--t_total', type=float, default=5, help='total time')
     parser.add_argument('--diameter_viz', type=float, default=0.3, help='particle diameter for Ovito visualization')
     parser.add_argument('--n_dump', type=int, default=10, help='save frequency of configurations (also frequency of frames used for ground truth RDF calculation)')
+    parser.add_argument('--save_intermediate_rdf', action = 'store_true', help='Whether to store the RDF along the trajectory for the ground truth')
     parser.add_argument('--burn_in_frac', type=float, default=0.2, help='initial fraction of trajectory to discount when calculating ground truth rdf')
 
     #learnable potential stuff
