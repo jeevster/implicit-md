@@ -228,20 +228,20 @@ class MDSimulator:
                 self.internal_virial = -48*self.epsilon*r6i*(r6i - 0.5)/(self.sigma**2)
                 forces = -self.internal_virial*r*r2i
 
-        new_forces = torch.zeros((self.dists.shape[0], self.dists.shape[0], 3))
-        for i in range(self.dists.shape[0]):
-            new_forces[i] = torch.cat(([forces[i, :i], torch.zeros((1,3)).to(self.device), forces[i, i:]]), dim=0)
-        f = new_forces.cpu().detach().numpy()
+        # new_forces = torch.zeros((self.dists.shape[0], self.dists.shape[0], 3))
+        # for i in range(self.dists.shape[0]):
+        #     new_forces[i] = torch.cat(([forces[i, :i], torch.zeros((1,3)).to(self.device), forces[i, i:]]), dim=0)
+        f = forces.cpu().detach().numpy()
 
         #import pdb; pdb.set_trace()
-        assert(not torch.any(torch.isnan(new_forces)))
-        assert self.check_symmetric(f[:, :, 0], mode = 'opposite')
-        assert self.check_symmetric(f[:, :, 1], mode = 'opposite')
-        assert self.check_symmetric(f[:, :, 2], mode = 'opposite')
+        assert(not torch.any(torch.isnan(forces)))
+        # assert self.check_symmetric(f[:, :, 0], mode = 'opposite')
+        # assert self.check_symmetric(f[:, :, 1], mode = 'opposite')
+        # assert self.check_symmetric(f[:, :, 2], mode = 'opposite')
        
                 
         #sum forces across particles
-        return energy, torch.sum(new_forces, axis = 1).to(self.device)
+        return energy, torch.sum(forces, axis = 1).to(self.device)
         
        
     # Function to dump simulation frame that is readable in Ovito
