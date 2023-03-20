@@ -61,6 +61,11 @@ def initialize_velocities(n_particle, temp):
     velocities *= correction_factor
     return torch.Tensor(velocities)
 
+#inverse cdf for power law with exponent 'power' and min value y_min
+def powerlaw_inv_cdf(y, power, y_min):
+    return y_min*((1-y)**(1/(1-power)))
+    
+
 def dump_params_to_yml(params, filepath):
     with open(os.path.join(filepath, "config.yaml"), 'w') as f:
         yaml.dump(params, f)

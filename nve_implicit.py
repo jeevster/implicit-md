@@ -23,7 +23,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 
 
-from utils import radii_to_dists, fcc_positions, initialize_velocities, dump_params_to_yml
+from utils import radii_to_dists, fcc_positions, initialize_velocities, dump_params_to_yml, powerlaw_inv_cdf
 
 
 
@@ -39,6 +39,9 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.box = params.box
         self.diameter_viz = params.diameter_viz
         self.epsilon = params.epsilon
+        self.poly = params.poly
+        self.poly_power = params.poly_power
+        self.min_sigma = params.min_sigma
         self.sigma = params.sigma
         self.dt = params.dt
         self.t_total = params.t_total
@@ -81,7 +84,14 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.velocities = nn.Parameter(velocities_0.clone().detach_(), requires_grad=True).to(self.device)
         self.rdf = nn.Parameter(rdf_0.clone().detach_(), requires_grad=True).to(self.device)
 
-
+        if self.poly: #get per-particle sigmas
+            u = torch.rand(self.n_particle)
+            self.particle_sigmas = powerlaw_inv_cdf(u, power = self.poly_power, y_min = self.min_sigma).clip(max = 1/0.45 * self.min_sigma)
+            sigma1 = self.particle_sigmas.unsqueeze(0)
+            sigma2 = self.particle_sigmas.unsqueeze(1)
+            self.sigma_pairs = 1/2 * (sigma1 + sigma2)*(1 - self.epsilon*torch.abs(sigma1 - sigma2))
+            self.sigma_pairs = self.sigma_pairs[~torch.eye(self.sigma_pairs.shape[0],dtype=bool)].reshape(self.sigma_pairs.shape[0], -1, 1).to(self.device)
+            self.particle_sigmas = self.particle_sigmas
         #register backwards hook for debugging
         # for module in self.model.modules():
         #     module.register_backward_hook(backward_hook)
@@ -173,12 +183,21 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             
             #LJ potential
             else:
-                r2i = (self.sigma/dists)**2
-                r6i = r2i**3
-                energy = 2*self.epsilon*torch.sum(r6i*(r6i - 1))
-                #reuse components of potential to calculate virial and forces
-                internal_virial = -48*self.epsilon*r6i*(r6i - 0.5)/(self.sigma**2)
-                forces = -internal_virial*r*r2i
+                if self.poly:
+                    r2i = (self.sigma_pairs/dists)**2
+                    r6i = r2i**3
+                    energy = torch.sum(r6i*(r6i - 1))
+                    forces = 6*r6i*(2*r6i - 1) * r2i / (self.sigma_pairs**2) * r
+
+                    
+                else:
+                    import pdb; pdb.set_trace()
+                    r2i = (self.sigma/dists)**2
+                    r6i = r2i**3
+                    energy = 2*self.epsilon*torch.sum(r6i*(r6i - 1))
+                    #reuse components of potential to calculate virial and forces
+                    internal_virial = -48*self.epsilon*r6i*(r6i - 0.5)/(self.sigma**2)
+                    forces = -internal_virial*r*r2i
 
         #insert 0s back in diagonal entries of force matrix
         new_forces = torch.zeros((dists.shape[0], dists.shape[0], 3))
@@ -230,7 +249,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         # dump frame
         if self.step%self.n_dump == 0:
             #print(self.step, props, file=self.f)
-            #self.t.append(self.create_frame(frame = self.step/self.n_dump))
+            self.t.append(self.create_frame(frame = self.step/self.n_dump))
             #append dists to running_dists for RDF calculation (remove diagonal entries)
             if not self.nn:
                 self.running_dists.append(new_dists.cpu().detach())
@@ -313,7 +332,10 @@ if __name__ == "__main__":
     parser.add_argument('--kbt0', type=float, default=1.8, help='multiplier for pressure calculation')
     parser.add_argument('--box', type=int, default=7, help='box size')
     parser.add_argument('--epsilon', type=float, default=1.0, help='LJ epsilon')
-    parser.add_argument('--sigma', type=float, default=1.0, help='LJ sigma')
+    parser.add_argument('--poly', action='store_true', help='vary sigma (diameter) of each particle according to power law')
+    parser.add_argument('--poly_power', type=float, default = -3.0, help='power of power law')
+    parser.add_argument('--min_sigma', type=float, default = 0.5, help='minimum sigma for power law distribution')
+    parser.add_argument('--sigma', type=float, default=1.0, help='LJ sigma for non-poly systems')
     parser.add_argument('--dt', type=float, default=0.005, help='time step for integration')
     parser.add_argument('--dr', type=float, default=0.01, help='bin size for RDF calculation (non-differentiable version)')
     parser.add_argument('--t_total', type=float, default=5, help='total time')
