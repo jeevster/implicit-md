@@ -48,6 +48,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.burn_in_frac = params.burn_in_frac
         self.nn = params.nn
         self.save_intermediate_rdf = params.save_intermediate_rdf
+        self.exp_name = params.exp_name
 
         self.cutoff = params.cutoff
         self.gaussian_width = params.gaussian_width
@@ -100,7 +101,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.f = open("log.txt", "a+")
 
         if self.nn:
-            self.save_dir = os.path.join('results', f"IMPLICIT_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_dt={self.dt}_ttotal={self.t_total}")
+            self.save_dir = os.path.join('results', f"IMPLICIT_{self.exp_name}_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_dt={self.dt}_ttotal={self.t_total}")
         else: 
             self.save_dir = os.path.join('ground_truth', f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}")
         os.makedirs(self.save_dir, exist_ok = True)
@@ -321,8 +322,10 @@ if __name__ == "__main__":
     parser.add_argument('--t_total', type=float, default=5, help='total time')
     parser.add_argument('--diameter_viz', type=float, default=0.3, help='particle diameter for Ovito visualization')
     parser.add_argument('--n_dump', type=int, default=10, help='save frequency of configurations (also frequency of frames used for ground truth RDF calculation)')
+
     parser.add_argument('--save_intermediate_rdf', action = 'store_true', help='Whether to store the RDF along the trajectory for the ground truth')
     parser.add_argument('--burn_in_frac', type=float, default=0.2, help='initial fraction of trajectory to discount when calculating ground truth rdf')
+    parser.add_argument('--exp_name', type=str, default = "", help='name of experiment - used as prefix of results folder name')
 
     #learnable potential stuff
     parser.add_argument('--n_epochs', type=int, default=30, help='number of outer loop training epochs')
@@ -342,6 +345,9 @@ if __name__ == "__main__":
         device = torch.device(torch.cuda.current_device())
     except:
         device = "cpu"
+    
+    #Limit CPU usage
+    torch.set_num_threads(5)
 
     #initialize RDF calculator
     diff_rdf = DifferentiableRDF(params, device)
@@ -370,7 +376,7 @@ if __name__ == "__main__":
     if params.nn:
         gt_dir = os.path.join('ground_truth', f"n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}")
         gt_rdf = torch.Tensor(np.load(os.path.join(gt_dir, "gt_rdf.npy"))).to(device)
-        results_dir = os.path.join('results', f"IMPLICIT_n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}_dt={params.dt}_ttotal={params.t_total}")
+        results_dir = os.path.join('results', f"IMPLICIT_{self.exp_name}_n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}_dt={params.dt}_ttotal={params.t_total}")
 
     #initialize outer loop optimizer/scheduler
     optimizer = torch.optim.Adam(list(model.parameters()), lr=1e-3)
