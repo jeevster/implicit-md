@@ -40,6 +40,8 @@ class MDSimulator:
         self.nsteps = np.rint(self.t_total/self.dt).astype(np.int32)
         self.burn_in_frac = params.burn_in_frac
         self.nn = params.nn
+        self.exp_name = params.exp_name
+        self.save_intermediate_rdf = params.save_intermediate_rdf
 
 
         self.cutoff = params.cutoff
@@ -102,17 +104,16 @@ class MDSimulator:
 
         #log config
         if self.nn:
-            self.save_dir = os.path.join('results', f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_dt={self.dt}_ttotal={self.t_total}")
+            self.save_dir = os.path.join('results', f"{self.exp_name}_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_dt={self.dt}_ttotal={self.t_total}")
         else: 
-            self.save_dir = os.path.join('ground_truth', f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}")
+            self.save_dir = os.path.join('ground_truth_posvelonly', f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}")
 
         os.makedirs(self.save_dir, exist_ok = True)
         dump_params_to_yml(self.params, self.save_dir)
-        #shutil.copy("config.yaml", self.save_dir)
 
-        #load ground truth rdf (load from implicit dir for now for consistency)
+        #load ground truth rdf
         if self.nn:
-            gt_dir = os.path.join('ground_truth', f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}")
+            gt_dir = os.path.join('ground_truth_posvelonly', f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}")
             self.gt_rdf = torch.Tensor(np.load(os.path.join(gt_dir, "gt_rdf.npy"))).to(self.device)
 
 
@@ -231,7 +232,7 @@ class MDSimulator:
         # new_forces = torch.zeros((self.dists.shape[0], self.dists.shape[0], 3))
         # for i in range(self.dists.shape[0]):
         #     new_forces[i] = torch.cat(([forces[i, :i], torch.zeros((1,3)).to(self.device), forces[i, i:]]), dim=0)
-        f = forces.cpu().detach().numpy()
+        #f = forces.cpu().detach().numpy()
 
         #import pdb; pdb.set_trace()
         assert(not torch.any(torch.isnan(forces)))
@@ -330,9 +331,13 @@ class MDSimulator:
 
             # dump frame
             if step%self.n_dump == 0:
-                print(step, props, file=self.f)
+                #print(step, props, file=self.f)
                 #self.t.append(self.create_frame(frame = step/self.n_dump))
                 #append dists to running_dists for RDF calculation (remove diagonal entries)
+                if not self.nn and self.save_intermediate_rdf:
+                    rdf = self.diff_rdf(tuple(radii_to_dists(self.radii, self.box)))
+                    filename = f"step{step+1}_rdf.npy"
+                    np.save(os.path.join(self.save_dir, filename), rdf.cpu().detach().numpy())
                 self.running_dists.append(self.dists.detach())
 
         end = time.time()
@@ -400,7 +405,10 @@ if __name__ == "__main__":
     parser.add_argument('--t_total', type=float, default=5, help='total time')
     parser.add_argument('--diameter_viz', type=float, default=0.3, help='particle diameter for Ovito visualization')
     parser.add_argument('--n_dump', type=int, default=10, help='save frequency of configurations (also frequency of frames used for ground truth RDF calculation)')
+    parser.add_argument('--save_intermediate_rdf', action = 'store_true', help='Whether to store the RDF along the trajectory for the ground truth')
+
     parser.add_argument('--burn_in_frac', type=float, default=0.2, help='initial fraction of trajectory to discount when calculating ground truth rdf')
+    parser.add_argument('--exp_name', type=str, default = "", help='name of experiment - used as prefix of results folder name')
 
     #learnable potential stuff
     parser.add_argument('--n_epochs', type=int, default=30, help='number of outer loop training epochs')
@@ -426,6 +434,9 @@ if __name__ == "__main__":
     grad_norms = []
     if params.nn:
         writer = SummaryWriter(log_dir = simulator.save_dir)
+
+    #limit CPU usage
+    torch.set_num_threads(15)
     for epoch in range(params.n_epochs):
         print(f"Epoch {epoch+1}")
         if not params.nn:

@@ -25,6 +25,8 @@ def radii_to_dists(radii, box_size):
     return torch.sqrt(torch.sum(r**2, axis=2)).unsqueeze(-1)
 
 
+
+
 # Initialize configuration
 # Radii
 # FCC lattice
