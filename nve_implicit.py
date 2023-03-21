@@ -236,7 +236,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             #self.t.append(self.create_frame(frame = self.step/self.n_dump))
             #append dists to running_dists for RDF calculation (remove diagonal entries)
             if not self.nn:
-                self.running_dists.append(new_dists.cpu().detach())
+                self.running_dists.append(radii_to_dists(radii, self.box).cpu().detach())
             #np.save(f"inst_rdf_nn/t={self.step}_inst_rdf_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_nn={self.nn}.npy", self.calc_rdf.detach().numpy())
 
         return radii, velocities, forces, new_rdf # return the new distance matrix 
