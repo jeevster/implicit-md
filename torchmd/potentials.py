@@ -173,6 +173,7 @@ class pairMLP(torch.nn.Module):
             n_gaussians=n_gauss,
             trainable=True
         )
+    
         
         self.layers = nn.ModuleList(
             [

@@ -5,7 +5,7 @@ python nve_implicit.py \
 --temp 1 \
 --seed 123 \
 --kbt0 1.8 \
---box 7 \
+--box 10 \
 --epsilon 0.2 \
 --poly \
 --poly_power 3.0 \
@@ -19,7 +19,7 @@ python nve_implicit.py \
 --save_intermediate_rdf \
 --burn_in_frac 0.2 \
 --n_epochs 30 \
---cutoff 2.5 \
+--cutoff 1.5 \
 --gaussian_width 0.1 \
 --n_width 128 \
 --n_layers 3 \

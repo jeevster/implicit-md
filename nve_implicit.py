@@ -76,6 +76,9 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             self.device = torch.device(torch.cuda.current_device())
         except:
             self.device = "cpu"
+        
+        #limit CPU usage
+        torch.set_num_threads(5)
 
         #Register inner parameters
         self.model = model.to(self.device)
@@ -114,7 +117,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             self.save_dir = os.path.join('ground_truth', f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}")
         os.makedirs(self.save_dir, exist_ok = True)
         dump_params_to_yml(self.params, self.save_dir)
-        #shutil.copy("config.yaml", self.save_dir)
 
     def check_symmetric(self, a, mode, tol=1e-4):
         if mode == 'opposite':
@@ -191,7 +193,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
                     
                 else:
-                    import pdb; pdb.set_trace()
                     r2i = (self.sigma/dists)**2
                     r6i = r2i**3
                     energy = 2*self.epsilon*torch.sum(r6i*(r6i - 1))
@@ -199,21 +200,23 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                     internal_virial = -48*self.epsilon*r6i*(r6i - 0.5)/(self.sigma**2)
                     forces = -internal_virial*r*r2i
 
+            #apply cutoff
+            forces = torch.where(dists > self.cutoff, torch.zeros((1, 1, 3)).to(self.device), forces)
         #insert 0s back in diagonal entries of force matrix
-        new_forces = torch.zeros((dists.shape[0], dists.shape[0], 3))
-        for i in range(dists.shape[0]):
-            new_forces[i] = torch.cat(([forces[i, :i], torch.zeros((1,3)).to(self.device), forces[i, i:]]), dim=0)
+        # new_forces = torch.zeros((dists.shape[0], dists.shape[0], 3))
+        # for i in range(dists.shape[0]):
+        #     new_forces[i] = torch.cat(([forces[i, :i], torch.zeros((1,3)).to(self.device), forces[i, i:]]), dim=0)
         # f = new_forces.detach().numpy()
 
         # #Ensure symmetries
-        assert(not torch.any(torch.isnan(new_forces)))
+        assert(not torch.any(torch.isnan(forces)))
         # assert self.check_symmetric(f[:, :, 0], mode = 'opposite')
         # assert self.check_symmetric(f[:, :, 1], mode = 'opposite')
         # assert self.check_symmetric(f[:, :, 2], mode = 'opposite')
        
                 
         #sum forces across particles
-        return energy, torch.sum(new_forces, axis = 1).to(self.device)
+        return energy, torch.sum(forces, axis = 1)#.to(self.device)
         
     
     def forward(self, radii, velocities, forces):
