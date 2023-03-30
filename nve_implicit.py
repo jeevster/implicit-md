@@ -106,7 +106,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             self.save_dir = os.path.join('ground_truth', f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}")
         os.makedirs(self.save_dir, exist_ok = True)
         dump_params_to_yml(self.params, self.save_dir)
-        #shutil.copy("config.yaml", self.save_dir)
 
     def check_symmetric(self, a, mode, tol=1e-4):
         if mode == 'opposite':
@@ -149,6 +148,19 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                 "Pressure": pressure,
                 "Total Energy": (ke+self.potential).item(),
                 "Momentum Magnitude": torch.norm(torch.sum(self.velocities, axis =0)).item()}
+
+    def save_checkpoint(self, best=False):
+        name = "best_ckpt.pt" if best else "ckpt.pt"
+        checkpoint_path = os.path.join(self.save_dir, name)
+        torch.save({'model_state': self.model.state_dict()}, checkpoint_path)
+
+    def restore_checkpoint(self, best=False):
+        name = "best_ckpt.pt" if best else "ckpt.pt"
+        checkpoint_path = os.path.join(self.save_dir, name)
+        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        self.model.load_state_dict(checkpoint['model_state'])
+        
+
 
 
     '''CORE MD OPERATIONS'''
@@ -252,7 +264,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #TODO: currently, radii, velocity, and rdf are all params - need to make only rdf a parameter so we can 
         #just compute the rdf residual
 
-        #for some reason, optimality gets called twice, and on the second time the gradients of r are getting detached inside force calc
         with torch.enable_grad():
             forces = self.force_calc(self.radii)[1]
             new_radii, new_velocities, _, new_rdf = self(self.radii, self.velocities, forces, calc_rdf = True)
@@ -284,14 +295,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                     filename = f"step{step+1}_rdf.npy"
                     np.save(os.path.join(self.save_dir, filename), self.rdf.cpu().detach().numpy())
 
-        
-        # for obj in gc.get_objects():
-        #     try:
-        #         if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
-        #             print(type(obj), obj.size())
-        #     except:
-        #         pass
-
         #compute ground truth rdf over entire trajectory (do it on CPU to avoid memory issues)
         length = len(self.running_dists)
         save_rdf = self.diff_rdf_cpu(self.running_dists[int(self.burn_in_frac*length):]) if not self.nn else self.rdf
@@ -311,7 +314,7 @@ if __name__ == "__main__":
     parser.add_argument("--yaml_config", default='config.yaml', type=str)
     parser.add_argument("--config", default='default', type=str)
     parser.add_argument('--n_particle', type=int, default=256, help='number of particles')
-    parser.add_argument('--temp', type=int, default=1, help='temperature in reduced units')
+    parser.add_argument('--temp', type=float, default=1, help='temperature in reduced units')
     parser.add_argument('--seed', type=int, default=123, help='random seed used to initialize velocities')
     parser.add_argument('--kbt0', type=float, default=1.8, help='multiplier for pressure calculation')
     parser.add_argument('--box', type=int, default=7, help='box size')
@@ -338,7 +341,6 @@ if __name__ == "__main__":
 
 
     params = parser.parse_args()
-
 
     #GPU
     try:
@@ -376,7 +378,7 @@ if __name__ == "__main__":
     if params.nn:
         gt_dir = os.path.join('ground_truth', f"n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}")
         gt_rdf = torch.Tensor(np.load(os.path.join(gt_dir, "gt_rdf.npy"))).to(device)
-        results_dir = os.path.join('results', f"IMPLICIT_{self.exp_name}_n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}_dt={params.dt}_ttotal={params.t_total}")
+        results_dir = os.path.join('results', f"IMPLICIT_{params.exp_name}_n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}_dt={params.dt}_ttotal={params.t_total}")
 
     #initialize outer loop optimizer/scheduler
     optimizer = torch.optim.Adam(list(model.parameters()), lr=1e-3)
@@ -390,10 +392,12 @@ if __name__ == "__main__":
     grad_times = []
     sim_times = []
     grad_norms = []
+    best_outer_loss = 100
     if params.nn:
         writer = SummaryWriter(log_dir = results_dir)
     for epoch in range(params.n_epochs):
         print(f"Epoch {epoch+1}")
+        best = False
         #initialize simulator parameterized by a NN model
         simulator = ImplicitMDSimulator(params, model, radii_0, velocities_0, rdf_0)
 
@@ -410,7 +414,14 @@ if __name__ == "__main__":
         if params.nn:
             outer_loss = (equilibriated_simulator.rdf - gt_rdf).pow(2).mean()
             print("Final RDF Loss: ", outer_loss.item())
-            #compute (implicit) gradient of outer loss wrt model parameters - grads are zero after the first iteration 
+
+            if outer_loss < best_outer_loss:
+                best_outer_loss = outer_loss
+                best = True
+            
+            simulator.save_checkpoint(best = best)
+
+            #compute (implicit) gradient of outer loss wrt model parameters 
             start = time.time()
             torch.autograd.backward(tensors = outer_loss, inputs = list(model.parameters()))
             end = time.time()
