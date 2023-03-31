@@ -20,8 +20,6 @@ from torch.utils.tensorboard import SummaryWriter
 import gc
 
 
-
-
 class MDSimulator:
     def __init__(self, params):
         # Initial parameters
@@ -43,23 +41,13 @@ class MDSimulator:
         self.exp_name = params.exp_name
         self.save_intermediate_rdf = params.save_intermediate_rdf
 
-
         self.cutoff = params.cutoff
         self.gaussian_width = params.gaussian_width
         self.n_width = params.n_width
         self.n_layers = params.n_layers
         self.nonlinear = params.nonlinear
-        
-
-        # print("Input parameters")
-        # print("Number of particles %d" % self.n_particle)
-        # print("Initial temperature %8.8e" % self.temp)
-        # print("Box size %8.8e" % self.box)
-        # print("epsilon %8.8e" % self.epsilon)
-        # print("sigma %8.8e" % self.sigma)
-        # print("dt %8.8e" % self.dt)
-        # print("Total time %8.8e" % self.t_total)
-        # print("Number of steps %d" % self.nsteps)
+        self.inference = params.inference
+        self.pretrained_model_dir = params.pretrained_model_dir
 
         # Constant box properties
         self.vol = self.box**3.0
@@ -90,9 +78,12 @@ class MDSimulator:
 
         self.model = Stack({'pairnn': self.NN, 'pair': self.prior}).to(self.device)
 
-        #register backwards hook
-        # for module in self.model.modules():
-        #     module.register_backward_hook(backward_hook)
+        if self.pretrained_model_dir:
+        #load checkpoint
+            name = "best_ckpt.pt" if self.inference else "ckpt.pt"
+            checkpoint_path = os.path.join(self.pretrained_model_dir, name)
+            checkpoint = torch.load(checkpoint_path, map_location=self.device)
+            self.model.load_state_dict(checkpoint['model_state'])
 
         self.model.requires_grad = True
         self.optimizer = torch.optim.Adam(list(self.model.parameters()), lr=1e-3)
@@ -146,9 +137,6 @@ class MDSimulator:
 
         #save config
         
-
-
-
 
     # Initialize configuration
     # Radii
@@ -308,11 +296,6 @@ class MDSimulator:
         checkpoint_path = os.path.join(self.save_dir, name)
         torch.save({'model_state': self.model.state_dict()}, checkpoint_path)
 
-    def restore_checkpoint(self, best=False):
-        name = "best_ckpt.pt" if best else "ckpt.pt"
-        checkpoint_path = os.path.join(self.save_dir, name)
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
-        self.model.load_state_dict(checkpoint['model_state'])
 
     #top level MD simulation code
     def simulate(self, epoch):
@@ -392,6 +375,9 @@ class MDSimulator:
         
         #logging
         filename ="gt_rdf.npy" if not self.nn else f"rdf_epoch{epoch+1}.npy"
+        #pre-pend RDF with name of the pretrained model used in this simulation
+        if self.inference and self.pretrained_model_dir:   
+            filename = f"{os.path.basename(self.pretrained_model_dir)}_{filename}"
         np.save(os.path.join(self.save_dir, filename), self.gr.cpu().detach().numpy())
         
 
@@ -424,6 +410,9 @@ if __name__ == "__main__":
     #learnable potential stuff
     parser.add_argument('--n_epochs', type=int, default=30, help='number of outer loop training epochs')
     parser.add_argument('--nn', action='store_true', help='use neural network potential')
+    parser.add_argument('--pretrained_model_dir', type=str, default= "", help='folder containing pretrained model to initialize with')
+    parser.add_argument('--inference', action='store_true', help='just run simulator for one epoch, no training')
+
     parser.add_argument('--cutoff', type=float, default=2.5, help='LJ cutoff distance')
     parser.add_argument('--gaussian_width', type=float, default=0.1, help='width of the Gaussian used in the RDF')
     parser.add_argument('--n_width', type=int, default=128, help='number of Gaussian functions used in the RDF')
@@ -436,7 +425,7 @@ if __name__ == "__main__":
     #initialize simulator
     simulator = MDSimulator(params)
 
-    if not params.nn:
+    if not params.nn or params.inference:
         params.n_epochs = 1
 
     losses = []
@@ -448,7 +437,7 @@ if __name__ == "__main__":
         writer = SummaryWriter(log_dir = simulator.save_dir)
 
     #limit CPU usage
-    torch.set_num_threads(15)
+    #torch.set_num_threads(15)
     for epoch in range(params.n_epochs):
         best = False
         print(f"Epoch {epoch+1}")
@@ -460,10 +449,10 @@ if __name__ == "__main__":
             if loss < best_outer_loss:
                 best_outer_loss = loss
                 best = True
-            
-            simulator.save_checkpoint(best = best)
+            if not params.inference:
+                simulator.save_checkpoint(best = best)
         #log stuff
-        if params.nn:
+        if params.nn and not params.inference:
             losses.append(loss)
             sim_times.append(sim_time)
             grad_times.append(grad_time)
@@ -477,7 +466,7 @@ if __name__ == "__main__":
         simulator.reset_system()
 
     #log losses
-    if params.nn:
+    if params.nn and not params.inference:
         stats_write_file = os.path.join(simulator.save_dir, 'stats.txt')
         with open(stats_write_file, "w") as output:
             output.write("Losses: " + str(losses) + "\n")

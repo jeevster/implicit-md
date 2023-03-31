@@ -12,7 +12,7 @@ do
     do
         for ttotal in "${ttotal_values[@]}"
         do
-            python nve_implicit.py \
+            python nve_basic.py \
             --n_particle 256 \
             --temp "$temp" \
             --seed 123 \

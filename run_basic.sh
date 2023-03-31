@@ -40,7 +40,7 @@ python nve_basic.py \
 --nn \
 --exp_name "ckpt" \
 --n_epochs 30 \
---cutoff 10 \
+--cutoff 2.5 \
 --gaussian_width 0.1 \
 --n_width 128 \
 --n_layers 3 \
