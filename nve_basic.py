@@ -303,6 +303,17 @@ class MDSimulator:
 
         return gr
 
+    def save_checkpoint(self, best=False):
+        name = "best_ckpt.pt" if best else "ckpt.pt"
+        checkpoint_path = os.path.join(self.save_dir, name)
+        torch.save({'model_state': self.model.state_dict()}, checkpoint_path)
+
+    def restore_checkpoint(self, best=False):
+        name = "best_ckpt.pt" if best else "ckpt.pt"
+        checkpoint_path = os.path.join(self.save_dir, name)
+        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        self.model.load_state_dict(checkpoint['model_state'])
+
     #top level MD simulation code
     def simulate(self, epoch):
     
@@ -394,7 +405,7 @@ if __name__ == "__main__":
     parser.add_argument("--yaml_config", default='config.yaml', type=str)
     parser.add_argument("--config", default='default', type=str)
     parser.add_argument('--n_particle', type=int, default=256, help='number of particles')
-    parser.add_argument('--temp', type=int, default=1, help='temperature in reduced units')
+    parser.add_argument('--temp', type=float, default=1, help='temperature in reduced units')
     parser.add_argument('--seed', type=int, default=123, help='random seed used to initialize velocities')
     parser.add_argument('--kbt0', type=float, default=1.8, help='multiplier for pressure calculation')
     parser.add_argument('--box', type=int, default=7.0, help='box size')
@@ -432,19 +443,25 @@ if __name__ == "__main__":
     grad_times = []
     sim_times = []
     grad_norms = []
+    best_outer_loss = 100
     if params.nn:
         writer = SummaryWriter(log_dir = simulator.save_dir)
 
     #limit CPU usage
     torch.set_num_threads(15)
     for epoch in range(params.n_epochs):
+        best = False
         print(f"Epoch {epoch+1}")
         if not params.nn:
             with torch.no_grad():
                 loss, sim_time, grad_time, max_norm = simulator.simulate(epoch)
         else:
             loss, sim_time, grad_time, max_norm = simulator.simulate(epoch)
-
+            if loss < best_outer_loss:
+                best_outer_loss = loss
+                best = True
+            
+            simulator.save_checkpoint(best = best)
         #log stuff
         if params.nn:
             losses.append(loss)

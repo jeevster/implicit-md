@@ -56,6 +56,9 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.n_layers = params.n_layers
         self.nonlinear = params.nonlinear
 
+        self.inference = params.inference
+        self.pretrained_model_dir = params.pretrained_model_dir
+        
         # print("Input parameters")
         # print("Number of particles %d" % self.n_particle)
         # print("Initial temperature %8.8e" % self.temp)
@@ -154,11 +157,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         checkpoint_path = os.path.join(self.save_dir, name)
         torch.save({'model_state': self.model.state_dict()}, checkpoint_path)
 
-    def restore_checkpoint(self, best=False):
-        name = "best_ckpt.pt" if best else "ckpt.pt"
-        checkpoint_path = os.path.join(self.save_dir, name)
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
-        self.model.load_state_dict(checkpoint['model_state'])
+    
+        
         
 
 
@@ -301,6 +301,11 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
         
         filename ="gt_rdf.npy" if not self.nn else f"rdf_epoch{epoch+1}.npy"
+
+        #pre-pend RDF with name of the pretrained model used in this simulation
+        if self.inference and self.pretrained_model_dir:   
+            filename = f"{os.path.basename(self.pretrained_model_dir)}_{filename}"
+        
         np.save(os.path.join(self.save_dir, filename), save_rdf.cpu().detach().numpy())
         
         
@@ -333,6 +338,10 @@ if __name__ == "__main__":
     #learnable potential stuff
     parser.add_argument('--n_epochs', type=int, default=30, help='number of outer loop training epochs')
     parser.add_argument('--nn', action='store_true', help='use neural network potential')
+    parser.add_argument('--pretrained_model_dir', type=str, default= "", help='folder containing pretrained model to initialize with')
+    parser.add_argument('--inference', action='store_true', help='just run simulator for one epoch, no training')
+
+
     parser.add_argument('--cutoff', type=float, default=2.5, help='LJ cutoff distance')
     parser.add_argument('--gaussian_width', type=float, default=0.1, help='width of the Gaussian used in the RDF')
     parser.add_argument('--n_width', type=int, default=128, help='number of Gaussian functions used in the RDF')
@@ -370,6 +379,15 @@ if __name__ == "__main__":
     prior = LJFamily(epsilon=params.epsilon, sigma=params.sigma, rep_pow=6, attr_pow=0)
 
     model = Stack({'nn': NN, 'prior': prior})
+
+    if params.pretrained_model_dir:
+        #load checkpoint
+        name = "best_ckpt.pt" if params.inference else "ckpt.pt"
+        checkpoint_path = os.path.join(params.pretrained_model_dir, name)
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+        model.load_state_dict(checkpoint['model_state'])
+
+    #inner parameters
     radii_0 = fcc_positions(params.n_particle, params.box, device)
     velocities_0  = initialize_velocities(params.n_particle, params.temp)
     rdf_0  = diff_rdf(tuple(radii_to_dists(radii_0.to(device), params.box)))
@@ -384,7 +402,7 @@ if __name__ == "__main__":
     optimizer = torch.optim.Adam(list(model.parameters()), lr=1e-3)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=5)
 
-    if not params.nn:
+    if not params.nn or params.inference:
         params.n_epochs = 1
 
     #outer training loop
@@ -418,41 +436,41 @@ if __name__ == "__main__":
             if outer_loss < best_outer_loss:
                 best_outer_loss = outer_loss
                 best = True
-            
-            simulator.save_checkpoint(best = best)
+            if not params.inference:
+                simulator.save_checkpoint(best = best)
 
-            #compute (implicit) gradient of outer loss wrt model parameters 
-            start = time.time()
-            torch.autograd.backward(tensors = outer_loss, inputs = list(model.parameters()))
-            end = time.time()
-            grad_time = end-start
-            print("gradient calculation time (s): ",  grad_time)
+                #compute (implicit) gradient of outer loss wrt model parameters 
+                start = time.time()
+                torch.autograd.backward(tensors = outer_loss, inputs = list(model.parameters()))
+                end = time.time()
+                grad_time = end-start
+                print("gradient calculation time (s): ",  grad_time)
 
-            max_norm = 0
-            for param in model.parameters():
-                if param.grad is not None:
-                    norm = torch.linalg.vector_norm(param.grad, dim=-1).max()
-                    if  norm > max_norm:
-                        max_norm = norm
-            try:
-                print("Max norm: ", max_norm.item())
-            except AttributeError:
-                print("Max norm: ", max_norm)
+                max_norm = 0
+                for param in model.parameters():
+                    if param.grad is not None:
+                        norm = torch.linalg.vector_norm(param.grad, dim=-1).max()
+                        if  norm > max_norm:
+                            max_norm = norm
+                try:
+                    print("Max norm: ", max_norm.item())
+                except AttributeError:
+                    print("Max norm: ", max_norm)
 
-            optimizer.step()
-            scheduler.step(outer_loss)
-            #log stats
-            losses.append(outer_loss.item())
-            sim_times.append(sim_time)
-            grad_times.append(grad_time)
-            grad_norms.append(max_norm.item())
+                optimizer.step()
+                scheduler.step(outer_loss)
+                #log stats
+                losses.append(outer_loss.item())
+                sim_times.append(sim_time)
+                grad_times.append(grad_time)
+                grad_norms.append(max_norm.item())
 
-            writer.add_scalar('Loss', losses[-1], global_step=epoch+1)
-            writer.add_scalar('Simulation Time', sim_times[-1], global_step=epoch+1)
-            writer.add_scalar('Gradient Time', grad_times[-1], global_step=epoch+1)
-            writer.add_scalar('Gradient Norm', grad_norms[-1], global_step=epoch+1)
+                writer.add_scalar('Loss', losses[-1], global_step=epoch+1)
+                writer.add_scalar('Simulation Time', sim_times[-1], global_step=epoch+1)
+                writer.add_scalar('Gradient Time', grad_times[-1], global_step=epoch+1)
+                writer.add_scalar('Gradient Norm', grad_norms[-1], global_step=epoch+1)
     
-    if params.nn:
+    if params.nn and not params.inference:
         stats_write_file = os.path.join(simulator.save_dir, 'stats.txt')
         with open(stats_write_file, "w") as output:
             output.write("Losses: " + str(losses) + "\n")
