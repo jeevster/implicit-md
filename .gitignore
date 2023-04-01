@@ -4,3 +4,4 @@ log.txt
 test.gsd
 ground_truth/
 ground_truth_posvelonly
+*.png

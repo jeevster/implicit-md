@@ -81,7 +81,7 @@ class DifferentiableRDF(torch.nn.Module):
         super(DifferentiableRDF, self).__init__()
         start = 0
         range =  params.box #torch.max(self.running_dists)
-        nbins = int(range/params.dr)
+        nbins = params.n_particle * 3
 
         #GPU
         self.device = device
@@ -104,6 +104,40 @@ class DifferentiableRDF(torch.nn.Module):
     def forward(self, running_dists):
         running_dists = torch.cat(running_dists)
         count = self.smear(running_dists.reshape(-1).squeeze()[..., None]).sum(0) 
+        norm = count.sum()   # normalization factor for histogram 
+        count = count / norm   # normalize 
+        gr =  count / (self.vol_bins / self.V )  
+        return gr
+
+'''Sanjeev's differentiable velocity histogram implementation - doesn't use system stuff'''
+class DifferentiableVelHist(torch.nn.Module):
+    def __init__(self, params, device):
+        super(DifferentiableVelHist, self).__init__()
+        start = 0
+        range =  params.box #torch.max(self.running_dists)
+        nbins = params.n_particle * 3
+
+        #GPU
+        self.device = device
+
+        V, vol_bins, bins = generate_vol_bins(start, range, nbins, dim=3)
+
+        self.V = V
+        self.vol_bins = vol_bins.to(self.device)
+        #self.device = system.device
+        self.bins = bins
+
+        self.smear = GaussianSmearing(
+            start=start,
+            stop=bins[-1],
+            n_gaussians=nbins,
+            width=params.gaussian_width,
+            trainable=False
+        ).to(self.device)
+
+    def forward(self, vels):
+        
+        count = self.smear(vels.reshape(-1).squeeze()[..., None]).sum(0) 
         norm = count.sum()   # normalization factor for histogram 
         count = count / norm   # normalize 
         gr =  count / (self.vol_bins / self.V )  
