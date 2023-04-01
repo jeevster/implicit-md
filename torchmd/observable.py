@@ -81,7 +81,10 @@ class DifferentiableRDF(torch.nn.Module):
         super(DifferentiableRDF, self).__init__()
         start = 0
         range =  params.box #torch.max(self.running_dists)
-        nbins = params.n_particle * 3
+        try:
+            nbins = params.n_particle * 3 if params.fixed_point_mode != "all" else int(range/params.dr)
+        except AttributeError:
+            nbins = int(range/params.dr)
 
         #GPU
         self.device = device
