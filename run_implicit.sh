@@ -4,7 +4,7 @@ ttotal_values=(0.5 1.0 2.0 3.5 5.0)
 temp_values=(0.5 1.0 2.0)
 box_values=(5 7 10)
 
-pretrained_model_dir="/home/sanjeevr/implicit-md/results/IMPLICIT_ckpt_n=256_box=7_temp=1.0_eps=1.0_sigma=1.0_dt=0.005_ttotal="
+pretrained_model_dir="/home/sanjeevr/implicit-md/results/ckpt_n=256_box=7_temp=1.0_eps=1.0_sigma=1.0_dt=0.005_ttotal="
 
 for temp in "${temp_values[@]}"
 do

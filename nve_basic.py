@@ -357,21 +357,22 @@ class MDSimulator:
             loss = (self.gr - self.gt_rdf).pow(2).mean()
             print(f"Loss: {loss}")
 
-            start = time.time()
-            loss.backward()
-            end = time.time()
-            grad_time = end - start
-            print("gradient calculation time (s): ",  grad_time)
-            max_norm = 0
-            for param in self.model.parameters():
-                if param.grad is not None:
-                    norm = torch.linalg.vector_norm(param.grad, dim=-1).max()
-                    if  norm > max_norm:
-                        max_norm = norm
-            print("Max norm: ", max_norm.item())
-            
-            self.optimizer.step()
-            self.scheduler.step(loss)
+            if not self.inference:
+                start = time.time()
+                loss.backward()
+                end = time.time()
+                grad_time = end - start
+                print("gradient calculation time (s): ",  grad_time)
+                max_norm = 0
+                for param in self.model.parameters():
+                    if param.grad is not None:
+                        norm = torch.linalg.vector_norm(param.grad, dim=-1).max()
+                        if  norm > max_norm:
+                            max_norm = norm
+                print("Max norm: ", max_norm.item())
+                
+                self.optimizer.step()
+                self.scheduler.step(loss)
         
         #logging
         filename ="gt_rdf.npy" if not self.nn else f"rdf_epoch{epoch+1}.npy"

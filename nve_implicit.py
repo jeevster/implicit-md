@@ -12,7 +12,7 @@ import pstats
 import pdb
 from torchmd.interface import GNNPotentials, PairPotentials, Stack
 from torchmd.potentials import ExcludedVolume, LennardJones, LJFamily,  pairMLP
-from torchmd.observable import rdf, generate_vol_bins, DifferentiableRDF
+from torchmd.observable import rdf, generate_vol_bins, DifferentiableRDF, DifferentiableVelHist
 import torchopt
 from torchopt.nn import ImplicitMetaGradientModule
 import time
@@ -58,6 +58,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
         self.inference = params.inference
         self.pretrained_model_dir = params.pretrained_model_dir
+        self.fixed_point_mode = params.fixed_point_mode
         
         # print("Input parameters")
         # print("Number of particles %d" % self.n_particle)
@@ -84,7 +85,9 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #model.train()
         self.radii = nn.Parameter(radii_0.clone().detach_(), requires_grad=True).to(self.device)
         self.velocities = nn.Parameter(velocities_0.clone().detach_(), requires_grad=True).to(self.device)
-        self.rdf = nn.Parameter(rdf_0.clone().detach_(), requires_grad=True).to(self.device)
+
+        if self.fixed_point_mode == 'all':
+            self.rdf = nn.Parameter(rdf_0.clone().detach_(), requires_grad=True).to(self.device)
 
 
         #register backwards hook for debugging
@@ -95,6 +98,9 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.diff_rdf = DifferentiableRDF(params, self.device)
         self.diff_rdf_cpu = DifferentiableRDF(params, "cpu")
 
+        #define differentiable velocity histogram function
+        self.diff_velhist = DifferentiableVelHist(params, self.device)
+
         #File dump stuff
         self.t = gsd.hoomd.open(name='test2.gsd', mode='wb') 
         self.n_dump = params.n_dump # dump for configuration
@@ -104,9 +110,11 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.f = open("log.txt", "a+")
 
         if self.nn:
-            self.save_dir = os.path.join('results', f"IMPLICIT_{self.exp_name}_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_dt={self.dt}_ttotal={self.t_total}")
+            add = "" if self.fixed_point_mode == "all" else "posvelonly_"
+            self.save_dir = os.path.join('results', f"{add}IMPLICIT_{self.exp_name}_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_dt={self.dt}_ttotal={self.t_total}")
         else: 
-            self.save_dir = os.path.join('ground_truth', f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}")
+            add = "" if self.fixed_point_mode == "all" else "_posvelonly"
+            self.save_dir = os.path.join('ground_truth'+add, f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}")
         os.makedirs(self.save_dir, exist_ok = True)
         dump_params_to_yml(self.params, self.save_dir)
 
@@ -230,17 +238,10 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #another half-step in velocity
         velocities = (velocities + 0.5*self.dt*forces) 
         #props = self.calc_properties()
-        new_rdf = self.rdf
-        if calc_rdf:
-            new_dists = radii_to_dists(radii, self.box)
-            new_rdf = self.diff_rdf(tuple(new_dists.to(self.device))) #calculate the RDF from a single frame
-        # try:
-        #     diff = (torch.abs(new_rdf - self.calc_rdf)/ self.calc_rdf).mean()
-        #     print("mean relative difference in rdf: ", diff)
-        #     self.running_diffs.append(diff.item())
-        # except:
-        #     pass
-        #calc_rdf = new_rdf
+
+        #calculate RDF        
+        new_rdf  = self.diff_rdf(tuple(radii_to_dists(radii, self.box))) if calc_rdf else 0
+
 
         # dump frame
         if self.step%self.n_dump == 0:
@@ -266,12 +267,26 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
         with torch.enable_grad():
             forces = self.force_calc(self.radii)[1]
-            new_radii, new_velocities, _, new_rdf = self(self.radii, self.velocities, forces, calc_rdf = True)
-        radii_residual  = self.radii - new_radii
-        velocity_residual  = self.velocities - new_velocities
-        rdf_residual = self.rdf - new_rdf
+            if self.fixed_point_mode == 'all':
+                new_radii, new_velocities, _, new_rdf = self(self.radii, self.velocities, forces, calc_rdf = True)
+            else:
+                new_radii, new_velocities, _, _ = self(self.radii, self.velocities, forces)
+
+        if self.fixed_point_mode == 'all':
+            radii_residual  = self.radii - new_radii
+            velocity_residual  = self.velocities - new_velocities
+            rdf_residual = self.rdf - new_rdf
+            return (radii_residual, velocity_residual, rdf_residual)
+
+        else:
+            old_rdf = self.diff_rdf(tuple(radii_to_dists(self.radii, self.box)))
+            new_rdf = self.diff_rdf(tuple(radii_to_dists(new_radii, self.box)))
+            old_velhist = self.diff_velhist(torch.linalg.norm(self.velocities, dim = 1))
+            new_velhist = self.diff_velhist(torch.linalg.norm(new_velocities, dim = 1))
+            radii_residual  = (old_rdf - new_rdf).reshape(self.n_particle, 3)
+            velocity_residual  = (old_velhist - new_velhist).reshape(self.n_particle, 3)
+            return (radii_residual, velocity_residual)
         
-        return (radii_residual, velocity_residual, rdf_residual)
 
 
     #top level MD simulation code (i.e the "solver") that returns the optimal "parameter" -aka the equilibriated radii
@@ -290,14 +305,18 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                 radii, velocities, forces, rdf = self(self.radii, self.velocities, forces, calc_rdf = calc_rdf)
                 self.radii.copy_(radii)
                 self.velocities.copy_(velocities)
-                self.rdf.copy_(rdf)
+                if self.fixed_point_mode == 'all':
+                    self.rdf.copy_(rdf)
                 if not self.nn and self.save_intermediate_rdf and step % self.n_dump == 0:
                     filename = f"step{step+1}_rdf.npy"
-                    np.save(os.path.join(self.save_dir, filename), self.rdf.cpu().detach().numpy())
+                    save_rdf = self.rdf if self.fixed_point_mode == 'all' else rdf
+                    np.save(os.path.join(self.save_dir, filename), save_rdf.cpu().detach().numpy())
 
         #compute ground truth rdf over entire trajectory (do it on CPU to avoid memory issues)
         length = len(self.running_dists)
-        save_rdf = self.diff_rdf_cpu(self.running_dists[int(self.burn_in_frac*length):]) if not self.nn else self.rdf
+        
+        rdf = self.rdf if self.fixed_point_mode == 'all' else self.diff_rdf(tuple(radii_to_dists(self.radii, self.box)))
+        save_rdf = self.diff_rdf_cpu(self.running_dists[int(self.burn_in_frac*length):]) if not self.nn else rdf
 
         
         filename ="gt_rdf.npy" if not self.nn else f"rdf_epoch{epoch+1}.npy"
@@ -340,6 +359,7 @@ if __name__ == "__main__":
     parser.add_argument('--nn', action='store_true', help='use neural network potential')
     parser.add_argument('--pretrained_model_dir', type=str, default= "", help='folder containing pretrained model to initialize with')
     parser.add_argument('--inference', action='store_true', help='just run simulator for one epoch, no training')
+    parser.add_argument('--fixed_point_mode',type=str, default="all", help='all treats pos, vel, and rdf as fixed points, otherwise treat rdf and velhist as fixed points')
 
 
     parser.add_argument('--cutoff', type=float, default=2.5, help='LJ cutoff distance')
@@ -362,7 +382,6 @@ if __name__ == "__main__":
 
     #initialize RDF calculator
     diff_rdf = DifferentiableRDF(params, device)
-
 
     #initialize model
     mlp_params = {'n_gauss': int(params.cutoff//params.gaussian_width), 
@@ -394,9 +413,11 @@ if __name__ == "__main__":
 
     #load ground truth rdf
     if params.nn:
-        gt_dir = os.path.join('ground_truth', f"n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}")
+        add = "" if params.fixed_point_mode == "all" else "_posvelonly"
+        gt_dir = os.path.join('ground_truth'+add, f"n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}")
         gt_rdf = torch.Tensor(np.load(os.path.join(gt_dir, "gt_rdf.npy"))).to(device)
-        results_dir = os.path.join('results', f"IMPLICIT_{params.exp_name}_n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}_dt={params.dt}_ttotal={params.t_total}")
+        add = "" if params.fixed_point_mode == "all" else "posvelonly_"
+        results_dir = os.path.join('results', f"{add}IMPLICIT_{params.exp_name}_n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}_dt={params.dt}_ttotal={params.t_total}")
 
     #initialize outer loop optimizer/scheduler
     optimizer = torch.optim.Adam(list(model.parameters()), lr=1e-3)
@@ -424,13 +445,16 @@ if __name__ == "__main__":
         #run MD simulation to get equilibriated radii
         start = time.time()
         equilibriated_simulator = simulator.solve()
+        if params.fixed_point_mode != "all": # need to calculate RDF outside of simulator
+            final_rdf = diff_rdf(tuple(radii_to_dists(equilibriated_simulator.radii, equilibriated_simulator.box)))
         end = time.time()
         sim_time = end-start
         print("MD simulation time (s): ",  sim_time)
         
         #compute RDF loss at the end of the trajectory
         if params.nn:
-            outer_loss = (equilibriated_simulator.rdf - gt_rdf).pow(2).mean()
+            produced_rdf = equilibriated_simulator.rdf if params.fixed_point_mode == "all" else final_rdf
+            outer_loss = (produced_rdf - gt_rdf).pow(2).mean()
             print("Final RDF Loss: ", outer_loss.item())
 
             if outer_loss < best_outer_loss:
