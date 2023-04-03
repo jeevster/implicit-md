@@ -438,7 +438,7 @@ if __name__ == "__main__":
         writer = SummaryWriter(log_dir = simulator.save_dir)
 
     #limit CPU usage
-    torch.set_num_threads(15)
+    #torch.set_num_threads(15)
     for epoch in range(params.n_epochs):
         best = False
         print(f"Epoch {epoch+1}")
