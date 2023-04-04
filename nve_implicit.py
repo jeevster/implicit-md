@@ -123,7 +123,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         s.configuration.box=[self.box,self.box,self.box,0,0,0]
         return s
 
-    def calc_properties(self):
+    def calc_properties(self, pe):
         #TODO
         # Calculate properties of interest in this function
         p_dof = 3*self.n_particle-3
@@ -132,10 +132,11 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         temp = 2*ke/p_dof
         #w = -1/6*torch.sum(self.internal_virial)
         #pressure = w/self.vol + self.rho*self.kbt0
-        pressure = torch.Tensor(0)
+        #pressure = torch.Tensor(0)
         return {"Temperature": temp.item(),
-                "Pressure": pressure,
-                "Total Energy": (ke+self.potential).item(),
+                #"Pressure": pressure,
+                "Potential Energy": pe.item(),
+                "Total Energy": (ke+pe).item(),
                 "Momentum Magnitude": torch.norm(torch.sum(self.velocities, axis =0)).item()}
 
     def save_checkpoint(self, best=False):
@@ -197,7 +198,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                     (radii-torch.round(radii)), (radii - torch.floor(radii)-1))
 
         #calculate force at new position
-        _, forces = self.force_calc(radii.to(self.device))
+        energy, forces = self.force_calc(radii.to(self.device))
         
         #another half-step in velocity
         velocities = (velocities + 0.5*self.dt*forces) 
@@ -209,7 +210,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
         # dump frame
         if self.step%self.n_dump == 0:
-            #print(self.step, props, file=self.f)
+            print(self.step, self.calc_properties(energy), file=self.f)
             #self.t.append(self.create_frame(frame = self.step/self.n_dump))
             #append dists to running_dists for RDF calculation (remove diagonal entries)
             if not self.nn:
