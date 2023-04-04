@@ -1,5 +1,5 @@
 #!/bin/bash
-ttotal_values=(0.5 1.0 2.0 3.5 5.0)
+ttotal_values=(3.5 5.0)
 
 for ttotal in "${ttotal_values[@]}"
 do

@@ -181,12 +181,7 @@ class MDSimulator:
         return np.all(np.abs(a - a.T) < tol)
 
     def force_calc(self):
-        #TODO
-        # Evaluate forces
-        # Using LJ potential
-        # u_lj(r_ij) = 4*epsilon*[(sigma/r_ij)^12-(sigma/r_ij)^6]
-        # You can get energy and the pressure for free out of this calculation if you do it right
-        
+    
          #Get rij matrix
         with torch.enable_grad():
             r = self.radii.unsqueeze(0) - self.radii.unsqueeze(1)
@@ -200,10 +195,6 @@ class MDSimulator:
                 pass
             #compute distance matrix:
             self.dists = torch.sqrt(torch.sum(r**2, axis=2)).unsqueeze(-1)
-            #d = self.dists.detach().numpy()
-
-            #zero out self-interactions
-            #dists = (self.dists + 10000000*torch.eye(self.n_particle)).unsqueeze(-1)
         
             if self.nn:
                 #energy = self.model(dists).sum()
@@ -217,16 +208,7 @@ class MDSimulator:
                 self.internal_virial = -48*self.epsilon*r6i*(r6i - 0.5)/(self.sigma**2)
                 forces = -self.internal_virial*r*r2i
 
-        # new_forces = torch.zeros((self.dists.shape[0], self.dists.shape[0], 3))
-        # for i in range(self.dists.shape[0]):
-        #     new_forces[i] = torch.cat(([forces[i, :i], torch.zeros((1,3)).to(self.device), forces[i, i:]]), dim=0)
-        #f = forces.cpu().detach().numpy()
-
-        #import pdb; pdb.set_trace()
         assert(not torch.any(torch.isnan(forces)))
-        # assert self.check_symmetric(f[:, :, 0], mode = 'opposite')
-        # assert self.check_symmetric(f[:, :, 1], mode = 'opposite')
-        # assert self.check_symmetric(f[:, :, 2], mode = 'opposite')
        
                 
         #sum forces across particles
@@ -337,12 +319,7 @@ class MDSimulator:
         end = time.time()
         sim_time = end-start
         print("simulation time (s): ",  sim_time)
-        # for obj in gc.get_objects():
-        #     try:
-        #         if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
-        #             print(type(obj), obj.size())
-        #     except:
-        #         pass
+        
         # RDF Calculation
         if self.nn: #compute RDF from final frame only
             self.gr = self.diff_rdf(tuple(radii_to_dists(self.radii, self.box)))

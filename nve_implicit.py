@@ -8,25 +8,18 @@ from YParams import YParams
 import argparse
 import os
 from tqdm import tqdm
-import pstats
-import pdb
+
 from torchmd.interface import GNNPotentials, PairPotentials, Stack
 from torchmd.potentials import ExcludedVolume, LennardJones, LJFamily,  pairMLP
 from torchmd.observable import rdf, generate_vol_bins, DifferentiableRDF, DifferentiableVelHist
 import torchopt
 from torchopt.nn import ImplicitMetaGradientModule
 import time
-from torch.profiler import profile, record_function, ProfilerActivity
 import gc
 import shutil
 from torch.utils.tensorboard import SummaryWriter
 import cProfile
-
-
-
 from utils import radii_to_dists, fcc_positions, initialize_velocities, dump_params_to_yml
-
-
 
 class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.linear_solve.solve_normal_cg(maxiter=5, atol=0)):
     def __init__(self, params, model, radii_0, velocities_0, rdf_0):
@@ -60,16 +53,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.pretrained_model_dir = params.pretrained_model_dir
         self.fixed_point_mode = params.fixed_point_mode
         
-        # print("Input parameters")
-        # print("Number of particles %d" % self.n_particle)
-        # print("Initial temperature %8.8e" % self.temp)
-        # print("Box size %8.8e" % self.box)
-        # print("epsilon %8.8e" % self.epsilon)
-        # print("sigma %8.8e" % self.sigma)
-        # print("dt %8.8e" % self.dt)
-        # print("Total time %8.8e" % self.t_total)
-        # print("Number of steps %d" % self.nsteps)
-
         # Constant box properties
         self.vol = self.box**3.0
         self.rho = self.n_particle/self.vol
@@ -88,11 +71,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
         if self.fixed_point_mode == 'all':
             self.rdf = nn.Parameter(rdf_0.clone().detach_(), requires_grad=True).to(self.device)
-
-
-        #register backwards hook for debugging
-        # for module in self.model.modules():
-        #     module.register_backward_hook(backward_hook)
 
         #define differentiable rdf function
         self.diff_rdf = DifferentiableRDF(params, self.device)
@@ -165,11 +143,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         checkpoint_path = os.path.join(self.save_dir, name)
         torch.save({'model_state': self.model.state_dict()}, checkpoint_path)
 
-    
-        
-        
-
-
 
     '''CORE MD OPERATIONS'''
     def force_calc(self, radii):
@@ -202,19 +175,10 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                 internal_virial = -48*self.epsilon*r6i*(r6i - 0.5)/(self.sigma**2)
                 forces = -internal_virial*r*r2i
 
-        #insert 0s back in diagonal entries of force matrix
-        # new_forces = torch.zeros((dists.shape[0], dists.shape[0], 3))
-        # for i in range(dists.shape[0]):
-        #     new_forces[i] = torch.cat(([forces[i, :i], torch.zeros((1,3)).to(self.device), forces[i, i:]]), dim=0)
-        # f = new_forces.detach().numpy()
 
-        # #Ensure symmetries
+        # #Ensure no NaN
         assert(not torch.any(torch.isnan(forces)))
-        # assert self.check_symmetric(f[:, :, 0], mode = 'opposite')
-        # assert self.check_symmetric(f[:, :, 1], mode = 'opposite')
-        # assert self.check_symmetric(f[:, :, 2], mode = 'opposite')
-       
-                
+        
         #sum forces across particles
         return energy, torch.sum(forces, axis = 1)#.to(self.device)
         
@@ -260,10 +224,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         # Stationary condition construction for calculating implicit gradient
         #print("optimality")
         #Stationarity of the RDF - doesn't change if we do another step of MD
-        #Need to compute a residual with respect to every inner param, and each residual has to be the 
-        #same shape as the corresponding parameter. 
-        #TODO: currently, radii, velocity, and rdf are all params - need to make only rdf a parameter so we can 
-        #just compute the rdf residual
+        
 
         with torch.enable_grad():
             forces = self.force_calc(self.radii)[1]
