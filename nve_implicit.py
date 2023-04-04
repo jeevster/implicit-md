@@ -39,6 +39,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.box = params.box
         self.diameter_viz = params.diameter_viz
         self.epsilon = params.epsilon
+        self.rep_power = params.rep_power
+        self.attr_power = params.attr_power
         self.poly = params.poly
         self.poly_power = params.poly_power
         self.min_sigma = params.min_sigma
@@ -57,15 +59,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.n_layers = params.n_layers
         self.nonlinear = params.nonlinear
 
-        # print("Input parameters")
-        # print("Number of particles %d" % self.n_particle)
-        # print("Initial temperature %8.8e" % self.temp)
-        # print("Box size %8.8e" % self.box)
-        # print("epsilon %8.8e" % self.epsilon)
-        # print("sigma %8.8e" % self.sigma)
-        # print("dt %8.8e" % self.dt)
-        # print("Total time %8.8e" % self.t_total)
-        # print("Number of steps %d" % self.nsteps)
+
 
         # Constant box properties
         self.vol = self.box**3.0
@@ -95,9 +89,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             self.sigma_pairs = 1/2 * (sigma1 + sigma2)*(1 - self.epsilon*torch.abs(sigma1 - sigma2))
             self.sigma_pairs = self.sigma_pairs[~torch.eye(self.sigma_pairs.shape[0],dtype=bool)].reshape(self.sigma_pairs.shape[0], -1, 1).to(self.device)
             self.particle_sigmas = self.particle_sigmas
-        #register backwards hook for debugging
-        # for module in self.model.modules():
-        #     module.register_backward_hook(backward_hook)
+        
 
         #define differentiable rdf function
         self.diff_rdf = DifferentiableRDF(params, self.device)
@@ -114,7 +106,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         if self.nn:
             self.save_dir = os.path.join('results', f"IMPLICIT_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_dt={self.dt}_ttotal={self.t_total}")
         else: 
-            self.save_dir = os.path.join('ground_truth', f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}")
+            self.save_dir = os.path.join('ground_truth_polylj', f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}")
         os.makedirs(self.save_dir, exist_ok = True)
         dump_params_to_yml(self.params, self.save_dir)
 
@@ -145,7 +137,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         s.configuration.box=[self.box,self.box,self.box,0,0,0]
         return s
 
-    def calc_properties(self):
+    def calc_properties(self, pe):
         #TODO
         # Calculate properties of interest in this function
         p_dof = 3*self.n_particle-3
@@ -156,8 +148,9 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #pressure = w/self.vol + self.rho*self.kbt0
         pressure = torch.Tensor(0)
         return {"Temperature": temp.item(),
-                "Pressure": pressure,
-                "Total Energy": (ke+self.potential).item(),
+                #"Pressure": pressure,
+                "Potential Energy": pe.item(),
+                "Total Energy": (ke+pe).item(),
                 "Momentum Magnitude": torch.norm(torch.sum(self.velocities, axis =0)).item()}
 
 
@@ -169,6 +162,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             r = radii.unsqueeze(0) - radii.unsqueeze(1)
             if not r.requires_grad:
                 r.requires_grad = True
+
             #Enforce minimum image convention
             r = -1*torch.where(r > 0.5*self.box, r-self.box, torch.where(r<-0.5*self.box, r+self.box, r))
 
@@ -185,11 +179,26 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             
             #LJ potential
             else:
-                if self.poly:
-                    r2i = (self.sigma_pairs/dists)**2
-                    r6i = r2i**3
-                    energy = torch.sum(r6i*(r6i - 1))
-                    forces = 6*r6i*(2*r6i - 1) * r2i / (self.sigma_pairs**2) * r
+                if self.poly: #repulsive
+                    parenth = (self.sigma_pairs/dists)
+                    r2i = (1/dists)**2
+                    c_0 = -28*self.epsilon / (self.cutoff**12)
+                    c_2 = 48*self.epsilon / (self.cutoff**14)
+                    c_4 = -21*self.epsilon / (self.cutoff**16)
+                    rep_term = parenth ** self.rep_power
+                    attr_term = parenth ** self.attr_power
+                    r_multiplier = r2i * (self.rep_power * rep_term - \
+                                    self.attr_power * attr_term) - 2*c_2/(self.sigma_pairs**2)
+
+                    r3_multiplier = 4*c_4 / (self.sigma_pairs**4)
+                    
+                    energy = torch.sum(rep_term + c_0 + c_2*parenth**-2 + c_4*parenth**-4)
+                    
+                    #import pdb; pdb.set_trace()
+                    #forces = r_multiplier * r + r3_multiplier * r**3
+                    forces = -compute_grad(inputs=r, output=energy)
+                    #apply cutoff
+                    forces = torch.where(1/parenth >= self.cutoff, torch.zeros((1, 1, 3)).to(self.device), forces)
 
                     
                 else:
@@ -199,21 +208,13 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                     #reuse components of potential to calculate virial and forces
                     internal_virial = -48*self.epsilon*r6i*(r6i - 0.5)/(self.sigma**2)
                     forces = -internal_virial*r*r2i
+                    
 
-            #apply cutoff
-            forces = torch.where(dists > self.cutoff, torch.zeros((1, 1, 3)).to(self.device), forces)
-        #insert 0s back in diagonal entries of force matrix
-        # new_forces = torch.zeros((dists.shape[0], dists.shape[0], 3))
-        # for i in range(dists.shape[0]):
-        #     new_forces[i] = torch.cat(([forces[i, :i], torch.zeros((1,3)).to(self.device), forces[i, i:]]), dim=0)
-        # f = new_forces.detach().numpy()
+            
 
         # #Ensure symmetries
         assert(not torch.any(torch.isnan(forces)))
-        # assert self.check_symmetric(f[:, :, 0], mode = 'opposite')
-        # assert self.check_symmetric(f[:, :, 1], mode = 'opposite')
-        # assert self.check_symmetric(f[:, :, 2], mode = 'opposite')
-       
+        
                 
         #sum forces across particles
         return energy, torch.sum(forces, axis = 1)#.to(self.device)
@@ -233,7 +234,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                     (radii-torch.round(radii)), (radii - torch.floor(radii)-1))
 
         #calculate force at new position
-        _, forces = self.force_calc(radii.to(self.device))
+        energy, forces = self.force_calc(radii.to(self.device))
         
         #another half-step in velocity
         velocities = (velocities + 0.5*self.dt*forces) 
@@ -251,7 +252,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
         # dump frame
         if self.step%self.n_dump == 0:
-            #print(self.step, props, file=self.f)
+            print(self.step, self.calc_properties(energy), file=self.f)
             self.t.append(self.create_frame(frame = self.step/self.n_dump))
             #append dists to running_dists for RDF calculation (remove diagonal entries)
             if not self.nn:
@@ -330,11 +331,13 @@ if __name__ == "__main__":
     parser.add_argument("--yaml_config", default='config.yaml', type=str)
     parser.add_argument("--config", default='default', type=str)
     parser.add_argument('--n_particle', type=int, default=256, help='number of particles')
-    parser.add_argument('--temp', type=int, default=1, help='temperature in reduced units')
+    parser.add_argument('--temp', type=float, default=1, help='temperature in reduced units')
     parser.add_argument('--seed', type=int, default=123, help='random seed used to initialize velocities')
     parser.add_argument('--kbt0', type=float, default=1.8, help='multiplier for pressure calculation')
     parser.add_argument('--box', type=int, default=7, help='box size')
     parser.add_argument('--epsilon', type=float, default=1.0, help='LJ epsilon')
+    parser.add_argument('--rep_power', type=float, default=12, help='LJ repulsive exponent')
+    parser.add_argument('--attr_power', type=float, default=0, help='LJ attractive exponent')
     parser.add_argument('--poly', action='store_true', help='vary sigma (diameter) of each particle according to power law')
     parser.add_argument('--poly_power', type=float, default = -3.0, help='power of power law')
     parser.add_argument('--min_sigma', type=float, default = 0.5, help='minimum sigma for power law distribution')
@@ -392,7 +395,7 @@ if __name__ == "__main__":
 
     #load ground truth rdf
     if params.nn:
-        gt_dir = os.path.join('ground_truth', f"n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}")
+        gt_dir = os.path.join('ground_truth_polylj', f"n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}")
         gt_rdf = torch.Tensor(np.load(os.path.join(gt_dir, "gt_rdf.npy"))).to(device)
         results_dir = os.path.join('results', f"IMPLICIT_n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}_dt={params.dt}_ttotal={params.t_total}")
 
