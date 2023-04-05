@@ -37,6 +37,12 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.temp = params.temp
         self.kbt0 = params.kbt0
         self.box = params.box
+        self.dt = params.dt
+        self.t_total = params.t_total
+        self.targeEkin = 0.5 * (3.0 * self.n_particle) * self.temp
+        self.Q = 3.0 * self.n_particle * self.temp * (self.t_total * self.dt)**2
+
+
         self.diameter_viz = params.diameter_viz
         self.epsilon = params.epsilon
         self.rep_power = params.rep_power
@@ -45,8 +51,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.poly_power = params.poly_power
         self.min_sigma = params.min_sigma
         self.sigma = params.sigma
-        self.dt = params.dt
-        self.t_total = params.t_total
+        
         self.dr = params.dr
         self.nsteps = np.rint(self.t_total/self.dt).astype(np.int32)
         self.burn_in_frac = params.burn_in_frac
@@ -180,6 +185,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             #LJ potential
             else:
                 if self.poly: #repulsive
+                    import pdb; pdb.set_trace()
                     parenth = (self.sigma_pairs/dists)
                     r2i = (1/dists)**2
                     c_0 = -28*self.epsilon / (self.cutoff**12)
@@ -200,7 +206,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                     #apply cutoff
                     forces = torch.where(1/parenth >= self.cutoff, torch.zeros((1, 1, 3)).to(self.device), forces)
 
-                    
                 else:
                     r2i = (self.sigma/dists)**2
                     r6i = r2i**3
@@ -209,9 +214,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                     internal_virial = -48*self.epsilon*r6i*(r6i - 0.5)/(self.sigma**2)
                     forces = -internal_virial*r*r2i
                     
-
-            
-
         # #Ensure symmetries
         assert(not torch.any(torch.isnan(forces)))
         
@@ -219,7 +221,54 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #sum forces across particles
         return energy, torch.sum(forces, axis = 1)#.to(self.device)
         
-    
+    def forward_nvt(self, radii, velocities, forces, zeta):
+        # get current acceleration
+        accel = forces
+
+        # make full step in position
+        radii = radii + velocities * self.dt + \
+            (accel - zeta * velocities) * (0.5 * self.dt ** 2)
+
+        # record current velocities
+        KE_0 = torch.sum(torch.square(velocities)) / 2
+        
+        # make half a step in velocity
+        velocities = velocities + 0.5 * self.dt * (accel - zeta * velocities)
+
+        # make a full step in accelerations
+        energy, forces = self.force_calc(radii.to(self.device))
+        accel = forces
+
+        # make a half step in self.zeta
+        zeta = zeta + 0.5 * self.dt * \
+            (1/self.Q) * (KE_0 - self.targeEkin)
+
+        #get updated KE
+        ke = torch.sum(torch.square(velocities)) / 2
+
+        # make another halfstep in self.zeta
+        zeta = zeta + 0.5 * self.dt * \
+            (1/self.Q) * (ke - self.targeEkin)
+
+        # make another half step in velocity
+        velocities = (velocities + 0.5 * self.dt * accel) / \
+            (1 + 0.5 * self.dt * zeta)
+
+        new_dists = radii_to_dists(radii, self.box)
+        new_rdf = self.diff_rdf(tuple(new_dists.to(self.device))) #calculate the RDF from a single frame
+
+        # dump frame
+        if self.step%self.n_dump == 0:
+            print(self.step, self.calc_properties(energy), file=self.f)
+            self.t.append(self.create_frame(frame = self.step/self.n_dump))
+            #append dists to running_dists for RDF calculation (remove diagonal entries)
+            if not self.nn:
+                self.running_dists.append(new_dists.cpu().detach())
+            #np.save(f"inst_rdf_nn/t={self.step}_inst_rdf_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_nn={self.nn}.npy", self.calc_rdf.detach().numpy())
+
+        return radii, velocities, forces, zeta, new_rdf
+        
+        
     def forward(self, radii, velocities, forces):
         # Forward process - 1 MD step with Velocity-Verlet integration
         #half-step in velocity
@@ -242,13 +291,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
         new_dists = radii_to_dists(radii, self.box)
         new_rdf = self.diff_rdf(tuple(new_dists.to(self.device))) #calculate the RDF from a single frame
-        # try:
-        #     diff = (torch.abs(new_rdf - self.calc_rdf)/ self.calc_rdf).mean()
-        #     print("mean relative difference in rdf: ", diff)
-        #     self.running_diffs.append(diff.item())
-        # except:
-        #     pass
-        #calc_rdf = new_rdf
+        
 
         # dump frame
         if self.step%self.n_dump == 0:
@@ -292,10 +335,11 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             _, forces = self.force_calc(self.radii)
             #Run MD
             print("Start MD trajectory", file=self.f)
+            zeta = 0
             for step in tqdm(range(self.nsteps)):
                 self.step = step
                 
-                radii, velocities, forces, rdf = self(self.radii, self.velocities, forces)
+                radii, velocities, forces, zeta, rdf = self.forward_nvt(self.radii, self.velocities, forces, zeta)
                 self.radii.copy_(radii)
                 self.velocities.copy_(velocities)
                 self.rdf.copy_(rdf)
@@ -312,6 +356,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #         pass
 
         #compute ground truth rdf over entire trajectory (do it on CPU to avoid memory issues)
+        self.f.close()
         length = len(self.running_dists)
         save_rdf = self.diff_rdf_cpu(self.running_dists[int(self.burn_in_frac*length):]) if not self.nn else self.rdf
 
@@ -320,7 +365,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         np.save(os.path.join(self.save_dir, filename), save_rdf.cpu().detach().numpy())
         
         
-        self.f.close()
+        
         return self
 
     
