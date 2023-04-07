@@ -37,6 +37,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.temp = params.temp
         self.kbt0 = params.kbt0
         self.box = params.box
+        self.pbc = not params.no_pbc
         self.dt = params.dt
         self.t_total = params.t_total
         self.targeEkin = 0.5 * (3.0 * self.n_particle) * self.temp
@@ -129,11 +130,11 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         radii = self.radii.detach()
         partpos = radii.tolist()
         velocities = self.velocities.detach().tolist()
-        diameter = self.diameter_viz*self.sigma*np.ones((self.n_particle,))
+        diameter = self.diameter_viz*self.particle_sigmas*np.ones((self.n_particle,))
         diameter = diameter.tolist()
 
         # Now make gsd file
-        s = gsd.hoomd.Snapshot()
+        s = gsd.hoomd.Frame()
         s.configuration.step = frame
         s.particles.N=self.n_particle
         s.particles.position = partpos
@@ -185,7 +186,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             #LJ potential
             else:
                 if self.poly: #repulsive
-                    import pdb; pdb.set_trace()
                     parenth = (self.sigma_pairs/dists)
                     r2i = (1/dists)**2
                     c_0 = -28*self.epsilon / (self.cutoff**12)
@@ -229,6 +229,11 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         radii = radii + velocities * self.dt + \
             (accel - zeta * velocities) * (0.5 * self.dt ** 2)
 
+        #PBC correction
+        radii = radii/self.box 
+        radii = self.box*torch.where(radii-torch.round(radii) >= 0, \
+                    (radii-torch.round(radii)), (radii - torch.floor(radii)-1))
+
         # record current velocities
         KE_0 = torch.sum(torch.square(velocities)) / 2
         
@@ -253,8 +258,9 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         # make another half step in velocity
         velocities = (velocities + 0.5 * self.dt * accel) / \
             (1 + 0.5 * self.dt * zeta)
-
-        new_dists = radii_to_dists(radii, self.box)
+        
+        #normalize distances by sigma pairs
+        new_dists = radii_to_dists(radii, self.box) / self.sigma_pairs
         new_rdf = self.diff_rdf(tuple(new_dists.to(self.device))) #calculate the RDF from a single frame
 
         # dump frame
@@ -278,9 +284,10 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         radii = radii + self.dt*velocities
 
         #PBC correction
-        radii = radii/self.box 
-        radii = self.box*torch.where(radii-torch.round(radii) >= 0, \
-                    (radii-torch.round(radii)), (radii - torch.floor(radii)-1))
+        if self.pbc:
+            radii = radii/self.box 
+            radii = self.box*torch.where(radii-torch.round(radii) >= 0, \
+                        (radii-torch.round(radii)), (radii - torch.floor(radii)-1))
 
         #calculate force at new position
         energy, forces = self.force_calc(radii.to(self.device))
@@ -289,7 +296,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         velocities = (velocities + 0.5*self.dt*forces) 
         #props = self.calc_properties()
 
-        new_dists = radii_to_dists(radii, self.box)
+        new_dists = radii_to_dists(radii, self.box) / self.sigma_pairs
         new_rdf = self.diff_rdf(tuple(new_dists.to(self.device))) #calculate the RDF from a single frame
         
 
@@ -380,6 +387,8 @@ if __name__ == "__main__":
     parser.add_argument('--seed', type=int, default=123, help='random seed used to initialize velocities')
     parser.add_argument('--kbt0', type=float, default=1.8, help='multiplier for pressure calculation')
     parser.add_argument('--box', type=int, default=7, help='box size')
+    parser.add_argument('--no_pbc', action='store_true', help='do not do periodic boundary condition')
+
     parser.add_argument('--epsilon', type=float, default=1.0, help='LJ epsilon')
     parser.add_argument('--rep_power', type=float, default=12, help='LJ repulsive exponent')
     parser.add_argument('--attr_power', type=float, default=0, help='LJ attractive exponent')

@@ -402,3 +402,28 @@ def compute_dihe(xyz, dihes):
 #                 loss_func=L2)
 
 # obs.get_loss(q_t[::10])
+
+# Initialize arrays for squared displacements and number of displacements
+def msd(positions, box):
+    msd = torch.zeros(len(positions))
+    num_displacements = torch.zeros(len(positions), dtype=int)
+
+    # Loop over time steps
+    for step in range(1, len(positions)):
+        # Compute displacement vector for each particle
+        displacements = positions[step] - positions[step - 1]
+        displacements = torch.where(displacements > 0.5*box, displacements-box, torch.where(displacements<-0.5*box, displacements+box, displacements))
+
+        # Calculate squared displacements
+        squared_displacements = np.linalg.norm(displacements, axis=1) ** 2
+
+        # Accumulate squared displacements and update number of displacements
+        msd += squared_displacements
+        num_displacements += 1
+
+    # Average squared displacements
+    msd /= num_displacements
+
+    # Optionally, calculate standard deviation for error estimates
+    #std_msd = (msd.var() / len(msd)).sqrt()
+    return msd

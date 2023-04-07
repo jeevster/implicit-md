@@ -15,7 +15,7 @@ python nve_implicit.py \
 --dr 0.01 \
 --t_total 5 \
 --diameter_viz 0.3 \
---n_dump 1 \
+--n_dump 10 \
 --save_intermediate_rdf \
 --burn_in_frac 0.2 \
 --n_epochs 30 \
