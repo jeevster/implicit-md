@@ -6,6 +6,7 @@ from nff.nn.layers import GaussianSmearing
 import numpy as np
 from torchmd.system import check_system
 from torchmd.topology import generate_nbr_list, get_offsets, generate_angle_list
+from scipy.stats import linregress
 
 def generate_vol_bins(start, end, nbins, dim):
     bins = torch.linspace(start, end, nbins + 1)
@@ -230,7 +231,26 @@ def compute_dihe(xyz, dihes):
     
     return cos_phi 
 
+def msd(positions, box):
+    msd = torch.zeros(len(positions))
+    total_displacements = torch.zeros_like(positions[0])
+    # Loop over time steps
+    for step in range(1, len(positions)):
+        # Compute displacement vector for each particle
+        displacements = positions[step] - positions[step - 1]
+        displacements = torch.where(displacements > 0.5*box, displacements-box, torch.where(displacements<-0.5*box, displacements+box, displacements))
+        total_displacements += displacements
+        # Calculate squared displacements
+        total_squared_displacements = torch.linalg.norm(total_displacements, axis=1) ** 2
 
+        # Accumulate squared displacements and update number of displacements
+        msd[step] = total_squared_displacements.mean()
+        
+    # Optionally, calculate standard deviation for error estimates
+    #std_msd = (msd.var() / len(msd)).sqrt()
+    return msd
+
+    
 # New Observable function packed with data and plotting 
 
 # class Observable(torch.nn.Module):

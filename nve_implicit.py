@@ -95,13 +95,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.diff_rdf = DifferentiableRDF(params, self.device)
         self.diff_rdf_cpu = DifferentiableRDF(params, "cpu")
 
-        #File dump stuff
-        self.t = gsd.hoomd.open(name='test2.gsd', mode='wb') 
-        self.n_dump = params.n_dump # dump for configuration
         
-        #check if inital momentum is zero
-        #initial_props = self.calc_properties()
-        self.f = open("log.txt", "a+")
 
         if self.nn:
             self.save_dir = os.path.join('results', f"IMPLICIT_{self.exp_name}_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_dt={self.dt}_ttotal={self.t_total}")
@@ -109,6 +103,11 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             self.save_dir = os.path.join('ground_truth', f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}")
         os.makedirs(self.save_dir, exist_ok = True)
         dump_params_to_yml(self.params, self.save_dir)
+
+        #File dump stuff
+        self.f = open(f"{self.save_dir}/log.txt", "a+")
+        self.t = gsd.hoomd.open(name=f'{self.save_dir}/test_temp{self.temp}.gsd', mode='wb') 
+        self.n_dump = params.n_dump # dump for configuration
 
     def check_symmetric(self, a, mode, tol=1e-4):
         if mode == 'opposite':
@@ -128,7 +127,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         diameter = diameter.tolist()
 
         # Now make gsd file
-        s = gsd.hoomd.Snapshot()
+        s = gsd.hoomd.Frame()
         s.configuration.step = frame
         s.particles.N=self.n_particle
         s.particles.position = partpos
@@ -245,7 +244,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         # dump frame
         if self.step%self.n_dump == 0:
             #print(self.step, props, file=self.f)
-            #self.t.append(self.create_frame(frame = self.step/self.n_dump))
+            self.t.append(self.create_frame(frame = self.step/self.n_dump))
             #append dists to running_dists for RDF calculation (remove diagonal entries)
             if not self.nn:
                 self.running_dists.append(radii_to_dists(radii, self.box).cpu().detach())
