@@ -101,20 +101,27 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.diff_rdf = DifferentiableRDF(params, self.device)
         self.diff_rdf_cpu = DifferentiableRDF(params, "cpu")
 
-        #File dump stuff
-        self.t = gsd.hoomd.open(name='test2.gsd', mode='wb') 
-        self.n_dump = params.n_dump # dump for configuration
+        
         
         #check if inital momentum is zero
         #initial_props = self.calc_properties()
-        self.f = open("log.txt", "a+")
+        
 
         if self.nn:
             self.save_dir = os.path.join('results', f"IMPLICIT_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_dt={self.dt}_ttotal={self.t_total}")
         else: 
             self.save_dir = os.path.join('ground_truth_polylj', f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}")
+
+
+        
+
         os.makedirs(self.save_dir, exist_ok = True)
         dump_params_to_yml(self.params, self.save_dir)
+
+        #File dump stuff
+        self.f = open(f"{self.save_dir}/log.txt", "a+")
+        self.t = gsd.hoomd.open(name=f'{self.save_dir}/test_temp{self.temp}.gsd', mode='wb') 
+        self.n_dump = params.n_dump # dump for configuration
 
     def check_symmetric(self, a, mode, tol=1e-4):
         if mode == 'opposite':
@@ -230,9 +237,10 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             (accel - zeta * velocities) * (0.5 * self.dt ** 2)
 
         #PBC correction
-        radii = radii/self.box 
-        radii = self.box*torch.where(radii-torch.round(radii) >= 0, \
-                    (radii-torch.round(radii)), (radii - torch.floor(radii)-1))
+        if self.pbc:
+            radii = radii/self.box 
+            radii = self.box*torch.where(radii-torch.round(radii) >= 0, \
+                        (radii-torch.round(radii)), (radii - torch.floor(radii)-1))
 
         # record current velocities
         KE_0 = torch.sum(torch.square(velocities)) / 2

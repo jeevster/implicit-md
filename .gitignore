@@ -3,3 +3,4 @@ results/
 log.txt
 test.gsd
 ground_truth/
+*.gsd
