@@ -79,9 +79,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #define differentiable velocity histogram function
         self.diff_velhist = DifferentiableVelHist(params, self.device)
 
-        #File dump stuff
-        self.t = gsd.hoomd.open(name='test2.gsd', mode='wb') 
-        self.n_dump = params.n_dump # dump for configuration
         
         #check if inital momentum is zero
         #initial_props = self.calc_properties()
@@ -95,6 +92,11 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             self.save_dir = os.path.join('ground_truth'+add, f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}")
         os.makedirs(self.save_dir, exist_ok = True)
         dump_params_to_yml(self.params, self.save_dir)
+
+        #File dump stuff
+        self.f = open(f"{self.save_dir}/log.txt", "a+")
+        self.t = gsd.hoomd.open(name=f'{self.save_dir}/test_temp{self.temp}.gsd', mode='wb') 
+        self.n_dump = params.n_dump # dump for configuration
 
     def check_symmetric(self, a, mode, tol=1e-4):
         if mode == 'opposite':
@@ -114,7 +116,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         diameter = diameter.tolist()
 
         # Now make gsd file
-        s = gsd.hoomd.Snapshot()
+        s = gsd.hoomd.Frame()
         s.configuration.step = frame
         s.particles.N=self.n_particle
         s.particles.position = partpos

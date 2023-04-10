@@ -1,11 +1,11 @@
 #!/bin/bash
 
 python nve_implicit.py \
---n_particle 256 \
+--n_particle 1024 \
 --temp 1 \
 --seed 123 \
 --kbt0 1.8 \
---box 7 \
+--box 15 \
 --epsilon 1.0 \
 --sigma 1.0 \
 --dt 0.005 \
@@ -15,7 +15,6 @@ python nve_implicit.py \
 --n_dump 1 \
 --burn_in_frac 0.2 \
 --n_epochs 30 \
---save_intermediate_rdf \
 --exp_name "TEST" \
 --cutoff 10 \
 --gaussian_width 0.1 \
