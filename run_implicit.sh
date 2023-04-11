@@ -12,8 +12,8 @@ python nve_implicit.py \
 --sigma 1.0 \
 --dt 0.001 \
 --dr 0.01 \
---t_total 10000 \
---nvt_time 40 \
+--t_total 5 \
+--nvt_time 4 \
 --diameter_viz 0.3 \
 --n_dump 50 \
 --burn_in_frac 0.2 \

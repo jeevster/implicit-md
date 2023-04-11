@@ -70,6 +70,10 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.n_layers = params.n_layers
         self.nonlinear = params.nonlinear
 
+        self.c_0 = -28*self.epsilon / (self.cutoff**12)
+        self.c_2 = 48*self.epsilon / (self.cutoff**14)
+        self.c_4 = -21*self.epsilon / (self.cutoff**16)
+
 
 
         # Constant box properties
@@ -205,9 +209,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                 if self.poly: #repulsive
                     parenth = (self.sigma_pairs/dists)
                     # r2i = (1/dists)**2
-                    c_0 = -28*self.epsilon / (self.cutoff**12)
-                    c_2 = 48*self.epsilon / (self.cutoff**14)
-                    c_4 = -21*self.epsilon / (self.cutoff**16)
+                    
                     rep_term = parenth ** self.rep_power
                     # attr_term = parenth ** self.attr_power
                     # r_multiplier = r2i * (self.rep_power * rep_term - \
@@ -215,7 +217,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
                     # r3_multiplier = 4*c_4 / (self.sigma_pairs**4)
                     
-                    energy = torch.sum(rep_term + c_0 + c_2*parenth**-2 + c_4*parenth**-4)
+                    energy = torch.sum(rep_term + self.c_0 + self.c_2*parenth**-2 + self.c_4*parenth**-4)
                     
                     #import pdb; pdb.set_trace()
                     #forces = r_multiplier * r + r3_multiplier * r**3
@@ -277,20 +279,20 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         velocities = (velocities + 0.5 * self.dt * accel) / \
             (1 + 0.5 * self.dt * zeta)
         
-        new_dists, idxs = radii_to_dists(radii, self.params)
-        if self.poly:
-            #normalize distances by sigma pairs
-            new_dists /= self.sigma_pairs#[idxs, idxs]
+        # new_dists, idxs = radii_to_dists(radii, self.params)
+        # if self.poly:
+        #     #normalize distances by sigma pairs
+        #     new_dists /= self.sigma_pairs#[idxs, idxs]
 
-        new_rdf = self.diff_rdf(tuple(new_dists.to(self.device))) if calc_rdf else 0 #calculate the RDF from a single frame
-
+        #new_rdf = self.diff_rdf(tuple(new_dists.to(self.device))) if calc_rdf else 0 #calculate the RDF from a single frame
+        new_rdf = 0
         # dump frame
         if self.step%self.n_dump == 0:
             print(self.step, self.calc_properties(energy), file=self.f)
             self.t.append(self.create_frame(frame = self.step/self.n_dump))
             #append dists to running_dists for RDF calculation (remove diagonal entries)
-            if not self.nn:
-                self.running_dists.append(new_dists.cpu().detach())
+            # if not self.nn:
+            #     self.running_dists.append(new_dists.cpu().detach())
             #np.save(f"inst_rdf_nn/t={self.step}_inst_rdf_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_nn={self.nn}.npy", self.calc_rdf.detach().numpy())
 
         return radii, velocities, forces, zeta, new_rdf
@@ -318,19 +320,19 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #props = self.calc_properties()
 
 
-        new_dists = radii_to_dists(radii, self.params)[0]
-        if self.poly:
-            new_dists /= self.sigma_pairs
-        new_rdf = self.diff_rdf(tuple(new_dists.to(self.device))) if calc_rdf else 0 #calculate the RDF from a single frame
-        
+        # new_dists = radii_to_dists(radii, self.params)[0]
+        # if self.poly:
+        #     new_dists /= self.sigma_pairs
+        # new_rdf = self.diff_rdf(tuple(new_dists.to(self.device))) if calc_rdf else 0 #calculate the RDF from a single frame
+        new_rdf = 0
 
         # dump frame
         if self.step%self.n_dump == 0:
             print(self.step, self.calc_properties(energy), file=self.f)
             self.t.append(self.create_frame(frame = self.step/self.n_dump))
             #append dists to running_dists for RDF calculation (remove diagonal entries)
-            if not self.nn:
-                self.running_dists.append(new_dists.cpu().detach())
+            # if not self.nn:
+            #     self.running_dists.append(new_dists.cpu().detach())
             #np.save(f"inst_rdf_nn/t={self.step}_inst_rdf_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_nn={self.nn}.npy", self.calc_rdf.detach().numpy())
 
         return radii, velocities, forces, new_rdf # return the new distance matrix 
