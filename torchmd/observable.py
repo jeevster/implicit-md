@@ -403,8 +403,8 @@ def compute_dihe(xyz, dihes):
 
 # obs.get_loss(q_t[::10])
 
-def rmsd(positions, box):
-    rmsd = torch.zeros(len(positions))
+def msd(positions, box):
+    msd = torch.zeros(len(positions))
     total_displacements = torch.zeros_like(positions[0])
     # Loop over time steps
     for step in range(1, len(positions)):
@@ -413,14 +413,14 @@ def rmsd(positions, box):
         displacements = torch.where(displacements > 0.5*box, displacements-box, torch.where(displacements<-0.5*box, displacements+box, displacements))
         total_displacements += displacements
         # Calculate squared displacements
-        total_squared_displacements = torch.linalg.norm(displacements, axis=1) ** 2
+        total_squared_displacements = torch.linalg.norm(total_displacements, axis=1) ** 2
 
         # Accumulate squared displacements and update number of displacements
-        rmsd[step] = total_squared_displacements.mean().sqrt()
+        msd[step] = total_squared_displacements.mean()
         
 
     
 
     # Optionally, calculate standard deviation for error estimates
     #std_msd = (msd.var() / len(msd)).sqrt()
-    return rmsd
+    return msd

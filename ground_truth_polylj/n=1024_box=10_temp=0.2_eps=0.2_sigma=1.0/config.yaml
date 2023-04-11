@@ -19,12 +19,14 @@ n_width: 128
 nn: false
 no_pbc: false
 nonlinear: ELU
+nvt_time: 40.0
 poly: true
 poly_power: 3.0
+rdf_sample_frac: 1
 rep_power: 12
 save_intermediate_rdf: false
 seed: 123
 sigma: 1.0
-t_total: 50.0
+t_total: 100.0
 temp: 0.2
 yaml_config: config.yaml

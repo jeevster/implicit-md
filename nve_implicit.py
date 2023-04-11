@@ -40,8 +40,12 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.pbc = not params.no_pbc
         self.dt = params.dt
         self.t_total = params.t_total
+
+        #Nose-Hoover Thermostat stuff
+        self.nvt_time = params.nvt_time
         self.targeEkin = 0.5 * (3.0 * self.n_particle) * self.temp
-        self.Q = 3.0 * self.n_particle * self.temp * (self.t_total * self.dt)**2
+        #self.Q = 3.0 * self.n_particle * self.temp * (self.t_total * self.dt)**2
+        self.Q = 3.0 * self.n_particle * self.temp * (50 * 0.001)**2 #found that this setting works well
 
 
         self.diameter_viz = params.diameter_viz
@@ -54,6 +58,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.sigma = params.sigma
         
         self.dr = params.dr
+        self.n_nvt_steps = np.rint(self.nvt_time/self.dt).astype(np.int32)
         self.nsteps = np.rint(self.t_total/self.dt).astype(np.int32)
         self.burn_in_frac = params.burn_in_frac
         self.nn = params.nn
@@ -76,9 +81,11 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             self.device = torch.device(torch.cuda.current_device())
         except:
             self.device = "cpu"
+
+        self.zeros = torch.zeros((1, 1, 3)).to(self.device)
         
         #limit CPU usage
-        torch.set_num_threads(5)
+        torch.set_num_threads(10)
 
         #Register inner parameters
         self.model = model.to(self.device)
@@ -108,9 +115,11 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         
 
         if self.nn:
-            self.save_dir = os.path.join('results', f"IMPLICIT_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_dt={self.dt}_ttotal={self.t_total}")
+            add = "_polylj_" if self.poly else ""
+            self.save_dir = os.path.join('results', f"IMPLICIT_{add}n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_dt={self.dt}_ttotal={self.t_total}")
         else: 
-            self.save_dir = os.path.join('ground_truth_polylj', f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}")
+            add = "_polylj" if self.poly else ""
+            self.save_dir = os.path.join('ground_truth' + add, f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}")
 
 
         
@@ -120,7 +129,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
         #File dump stuff
         self.f = open(f"{self.save_dir}/log.txt", "a+")
-        self.t = gsd.hoomd.open(name=f'{self.save_dir}/test_temp{self.temp}.gsd', mode='wb') 
+        self.t = gsd.hoomd.open(name=f'{self.save_dir}/sim_temp{self.temp}.gsd', mode='wb') 
         self.n_dump = params.n_dump # dump for configuration
 
     def check_symmetric(self, a, mode, tol=1e-4):
@@ -137,7 +146,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         radii = self.radii.detach()
         partpos = radii.tolist()
         velocities = self.velocities.detach().tolist()
-        diameter = self.diameter_viz*self.particle_sigmas*np.ones((self.n_particle,))
+        sigmas = self.particle_sigmas if self.poly else self.sigma
+        diameter = self.diameter_viz*sigmas*np.ones((self.n_particle,))
         diameter = diameter.tolist()
 
         # Now make gsd file
@@ -194,16 +204,16 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             else:
                 if self.poly: #repulsive
                     parenth = (self.sigma_pairs/dists)
-                    r2i = (1/dists)**2
+                    # r2i = (1/dists)**2
                     c_0 = -28*self.epsilon / (self.cutoff**12)
                     c_2 = 48*self.epsilon / (self.cutoff**14)
                     c_4 = -21*self.epsilon / (self.cutoff**16)
                     rep_term = parenth ** self.rep_power
-                    attr_term = parenth ** self.attr_power
-                    r_multiplier = r2i * (self.rep_power * rep_term - \
-                                    self.attr_power * attr_term) - 2*c_2/(self.sigma_pairs**2)
+                    # attr_term = parenth ** self.attr_power
+                    # r_multiplier = r2i * (self.rep_power * rep_term - \
+                    #                 self.attr_power * attr_term) - 2*c_2/(self.sigma_pairs**2)
 
-                    r3_multiplier = 4*c_4 / (self.sigma_pairs**4)
+                    # r3_multiplier = 4*c_4 / (self.sigma_pairs**4)
                     
                     energy = torch.sum(rep_term + c_0 + c_2*parenth**-2 + c_4*parenth**-4)
                     
@@ -211,7 +221,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                     #forces = r_multiplier * r + r3_multiplier * r**3
                     forces = -compute_grad(inputs=r, output=energy)
                     #apply cutoff
-                    forces = torch.where(1/parenth >= self.cutoff, torch.zeros((1, 1, 3)).to(self.device), forces)
+                    forces = torch.where(1/parenth >= self.cutoff, self.zeros, forces)
 
                 else:
                     r2i = (self.sigma/dists)**2
@@ -228,7 +238,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #sum forces across particles
         return energy, torch.sum(forces, axis = 1)#.to(self.device)
         
-    def forward_nvt(self, radii, velocities, forces, zeta):
+    def forward_nvt(self, radii, velocities, forces, zeta, calc_rdf = False):
         # get current acceleration
         accel = forces
 
@@ -267,9 +277,12 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         velocities = (velocities + 0.5 * self.dt * accel) / \
             (1 + 0.5 * self.dt * zeta)
         
-        #normalize distances by sigma pairs
-        new_dists = radii_to_dists(radii, self.box) / self.sigma_pairs
-        new_rdf = self.diff_rdf(tuple(new_dists.to(self.device))) #calculate the RDF from a single frame
+        new_dists, idxs = radii_to_dists(radii, self.params)
+        if self.poly:
+            #normalize distances by sigma pairs
+            new_dists /= self.sigma_pairs#[idxs, idxs]
+
+        new_rdf = self.diff_rdf(tuple(new_dists.to(self.device))) if calc_rdf else 0 #calculate the RDF from a single frame
 
         # dump frame
         if self.step%self.n_dump == 0:
@@ -283,7 +296,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         return radii, velocities, forces, zeta, new_rdf
         
         
-    def forward(self, radii, velocities, forces):
+    def forward(self, radii, velocities, forces, calc_rdf = False):
         # Forward process - 1 MD step with Velocity-Verlet integration
         #half-step in velocity
         velocities = velocities + 0.5*self.dt*forces
@@ -304,8 +317,11 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         velocities = (velocities + 0.5*self.dt*forces) 
         #props = self.calc_properties()
 
-        new_dists = radii_to_dists(radii, self.box) / self.sigma_pairs
-        new_rdf = self.diff_rdf(tuple(new_dists.to(self.device))) #calculate the RDF from a single frame
+
+        new_dists = radii_to_dists(radii, self.params)[0]
+        if self.poly:
+            new_dists /= self.sigma_pairs
+        new_rdf = self.diff_rdf(tuple(new_dists.to(self.device))) if calc_rdf else 0 #calculate the RDF from a single frame
         
 
         # dump frame
@@ -330,7 +346,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #TODO: currently, radii, velocity, and rdf are all params - need to make only rdf a parameter so we can 
         #just compute the rdf residual
 
-        #for some reason, optimality gets called twice, and on the second time the gradients of r are getting detached inside force calc
         with torch.enable_grad():
             forces = self.force_calc(self.radii)[1]
             new_radii, new_velocities, _, new_rdf = self(self.radii, self.velocities, forces)
@@ -354,7 +369,15 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             for step in tqdm(range(self.nsteps)):
                 self.step = step
                 
-                radii, velocities, forces, zeta, rdf = self.forward_nvt(self.radii, self.velocities, forces, zeta)
+                #radii, velocities, forces, rdf = self.forward(self.radii, self.velocities, forces)
+                calc_rdf = step ==  self.nsteps -1 or (self.save_intermediate_rdf and not self.nn)
+                if step < self.n_nvt_steps: #NVT step
+                    radii, velocities, forces, zeta, rdf = self.forward_nvt(self.radii, self.velocities, forces, zeta, calc_rdf = calc_rdf)
+                else:
+                    if step == self.n_nvt_steps:
+                        print("NVT Equilibration Complete, switching to NVE", file=self.f)
+                    radii, velocities, forces, rdf = self.forward(self.radii, self.velocities, forces,calc_rdf = calc_rdf)
+
                 self.radii.copy_(radii)
                 self.velocities.copy_(velocities)
                 self.rdf.copy_(rdf)
@@ -362,22 +385,14 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                     filename = f"step{step+1}_rdf.npy"
                     np.save(os.path.join(self.save_dir, filename), self.rdf.cpu().detach().numpy())
 
-        
-        # for obj in gc.get_objects():
-        #     try:
-        #         if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
-        #             print(type(obj), obj.size())
-        #     except:
-        #         pass
-
         #compute ground truth rdf over entire trajectory (do it on CPU to avoid memory issues)
         self.f.close()
         length = len(self.running_dists)
-        save_rdf = self.diff_rdf_cpu(self.running_dists[int(self.burn_in_frac*length):]) if not self.nn else self.rdf
+        #save_rdf = self.diff_rdf_cpu(self.running_dists[int(self.burn_in_frac*length):]) if not self.nn else self.rdf
 
         
         filename ="gt_rdf.npy" if not self.nn else f"rdf_epoch{epoch+1}.npy"
-        np.save(os.path.join(self.save_dir, filename), save_rdf.cpu().detach().numpy())
+        #np.save(os.path.join(self.save_dir, filename), save_rdf.cpu().detach().numpy())
         
         
         
@@ -406,7 +421,11 @@ if __name__ == "__main__":
     parser.add_argument('--sigma', type=float, default=1.0, help='LJ sigma for non-poly systems')
     parser.add_argument('--dt', type=float, default=0.005, help='time step for integration')
     parser.add_argument('--dr', type=float, default=0.01, help='bin size for RDF calculation (non-differentiable version)')
+    parser.add_argument('--rdf_sample_frac', type=float, default=1, help='fraction of particles to sample for RDF')
+
     parser.add_argument('--t_total', type=float, default=5, help='total time')
+    parser.add_argument('--nvt_time', type=float, default=5, help='time for NVT equilibration')
+
     parser.add_argument('--diameter_viz', type=float, default=0.3, help='particle diameter for Ovito visualization')
     parser.add_argument('--n_dump', type=int, default=10, help='save frequency of configurations (also frequency of frames used for ground truth RDF calculation)')
     parser.add_argument('--save_intermediate_rdf', action = 'store_true', help='Whether to store the RDF along the trajectory for the ground truth')
@@ -433,7 +452,7 @@ if __name__ == "__main__":
         device = "cpu"
 
     #initialize RDF calculator
-    diff_rdf = DifferentiableRDF(params, device)
+    diff_rdf = DifferentiableRDF(params, device)#, sample_frac = params.rdf_sample_frac)
 
 
     #initialize model
@@ -453,7 +472,7 @@ if __name__ == "__main__":
     model = Stack({'nn': NN, 'prior': prior})
     radii_0 = fcc_positions(params.n_particle, params.box, device)
     velocities_0  = initialize_velocities(params.n_particle, params.temp)
-    rdf_0  = diff_rdf(tuple(radii_to_dists(radii_0.to(device), params.box)))
+    rdf_0  = diff_rdf(tuple(radii_to_dists(radii_0.to(device), params)[0]))
 
     #load ground truth rdf
     if params.nn:
