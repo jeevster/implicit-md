@@ -9,12 +9,6 @@ import os
 
 def radii_to_dists(radii, params):
     #Get rij matrix
-    num_select = int(params.n_particle * params.rdf_sample_frac)
-    selected_indices = torch.randperm(params.n_particle)[:num_select]
-
-    # Extract selected rows from the tensor
-    radii = radii[selected_indices]    
-    
     r = radii.unsqueeze(0) - radii.unsqueeze(1)
     
     #Enforce minimum image convention
@@ -28,7 +22,7 @@ def radii_to_dists(radii, params):
         pass
 
     #compute distance matrix:
-    return torch.sqrt(torch.sum(r**2, axis=2)).unsqueeze(-1), selected_indices
+    return torch.sqrt(torch.sum(r**2, axis=2)).unsqueeze(-1)
 
 
 # Initialize configuration

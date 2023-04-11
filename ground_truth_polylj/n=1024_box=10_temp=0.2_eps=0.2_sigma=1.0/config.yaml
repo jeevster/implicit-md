@@ -11,7 +11,7 @@ epsilon: 0.2
 gaussian_width: 0.1
 kbt0: 1.8
 min_sigma: 0.73
-n_dump: 10
+n_dump: 50
 n_epochs: 1
 n_layers: 3
 n_particle: 1024
@@ -27,6 +27,6 @@ rep_power: 12
 save_intermediate_rdf: false
 seed: 123
 sigma: 1.0
-t_total: 100.0
+t_total: 10000.0
 temp: 0.2
 yaml_config: config.yaml

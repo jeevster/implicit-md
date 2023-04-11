@@ -404,23 +404,45 @@ def compute_dihe(xyz, dihes):
 # obs.get_loss(q_t[::10])
 
 def msd(positions, box):
-    msd = torch.zeros(len(positions))
+    #Input: positions tensor of shape [N_timesteps, N_particles, 3]
+    msd = torch.zeros(positions.shape[0])
     total_displacements = torch.zeros_like(positions[0])
     # Loop over time steps
-    for step in range(1, len(positions)):
+    for step in range(1, positions.shape[0]):
         # Compute displacement vector for each particle
         displacements = positions[step] - positions[step - 1]
         displacements = torch.where(displacements > 0.5*box, displacements-box, torch.where(displacements<-0.5*box, displacements+box, displacements))
-        total_displacements += displacements
+        total_displacements = total_displacements + displacements
         # Calculate squared displacements
         total_squared_displacements = torch.linalg.norm(total_displacements, axis=1) ** 2
 
         # Accumulate squared displacements and update number of displacements
         msd[step] = total_squared_displacements.mean()
-        
-
-    
 
     # Optionally, calculate standard deviation for error estimates
     #std_msd = (msd.var() / len(msd)).sqrt()
     return msd
+
+
+'''Sanjeev's Diffusion Coefficient implementation - doesn't use system stuff'''
+class DiffusionCoefficient(torch.nn.Module):
+    def __init__(self, params, device):
+        super(DiffusionCoefficient, self).__init__()
+        self.dt = params.dt
+        self.device = device
+        
+
+    def forward(self, msd_data):
+        msd_data = msd_data.to(self.device)
+        n = msd_data.shape[0] # Number of training examples.
+        X = torch.linspace(0, self.dt*n, n)
+        X = torch.stack([X, torch.ones((n,))], dim = 1).to(self.device) #append column of ones for bias term
+
+        # The Normal Equation
+        X_T = torch.transpose(X, 0, 1)
+        X_T_X = torch.matmul(X_T, X)
+        X_T_X_inv = torch.inverse(X_T_X)
+        X_T_y = torch.matmul(X_T, msd_data)
+        theta = torch.matmul(X_T_X_inv, X_T_y)
+    
+        return theta[0]
