@@ -2,3 +2,4 @@ results/
 *.npy
 log.txt
 test.gsd
+*.gsd

@@ -201,18 +201,23 @@ class MDSimulator:
         # u_lj(r_ij) = 4*epsilon*[(sigma/r_ij)^12-(sigma/r_ij)^6]
         # You can get energy and the pressure for free out of this calculation if you do it right
         
-         #Get rij matrix
-        r = self.radii.unsqueeze(0) - self.radii.unsqueeze(1)
+        #Get rij matrix
+        #Shape of self.radii is [N, 3]
+        r = self.radii.unsqueeze(0) - self.radii.unsqueeze(1) #[N, N, 3]
         
         #Enforce minimum image convention
         r = -1*torch.where(r > 0.5*self.box, r-self.box, torch.where(r<-0.5*self.box, r+self.box, r))
+
+        #Removing diagonal entries of r (which are 0)
         r = r[~torch.eye(r.shape[0],dtype=bool)].reshape(r.shape[0], -1, 3)
+
         try:
             r.requires_grad = True
         except RuntimeError:
             pass
+
         #compute distance matrix:
-        self.dists = torch.sqrt(torch.sum(r**2, axis=2)).unsqueeze(-1)
+        self.dists = torch.sqrt(torch.sum(r**2, axis=2)).unsqueeze(-1) #[N, N, 1]
         d = self.dists.detach().numpy()
 
         #zero out self-interactions
@@ -220,8 +225,8 @@ class MDSimulator:
        
         if self.nn:
             #energy = self.model(dists).sum()
-            energy = self.model(self.dists)
-            forces = -compute_grad(inputs=r, output=energy)
+            energy = self.model(self.dists) #[energy is a scalar]
+            forces = -compute_grad(inputs=r, output=energy) # -dU/ dr # U is a scalar and r has shape [NxNx3], therefore forces has shape [N, N, 3] - a symmetric matrix
         else:
             r2i = (self.sigma/self.dists)**2
             r6i = r2i**3
@@ -243,7 +248,7 @@ class MDSimulator:
        
                 
         #sum forces across particles
-        return energy, torch.sum(new_forces, axis = 1)
+        return energy, torch.sum(new_forces, axis = 1) #final returned value is [N, 3]
         
        
     # Function to dump simulation frame that is readable in Ovito
@@ -314,7 +319,7 @@ class MDSimulator:
         for step in tqdm(range(self.nsteps)):
             
             self.velocities = self.velocities + 0.5*self.dt*self.forces
-            #import pdb; pdb.set_trace()
+            
             self.radii = self.radii + self.dt*self.velocities
             #PBC
             self.radii /= self.box
