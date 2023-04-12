@@ -68,7 +68,9 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.burn_in_frac = params.burn_in_frac
         self.nn = params.nn
         self.save_intermediate_rdf = params.save_intermediate_rdf
-        self.diffusion_window = params.diffusion_window # TODO: make this a command line argument
+        self.exp_name = params.exp_name
+
+        self.diffusion_window = params.diffusion_window
 
         self.cutoff = params.cutoff
         self.gaussian_width = params.gaussian_width
@@ -127,8 +129,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         
 
         if self.nn:
-            add = "_polylj_" if self.poly else ""
-            self.save_dir = os.path.join('results', f"IMPLICIT_{add}n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_dt={self.dt}_ttotal={self.t_total}")
+            add = "polylj_" if self.poly else ""
+            self.save_dir = os.path.join('results', f"IMPLICIT_{add}_{self.exp_name}_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_dt={self.dt}_ttotal={self.t_total}")
         else: 
             add = "_polylj" if self.poly else ""
             self.save_dir = os.path.join('ground_truth' + add, f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}")
@@ -375,7 +377,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
             #make an MD step
             forces = self.force_calc(self.radii)[1]
-            new_radii, new_velocities, _, new_rdf = self(self.radii, self.velocities, forces, calc_rdf = True, calc_diffusion = True)
+            new_radii, new_velocities, _, new_rdf = self.forward(self.radii, self.velocities, forces, calc_rdf = True, calc_diffusion = True)
 
             #compute new diffusion coefficient
             new_msd_data = msd(torch.cat(self.last_h_radii[1:], dim=0), self.box)
@@ -436,8 +438,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         filename ="gt_rdf.npy" if not self.nn else f"rdf_epoch{epoch+1}.npy"
         np.save(os.path.join(self.save_dir, filename), save_rdf.cpu().detach().numpy())
 
-        
-    
         return self
 
     
@@ -473,6 +473,7 @@ if __name__ == "__main__":
     parser.add_argument('--n_dump', type=int, default=10, help='save frequency of configurations (also frequency of frames used for ground truth RDF calculation)')
     parser.add_argument('--save_intermediate_rdf', action = 'store_true', help='Whether to store the RDF along the trajectory for the ground truth')
     parser.add_argument('--burn_in_frac', type=float, default=0.2, help='initial fraction of trajectory to discount when calculating ground truth rdf')
+    parser.add_argument('--exp_name', type=str, default = "", help='name of experiment - used as prefix of results folder name')
 
     #learnable potential stuff
     parser.add_argument('--n_epochs', type=int, default=30, help='number of outer loop training epochs')
@@ -482,6 +483,9 @@ if __name__ == "__main__":
     parser.add_argument('--n_width', type=int, default=128, help='number of Gaussian functions used in the RDF')
     parser.add_argument('--n_layers', type=int, default=3, help='number of hidden layers in the neural network potential')
     parser.add_argument('--nonlinear', type=str, default='ELU', help='type of nonlinearity used in the neural network potential')
+
+    parser.add_argument('--rdf_loss_weight', type=float, default=1, help='coefficient in front of RDF loss term')
+    parser.add_argument('--diffusion_loss_weight', type=float, default=100, help='coefficient in front of diffusion coefficient loss term')
 
 
     params = parser.parse_args()
@@ -523,8 +527,8 @@ if __name__ == "__main__":
         gt_dir = os.path.join('ground_truth' + add, f"n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}")
         gt_rdf = torch.Tensor(np.load(os.path.join(gt_dir, "gt_rdf.npy"))).to(device)
         gt_diff_coeff = torch.Tensor(np.load(os.path.join(gt_dir, "gt_diff_coeff.npy"))).to(device)
-        add = "_polylj_" if params.poly else ""
-        results_dir = os.path.join('results', f"IMPLICIT_{add}n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}_dt={params.dt}_ttotal={params.t_total}")
+        add = "polylj_" if params.poly else ""
+        results_dir = os.path.join('results', f"IMPLICIT_{add}_{params.exp_name}_n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}_dt={params.dt}_ttotal={params.t_total}")
 
     #initialize outer loop optimizer/scheduler
     optimizer = torch.optim.Adam(list(model.parameters()), lr=1e-3)
@@ -561,7 +565,7 @@ if __name__ == "__main__":
         if params.nn:
             rdf_loss = (equilibriated_simulator.rdf - gt_rdf).pow(2).mean()
             diffusion_loss = (equilibriated_simulator.diff_coeff - gt_diff_coeff).pow(2).mean()
-            outer_loss = rdf_loss + 100*diffusion_loss
+            outer_loss = params.rdf_loss_weight*rdf_loss + params.diffusion_loss_weight*diffusion_loss
                             
             print("Loss: ", outer_loss.item())
             #compute (implicit) gradient of outer loss wrt model parameters
