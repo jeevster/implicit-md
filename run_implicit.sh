@@ -1,7 +1,7 @@
 #!/bin/bash
 python nve_implicit.py \
 --n_particle 1024 \
---temp 0.07 \
+--temp 0.2 \
 --seed 123 \
 --kbt0 1.8 \
 --box 10 \
@@ -12,8 +12,8 @@ python nve_implicit.py \
 --sigma 1.0 \
 --dt 0.001 \
 --dr 0.01 \
---t_total 5 \
---nvt_time 4 \
+--t_total 10000 \
+--nvt_time 10000 \
 --diameter_viz 0.3 \
 --n_dump 50 \
 --burn_in_frac 0.2 \

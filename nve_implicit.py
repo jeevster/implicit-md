@@ -207,9 +207,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             #LJ potential
             else:
                 if self.poly: #repulsive
+                    #import pdb; pdb.set_trace()
                     parenth = (self.sigma_pairs/dists)
-                    # r2i = (1/dists)**2
-                    
                     rep_term = parenth ** self.rep_power
                     # attr_term = parenth ** self.attr_power
                     # r_multiplier = r2i * (self.rep_power * rep_term - \
@@ -261,7 +260,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         velocities = velocities + 0.5 * self.dt * (accel - zeta * velocities)
 
         # make a full step in accelerations
-        energy, forces = self.force_calc(radii.to(self.device))
+        energy, forces = self.force_calc(radii)#.to(self.device))
         accel = forces
 
         # make a half step in self.zeta
@@ -313,7 +312,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                         (radii-torch.round(radii)), (radii - torch.floor(radii)-1))
 
         #calculate force at new position
-        energy, forces = self.force_calc(radii.to(self.device))
+        energy, forces = self.force_calc(radii)#.to(self.device))
         
         #another half-step in velocity
         velocities = (velocities + 0.5*self.dt*forces) 
