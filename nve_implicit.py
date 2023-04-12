@@ -45,7 +45,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.nvt_time = params.nvt_time
         self.targeEkin = 0.5 * (3.0 * self.n_particle) * self.temp
         #self.Q = 3.0 * self.n_particle * self.temp * (self.t_total * self.dt)**2
-        self.Q = 3.0 * self.n_particle * self.temp * (50 * 0.001)**2 #found that this setting works well
+        self.Q = 3.0 * self.n_particle * self.temp * (50 * self.dt)**2 #found that this setting works well
 
 
         self.diameter_viz = params.diameter_viz
