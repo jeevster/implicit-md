@@ -377,7 +377,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
             #make an MD step
             forces = self.force_calc(self.radii)[1]
-            new_radii, new_velocities, _, new_rdf = self.forward(self.radii, self.velocities, forces, calc_rdf = True, calc_diffusion = True)
+            new_radii, new_velocities, _, _, new_rdf = self.forward_nvt(self.radii, self.velocities, forces, self.zeta_final, calc_rdf = True, calc_diffusion = True)
 
             #compute new diffusion coefficient
             new_msd_data = msd(torch.cat(self.last_h_radii[1:], dim=0), self.box)
@@ -430,6 +430,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         msd_data = msd(torch.cat(self.last_h_radii, dim=0), self.box)
         diffusion_coeff = self.diffusion_coefficient(msd_data)
         self.diff_coeff.copy_(diffusion_coeff)
+        self.zeta_final = zeta
         filename ="gt_diff_coeff.npy" if not self.nn else f"diff_coeff_epoch{epoch+1}.npy"
         np.save(os.path.join(self.save_dir, filename), diffusion_coeff.cpu().detach().numpy())
 
@@ -489,8 +490,6 @@ if __name__ == "__main__":
 
 
     params = parser.parse_args()
-
-    
 
     #GPU
     try:
@@ -591,14 +590,14 @@ if __name__ == "__main__":
             #log stats
             losses.append(outer_loss.item())
             rdf_losses.append(rdf_loss.item())
-            diffusion_losses.append(diffusion_loss.item())
+            diffusion_losses.append((diffusion_loss.sqrt()/gt_diff_coeff).item())
             sim_times.append(sim_time)
             grad_times.append(grad_time)
             grad_norms.append(max_norm.item())
 
             writer.add_scalar('Loss', losses[-1], global_step=epoch+1)
             writer.add_scalar('RDF Loss', rdf_losses[-1], global_step=epoch+1)
-            writer.add_scalar('Diffusion Loss', diffusion_losses[-1], global_step=epoch+1)
+            writer.add_scalar('Relative Diffusion Loss', diffusion_losses[-1], global_step=epoch+1)
             writer.add_scalar('Simulation Time', sim_times[-1], global_step=epoch+1)
             writer.add_scalar('Gradient Time', grad_times[-1], global_step=epoch+1)
             writer.add_scalar('Gradient Norm', grad_norms[-1], global_step=epoch+1)
