@@ -438,11 +438,12 @@ class DiffusionCoefficient(torch.nn.Module):
         X = torch.linspace(0, self.dt*n, n)
         X = torch.stack([X, torch.ones((n,))], dim = 1).to(self.device) #append column of ones for bias term
 
-        # The Normal Equation
+        # Compute slope using Normal Equation
         X_T = torch.transpose(X, 0, 1)
         X_T_X = torch.matmul(X_T, X)
         X_T_X_inv = torch.inverse(X_T_X)
         X_T_y = torch.matmul(X_T, msd_data)
         theta = torch.matmul(X_T_X_inv, X_T_y)
-    
-        return theta[0]
+
+        #Einstein relation
+        return 1/6 * theta[0]

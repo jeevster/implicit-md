@@ -211,7 +211,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
             #compute energy
             if self.nn:
-                energy = self.model(dists)
+                energy = self.model((dists/self.sigma_pairs))
                 forces = -compute_grad(inputs=r, output=energy)
                 
             #LJ potential
@@ -294,7 +294,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         velocities = (velocities + 0.5 * self.dt * accel) / \
             (1 + 0.5 * self.dt * zeta)
         
-        if calc_rdf or not self.nn:
+        if calc_rdf:
             new_dists = radii_to_dists(radii, self.params)
             if self.poly:
                 #normalize distances by sigma pairs
@@ -312,6 +312,10 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             self.t.append(self.create_frame(frame = self.step/self.n_dump))
             #append dists to running_dists for RDF calculation (remove diagonal entries)
             if not self.nn:
+                new_dists = radii_to_dists(radii, self.params)
+                if self.poly:
+                    #normalize distances by sigma pairs
+                    new_dists = new_dists / self.sigma_pairs
                 self.running_dists.append(new_dists.cpu().detach())
 
 
@@ -340,7 +344,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         velocities = (velocities + 0.5*self.dt*forces) 
         #props = self.calc_properties()
 
-        if calc_rdf or not self.nn:
+        if calc_rdf:
             new_dists = radii_to_dists(radii, self.params)
             if self.poly:
                 #normalize distances by sigma pairs
@@ -357,6 +361,10 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             self.t.append(self.create_frame(frame = self.step/self.n_dump))
             #append dists to running_dists for RDF calculation (remove diagonal entries)
             if not self.nn:
+                new_dists = radii_to_dists(radii, self.params)
+                if self.poly:
+                    #normalize distances by sigma pairs
+                    new_dists = new_dists / self.sigma_pairs
                 self.running_dists.append(new_dists.cpu().detach())
 
         return radii, velocities, forces, new_rdf # return the new distance matrix 
@@ -368,8 +376,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #print("optimality")
         #Stationarity of the RDF - doesn't change if we do another step of MD
         
-        
-
         with torch.enable_grad():
             #compute current diffusion coefficient
             msd_data = msd(torch.cat(self.last_h_radii, dim=0), self.box)
