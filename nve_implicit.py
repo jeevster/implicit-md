@@ -1,3 +1,5 @@
+from itertools import product
+
 import numpy as np
 import gsd.hoomd
 import torch
@@ -83,6 +85,15 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.c_4 = -21*self.epsilon / (self.cutoff**16)
 
 
+        #parallelization stuff
+        self.bin_size = self.cutoff
+        self.num_cols = int(np.ceil(self.box / self.bin_size))
+        self.num_bins = self.num_cols**3
+       
+        self.neighbor_bin_mappings = self.get_neighbor_bin_mappings()
+        
+
+
         # Constant box properties
         self.vol = self.box**3.0
         self.rho = self.n_particle/self.vol
@@ -106,6 +117,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.rdf = nn.Parameter(rdf_0.clone().detach_(), requires_grad=True).to(self.device)
         self.diff_coeff = nn.Parameter(torch.Tensor([0.]), requires_grad=True).to(self.device)
 
+        
 
         if self.poly: #get per-particle sigmas
             u = torch.rand(self.n_particle)
@@ -191,28 +203,70 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                 "Momentum Magnitude": torch.norm(torch.sum(self.velocities, axis =0)).item()}
 
 
+
+    '''Returns bin indices of all particles '''
+    def bin_index(self, radii):
+        temp_radii = radii + self.box / 2
+        bins = torch.floor(temp_radii / self.bin_size)
+        return (bins[:, 0] + self.num_cols*bins[:, 1] + self.num_cols**2 * bins[:, 2]).to(int)
+    
+    """ Returns list mapping bin id to particles for in the bin's domain """
+    def assign_bins(self, radii):
+        bin_idxs = self.bin_index(radii)
+        bin_to_particles = []
+        for i in range(self.num_bins):
+            bin_to_particles.append(torch.nonzero(bin_idxs == i).squeeze(-1))
+
+        return bin_to_particles
+
+    ''''Gets the neighbor bin indices for every bin'''
+    def get_neighbor_bin_mappings(self):
+        neighbor_bin_mappings = {}
+        for bin in range(self.num_bins):
+            x = bin % self.num_cols
+            y = (bin % self.num_cols**2 - x) / self.num_cols
+            z = (bin - x - self.num_cols * y) / self.num_cols**2
+
+            neighbor_coords = torch.Tensor([[x - 1, x, x + 1], [y - 1, y, y + 1], [z - 1, z, z + 1]]) % self.num_cols
+            neighbor_bin_idxs = [int(x_ + self.num_cols * y_ + self.num_cols**2 * z_) for x_, y_, z_ in product(*neighbor_coords)]
+            neighbor_bin_mappings[bin] = neighbor_bin_idxs
+        return neighbor_bin_mappings
+        
+        
     '''CORE MD OPERATIONS'''
-    def force_calc(self, radii):
+    
+    def force_calc(self, current_radii, neighbor_radii):
+
+        
         
         #Get rij matrix
         with torch.enable_grad():
-            r = radii.unsqueeze(0) - radii.unsqueeze(1)
+            
+            r = current_radii.unsqueeze(1) - neighbor_radii.unsqueeze(0)
             if not r.requires_grad:
                 r.requires_grad = True
 
             #Enforce minimum image convention
             r = -1*torch.where(r > 0.5*self.box, r-self.box, torch.where(r<-0.5*self.box, r+self.box, r))
-
-            #get rid of diagonal 0 entries of r matrix (for gradient stability)
-            r = r[~torch.eye(r.shape[0],dtype=bool)].reshape(r.shape[0], -1, 3)
             
             #compute distance matrix:
             dists = torch.sqrt(torch.sum(r**2, axis=2)).unsqueeze(-1)
 
+            mask = (dists == 0) | (dists > self.cutoff) #remove particles beyond cutoff and remove ourself
+            dists = dists[~mask].unsqueeze(-1)
+
+            import pdb; pdb.set_trace()
+
             #compute energy
             if self.nn:
-                energy = self.model((dists/self.sigma_pairs))
+                energy = self.model((dists))
                 forces = -compute_grad(inputs=r, output=energy)
+
+                #assert no nans except for the mask places
+                assert(not torch.any(torch.isnan(forces[~mask.squeeze(0)])))
+
+                #remove nans
+                forces[forces != forces] = 0.
                 
             #LJ potential
             else:
@@ -241,17 +295,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                     internal_virial = -48*self.epsilon*r6i*(r6i - 0.5)/(self.sigma**2)
                     forces = -internal_virial*r*r2i
 
-                #calculate which forces to keep
-                keep = dists/self.sigma_pairs <= self.cutoff if self.poly else dists/self.sigma <= self.cutoff
 
-                #apply cutoff
-                forces = torch.where(~keep, self.zeros, forces)
 
-                    
-        # #Ensure symmetries
-        assert(not torch.any(torch.isnan(forces)))
-        
-                
         #sum forces across particles
         return energy, torch.sum(forces, axis = 1)#.to(self.device)
         
@@ -404,7 +449,20 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         
         #Initialize forces/potential of starting configuration
         with torch.no_grad():
-            _, forces = self.force_calc(self.radii)
+            divided_radii = [self.radii[idxs] for idxs in self.assign_bins(self.radii)]
+            
+            my_forces = 0
+            for bin_idx in [0, 1, 2]:
+                
+                current_radii = divided_radii[bin_idx]
+
+                neighbor_radii = torch.concat([divided_radii[i] for i in self.neighbor_bin_mappings[bin_idx]], dim=0)
+
+                
+                _, my_forces = self.force_calc(current_radii, neighbor_radii)
+
+
+            #
             #Run MD
             print("Start MD trajectory", file=self.f)
             zeta = 0
