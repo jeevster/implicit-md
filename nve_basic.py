@@ -48,17 +48,6 @@ class MDSimulator:
         self.n_layers = params.n_layers
         self.nonlinear = params.nonlinear
         
-
-        # print("Input parameters")
-        # print("Number of particles %d" % self.n_particle)
-        # print("Initial temperature %8.8e" % self.temp)
-        # print("Box size %8.8e" % self.box)
-        # print("epsilon %8.8e" % self.epsilon)
-        # print("sigma %8.8e" % self.sigma)
-        # print("dt %8.8e" % self.dt)
-        # print("Total time %8.8e" % self.t_total)
-        # print("Number of steps %d" % self.nsteps)
-
         # Constant box properties
         self.vol = self.box**3.0
         self.rho = self.n_particle/self.vol
