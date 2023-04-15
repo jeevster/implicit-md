@@ -15,8 +15,8 @@ python nve_implicit.py \
 --dr 0.01 \
 --exp_name "rdfonly_longconverge" \
 --diffusion_window 100 \
---t_total 1 \
---nvt_time 1 \
+--t_total 5 \
+--nvt_time 5 \
 --diameter_viz 0.3 \
 --n_dump 20 \
 --burn_in_frac 0.9 \

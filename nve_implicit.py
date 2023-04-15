@@ -95,7 +95,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.zeros = torch.zeros((1, 1, 3)).to(self.device)
         
         #limit CPU usage
-        torch.set_num_threads(10)
+        torch.set_num_threads(1)
 
         #Register inner parameters
         self.model = model.to(self.device)
@@ -513,7 +513,7 @@ if __name__ == "__main__":
         results_dir = os.path.join('results', f"IMPLICIT_{add}_{params.exp_name}_n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}_dt={params.dt}_ttotal={params.t_total}")
 
     #initialize outer loop optimizer/scheduler
-    optimizer = torch.optim.Adam(list(model.parameters()), lr=1e-1)
+    optimizer = torch.optim.Adam(list(model.parameters()), lr=1e-3)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=5)
 
     if not params.nn:
