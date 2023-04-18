@@ -73,8 +73,8 @@ python -m cProfile -o out.prof nve_implicit.py \
 --exp_name "test_parallel" \
 --diffusion_window 10 \
 --save_intermediate_rdf \
---t_total 10 \
---nvt_time 10 \
+--t_total 1 \
+--nvt_time 1 \
 --diameter_viz 0.3 \
 --n_dump 10 \
 --burn_in_frac 0.9 \
@@ -82,9 +82,9 @@ python -m cProfile -o out.prof nve_implicit.py \
 --diffusion_loss_weight 1 \
 --rdf_loss_weight 0 \
 --nn \
---cutoff 5 \
+--cutoff 10 \
 --gaussian_width 0.1 \
 --n_width 128 \
 --n_layers 3 \
 --nonlinear 'ELU' \
---num_threads 8
+--num_threads 1
