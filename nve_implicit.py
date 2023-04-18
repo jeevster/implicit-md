@@ -88,13 +88,14 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
 
         #parallelization stuff
+        self.num_threads = params.num_threads
         self.bin_size = self.cutoff
         self.num_cols = int(np.ceil(self.box / self.bin_size))
         self.num_bins = self.num_cols**3
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.num_threads)
        
         self.neighbor_bin_mappings = self.get_neighbor_bin_mappings()
         
-
 
         # Constant box properties
         self.vol = self.box**3.0
@@ -109,7 +110,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.zeros = torch.zeros((1, 1, 3)).to(self.device)
         
         #limit CPU usage
-        torch.set_num_threads(10)
+        torch.set_num_threads(1)
 
         #Register inner parameters
         self.model = model.to(self.device)
@@ -126,8 +127,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             self.particle_sigmas = powerlaw_inv_cdf(u, power = self.poly_power, y_min = self.min_sigma).clip(max = 1/0.45 * self.min_sigma)
             sigma1 = self.particle_sigmas.unsqueeze(0)
             sigma2 = self.particle_sigmas.unsqueeze(1)
-            self.sigma_pairs = 1/2 * (sigma1 + sigma2)*(1 - self.epsilon*torch.abs(sigma1 - sigma2))
-            self.sigma_pairs = self.sigma_pairs[~torch.eye(self.sigma_pairs.shape[0],dtype=bool)].reshape(self.sigma_pairs.shape[0], -1, 1).to(self.device)
+            self.sigma_pairs = (1/2 * (sigma1 + sigma2)*(1 - self.epsilon*torch.abs(sigma1 - sigma2))).to(self.device)
+            #self.sigma_pairs = self.sigma_pairs[~torch.eye(self.sigma_pairs.shape[0],dtype=bool)].reshape(self.sigma_pairs.shape[0], -1, 1).to(self.device)
             self.particle_sigmas = self.particle_sigmas
         
 
@@ -253,18 +254,48 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
             neighbor_coords = torch.Tensor([[x - 1, x, x + 1], [y - 1, y, y + 1], [z - 1, z, z + 1]]) % self.num_cols
             neighbor_bin_idxs = [int(x_ + self.num_cols * y_ + self.num_cols**2 * z_) for x_, y_, z_ in product(*neighbor_coords)]
-            neighbor_bin_mappings[bin] = neighbor_bin_idxs
+            neighbor_bin_mappings[bin] = list(set(neighbor_bin_idxs))
         return neighbor_bin_mappings
         
         
     '''CORE MD OPERATIONS'''
 
-    def thread_force_calc(self, all_current_radii, all_neighbor_radii):
+    def top_level_force_calc(self, radii, bins):
+
+        #partition the radii, sigma pairs, and bin_idxs among threads
+        divided_radii = [radii[idxs] for idxs in bins]
+        thread_partitioned_radii = self.divide_items(divided_radii, self.num_threads)
+        divided_sigma_pairs = [self.sigma_pairs[idxs] for idxs in bins]
+        thread_partitioned_sigma_pairs = self.divide_items(divided_sigma_pairs, self.num_threads)
+        thread_partitioned_bin_idxs = self.divide_items(range(self.num_bins), self.num_threads)
+
+        # Define a list to store the future objects representing the results of each thread
+        futures = []
+
+        # Submit tasks to the thread pool and store the future objects
+        for i in range(self.num_threads):
+            future = self.executor.submit(self.thread_force_calc, thread_partitioned_radii[i],
+                                    [torch.concat([divided_radii[j] for j in self.neighbor_bin_mappings[bin_idx]], dim=0) for bin_idx in thread_partitioned_bin_idxs[i]], thread_partitioned_sigma_pairs[i])
+            futures.append(future)
+
+        # Retrieve the results from the future objects
+        results = [future.result() for future in futures]
+
+        #Gather the forces in the correct order, sum the energies
+        gather_idxs = torch.cat(bins)
+        forces_aggregated = torch.cat([torch.cat(result[1]) for result in results])
+        forces = forces_aggregated[gather_idxs]
+        energy = torch.cat([torch.cat(result[0]) for result in results]).sum()
+
+        return energy, forces
+
+    def thread_force_calc(self, all_current_radii, all_neighbor_radii, all_sigma_pairs):
+        #return [torch.zeros(1).to(self.device) for __ in range(len(all_current_radii))], [torch.zeros((len(x), 3)).to(self.device) for x in all_current_radii]
+
         energies = []
         forces = []
-
-        for current_radii, neighbor_radii in zip(all_current_radii, all_neighbor_radii):
-            energy, force = self.force_calc(current_radii, neighbor_radii)
+        for current_radii, neighbor_radii, sigma_pairs in zip(all_current_radii, all_neighbor_radii, all_sigma_pairs):
+            energy, force = self.force_calc(current_radii, neighbor_radii, sigma_pairs)
             energies.append(energy)
             forces.append(force)
             
@@ -273,7 +304,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         
 
     
-    def force_calc(self, current_radii, neighbor_radii):
+    def force_calc(self, current_radii, neighbor_radii, sigma_pairs):
 
         #Get rij matrix
         with torch.enable_grad():
@@ -290,12 +321,11 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
             mask = (dists == 0) | (dists > self.cutoff) #remove particles beyond cutoff and remove ourself
             dists = dists[~mask].unsqueeze(-1)
-
-            
+            sigma_pairs = sigma_pairs[~mask.squeeze(-1)].unsqueeze(-1)
 
             #compute energy
             if self.nn:
-                energy = self.model((dists))
+                energy = self.model(dists/sigma_pairs) if self.poly else self.model(dists)
                 forces = -compute_grad(inputs=r, output=energy)
 
                 #assert no nans except for the mask places
@@ -307,7 +337,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             #LJ potential
             else:
                 if self.poly: #repulsive
-                    parenth = (self.sigma_pairs/dists)
+                    parenth = (sigma_pairs/dists)
                     # r2i = (1/dists)**2
                     
                     rep_term = parenth ** self.rep_power
@@ -320,11 +350,24 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                 
                 else:
                     r2i = (self.sigma/dists)**2
+                    
                     r6i = r2i**3
-                    energy = 2*self.epsilon*torch.sum(r6i*(r6i - 1))
+                    energy = (2*self.epsilon*torch.sum(r6i*(r6i - 1))).unsqueeze(-1)
                     #reuse components of potential to calculate virial and forces
-                    internal_virial = -48*self.epsilon*r6i*(r6i - 0.5)/(self.sigma**2)
-                    forces = -internal_virial*r*r2i
+                    forces = -compute_grad(inputs=r, output=energy)
+
+                    #assert no nans except for the mask places
+                    assert(not torch.any(torch.isnan(forces[~mask.squeeze(2)])))
+
+                    #remove nans
+                    forces[forces != forces] = 0.
+
+                    # internal_virial = -48*self.epsilon*r6i*(r6i - 0.5)/(self.sigma**2)
+                    # try:
+                    #     forces = (-internal_virial*r[~mask.squeeze(-1)]*r2i).reshape(r.shape[0], -1, 3)
+                    # except:
+                    #     import pdb; pdb.set_trace()
+                        
 
 
 
@@ -414,8 +457,14 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                         (radii-torch.round(radii)), (radii - torch.floor(radii)-1))
 
         #calculate force at new position
-        energy, forces = self.force_calc(radii.to(self.device))
-        
+
+        #assign new bins
+        bins = self.assign_bins(radii)
+
+        #compute energy and forces and aggregate them
+        energy, forces = self.top_level_force_calc(radii, bins)
+
+    
         #another half-step in velocity
         velocities = (velocities + 0.5*self.dt*forces) 
         #props = self.calc_properties()
@@ -424,7 +473,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             new_dists = radii_to_dists(radii, self.params)
             if self.poly:
                 #normalize distances by sigma pairs
-                new_dists = new_dists/ self.sigma_pairs
+                new_dists = new_dists/ self.sigma_pairs[~torch.eye(new_dists.shape[0],dtype=bool)].reshape(new_dists.shape[0], -1, 1)
         
         new_rdf = self.diff_rdf(tuple(new_dists.to(self.device))) if calc_rdf else 0 #calculate the RDF from a single frame
         #new_rdf = 0
@@ -480,40 +529,12 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         
         #Initialize forces/potential of starting configuration
         with torch.no_grad():
-            num_threads = 4
-            divided_radii = [self.radii[idxs] for idxs in self.assign_bins(self.radii)]
-            thread_partitioned_radii = self.divide_items(divided_radii, num_threads)
-            thread_partitioned_bin_idxs = self.divide_items(range(self.num_bins), num_threads)
-        
             
-            my_forces = 0
-            # # Create computation threads and barrier
-            # barrier = threading.Barrier(num_threads + 1)
-            
+            #assign new bins
+            bins = self.assign_bins(self.radii)
 
-            # threads = [threading.Thread(target=self.thread_force_calc,
-            #                             args=(thread_partitioned_radii[i], [torch.concat([divided_radii[j] for j in self.neighbor_bin_mappings[bin_idx]], dim=0) for bin_idx in thread_partitioned_bin_idxs[i]]))
-            #    for i in range(num_threads)]
-
-            
-            executor = concurrent.futures.ThreadPoolExecutor(max_workers=num_threads)
-
-            # Define a list to store the future objects representing the results of each thread
-            futures = []
-
-            # Submit tasks to the thread pool and store the future objects
-            for i in range(num_threads):
-                future = executor.submit(self.thread_force_calc, thread_partitioned_radii[i],
-                                        [torch.concat([divided_radii[j] for j in self.neighbor_bin_mappings[bin_idx]], dim=0) for bin_idx in thread_partitioned_bin_idxs[i]])
-                futures.append(future)
-
-            # Retrieve the results from the future objects
-            results = [future.result() for future in futures]
-
-            import pdb; pdb.set_trace()
-            gather_idxs = torch.concat(self.assign_bins(self.radii))
-
-
+            #compute energy and forces and aggregate them
+            energy, forces = self.top_level_force_calc(self.radii, bins)
 
             #
             #Run MD
@@ -544,13 +565,13 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         diffusion_coeff = self.diffusion_coefficient(msd_data)
         self.diff_coeff.copy_(diffusion_coeff)
         self.zeta_final = zeta
-        filename ="gt_diff_coeff.npy" if not self.nn else f"diff_coeff_epoch{epoch+1}.npy"
-        np.save(os.path.join(self.save_dir, filename), diffusion_coeff.cpu().detach().numpy())
+        # filename ="gt_diff_coeff.npy" if not self.nn else f"diff_coeff_epoch{epoch+1}.npy"
+        # np.save(os.path.join(self.save_dir, filename), diffusion_coeff.cpu().detach().numpy())
 
-        #compute ground truth rdf over entire trajectory (do it on CPU to avoid memory issues)
-        save_rdf = self.diff_rdf_cpu(self.running_dists[int(self.burn_in_frac*length):]) if not self.nn else self.rdf
-        filename ="gt_rdf.npy" if not self.nn else f"rdf_epoch{epoch+1}.npy"
-        np.save(os.path.join(self.save_dir, filename), save_rdf.cpu().detach().numpy())
+        # #compute ground truth rdf over entire trajectory (do it on CPU to avoid memory issues)
+        # save_rdf = self.diff_rdf_cpu(self.running_dists[int(self.burn_in_frac*length):]) if not self.nn else self.rdf
+        # filename ="gt_rdf.npy" if not self.nn else f"rdf_epoch{epoch+1}.npy"
+        # np.save(os.path.join(self.save_dir, filename), save_rdf.cpu().detach().numpy())
 
         return self
 
@@ -600,6 +621,8 @@ if __name__ == "__main__":
 
     parser.add_argument('--rdf_loss_weight', type=float, default=1, help='coefficient in front of RDF loss term')
     parser.add_argument('--diffusion_loss_weight', type=float, default=100, help='coefficient in front of diffusion coefficient loss term')
+
+    parser.add_argument('--num_threads', type=int, default=1, help='# of threads')
 
 
     params = parser.parse_args()
@@ -682,48 +705,48 @@ if __name__ == "__main__":
             print("Loss: ", outer_loss.item())
             #compute (implicit) gradient of outer loss wrt model parameters
             start = time.time()
-            torch.autograd.backward(tensors = outer_loss, inputs = list(model.parameters()))
-            end = time.time()
-            grad_time = end-start
-            print("gradient calculation time (s): ",  grad_time)
+    #         torch.autograd.backward(tensors = outer_loss, inputs = list(model.parameters()))
+    #         end = time.time()
+    #         grad_time = end-start
+    #         print("gradient calculation time (s): ",  grad_time)
 
-            max_norm = 0
-            for param in model.parameters():
-                if param.grad is not None:
-                    norm = torch.linalg.vector_norm(param.grad, dim=-1).max()
-                    if  norm > max_norm:
-                        max_norm = norm
-            try:
-                print("Max norm: ", max_norm.item())
-            except AttributeError:
-                print("Max norm: ", max_norm)
+    #         max_norm = 0
+    #         for param in model.parameters():
+    #             if param.grad is not None:
+    #                 norm = torch.linalg.vector_norm(param.grad, dim=-1).max()
+    #                 if  norm > max_norm:
+    #                     max_norm = norm
+    #         try:
+    #             print("Max norm: ", max_norm.item())
+    #         except AttributeError:
+    #             print("Max norm: ", max_norm)
 
-            optimizer.step()
-            scheduler.step(outer_loss)
-            #log stats
-            losses.append(outer_loss.item())
-            rdf_losses.append(rdf_loss.item())
-            diffusion_losses.append((diffusion_loss.sqrt()/gt_diff_coeff).item())
-            sim_times.append(sim_time)
-            grad_times.append(grad_time)
-            grad_norms.append(max_norm.item())
+    #         optimizer.step()
+    #         scheduler.step(outer_loss)
+    #         #log stats
+    #         losses.append(outer_loss.item())
+    #         rdf_losses.append(rdf_loss.item())
+    #         diffusion_losses.append((diffusion_loss.sqrt()/gt_diff_coeff).item())
+    #         sim_times.append(sim_time)
+    #         grad_times.append(grad_time)
+    #         grad_norms.append(max_norm.item())
 
-            writer.add_scalar('Loss', losses[-1], global_step=epoch+1)
-            writer.add_scalar('RDF Loss', rdf_losses[-1], global_step=epoch+1)
-            writer.add_scalar('Relative Diffusion Loss', diffusion_losses[-1], global_step=epoch+1)
-            writer.add_scalar('Simulation Time', sim_times[-1], global_step=epoch+1)
-            writer.add_scalar('Gradient Time', grad_times[-1], global_step=epoch+1)
-            writer.add_scalar('Gradient Norm', grad_norms[-1], global_step=epoch+1)
+    #         writer.add_scalar('Loss', losses[-1], global_step=epoch+1)
+    #         writer.add_scalar('RDF Loss', rdf_losses[-1], global_step=epoch+1)
+    #         writer.add_scalar('Relative Diffusion Loss', diffusion_losses[-1], global_step=epoch+1)
+    #         writer.add_scalar('Simulation Time', sim_times[-1], global_step=epoch+1)
+    #         writer.add_scalar('Gradient Time', grad_times[-1], global_step=epoch+1)
+    #         writer.add_scalar('Gradient Norm', grad_norms[-1], global_step=epoch+1)
     
-    if params.nn:
-        stats_write_file = os.path.join(simulator.save_dir, 'stats.txt')
-        with open(stats_write_file, "w") as output:
-            output.write("Losses: " + str(losses) + "\n")
-            output.write("Simulation times: " +  str(sim_times) + "\n")
-            output.write("Gradient calculation times: " +  str(grad_times) + "\n")
-            output.write("Max gradient norms: " + str(grad_norms))
+    # if params.nn:
+    #     stats_write_file = os.path.join(simulator.save_dir, 'stats.txt')
+    #     with open(stats_write_file, "w") as output:
+    #         output.write("Losses: " + str(losses) + "\n")
+    #         output.write("Simulation times: " +  str(sim_times) + "\n")
+    #         output.write("Gradient calculation times: " +  str(grad_times) + "\n")
+    #         output.write("Max gradient norms: " + str(grad_norms))
 
-        writer.close()
+    #     writer.close()
     print('Done!')
     
     
