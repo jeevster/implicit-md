@@ -1,4 +1,5 @@
 from itertools import product
+import concurrent.futures
 
 import numpy as np
 import gsd.hoomd
@@ -8,6 +9,7 @@ from nff.utils.scatter import compute_grad
 from nff.nn.layers import GaussianSmearing
 from YParams import YParams
 import argparse
+import threading
 import os
 from tqdm import tqdm
 import pstats
@@ -164,6 +166,29 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         
         return np.all(np.abs(a - a.T) < tol)
 
+    def divide_items(self, bins, threads, exact=False):
+        """Divide the given items among threads threads or processes. If exact,
+        threads must evenly divide the number of items. Returns a list of particle
+        lists for each thread.
+
+        >>> divide_items([1, 2, 3, 4, 5, 6, 7, 8, 9], 3)
+        [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+        >>> divide_items([1, 2, 3, 4, 5, 6, 7, 8], 3)
+        [[1, 2, 3], [4, 5, 6], [7, 8]]
+        """
+        num = len(bins) // threads
+        rem = len(bins) % threads
+        if exact and rem:
+            raise ValueError("threads don't evenly divide particles")
+
+        divided = []
+        for i in range(threads):
+            start = num * i + (i if i < rem else rem)
+            end = start + num + (1 if i < rem else 0)
+            divided.append(bins[start:end])
+
+        return divided
+
     # Function to dump simulation frame that is readable in Ovito
     # Also stores radii and velocities in a compressed format which is nice
     def create_frame(self, frame):
@@ -203,7 +228,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                 "Momentum Magnitude": torch.norm(torch.sum(self.velocities, axis =0)).item()}
 
 
-
     '''Returns bin indices of all particles '''
     def bin_index(self, radii):
         temp_radii = radii + self.box / 2
@@ -234,11 +258,23 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         
         
     '''CORE MD OPERATIONS'''
+
+    def thread_force_calc(self, all_current_radii, all_neighbor_radii):
+        energies = []
+        forces = []
+
+        for current_radii, neighbor_radii in zip(all_current_radii, all_neighbor_radii):
+            energy, force = self.force_calc(current_radii, neighbor_radii)
+            energies.append(energy)
+            forces.append(force)
+            
+        return energies, forces
+
+        
+
     
     def force_calc(self, current_radii, neighbor_radii):
 
-        
-        
         #Get rij matrix
         with torch.enable_grad():
             
@@ -255,7 +291,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             mask = (dists == 0) | (dists > self.cutoff) #remove particles beyond cutoff and remove ourself
             dists = dists[~mask].unsqueeze(-1)
 
-            import pdb; pdb.set_trace()
+            
 
             #compute energy
             if self.nn:
@@ -263,7 +299,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                 forces = -compute_grad(inputs=r, output=energy)
 
                 #assert no nans except for the mask places
-                assert(not torch.any(torch.isnan(forces[~mask.squeeze(0)])))
+                assert(not torch.any(torch.isnan(forces[~mask.squeeze(2)])))
 
                 #remove nans
                 forces[forces != forces] = 0.
@@ -275,11 +311,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                     # r2i = (1/dists)**2
                     
                     rep_term = parenth ** self.rep_power
-                    # attr_term = parenth ** self.attr_power
-                    # r_multiplier = r2i * (self.rep_power * rep_term - \
-                    #                 self.attr_power * attr_term) - 2*c_2/(self.sigma_pairs**2)
-
-                    # r3_multiplier = 4*c_4 / (self.sigma_pairs**4)
                     
                     energy = torch.sum(rep_term + self.c_0 + self.c_2*parenth**-2 + self.c_4*parenth**-4)
                     
@@ -449,17 +480,39 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         
         #Initialize forces/potential of starting configuration
         with torch.no_grad():
+            num_threads = 4
             divided_radii = [self.radii[idxs] for idxs in self.assign_bins(self.radii)]
+            thread_partitioned_radii = self.divide_items(divided_radii, num_threads)
+            thread_partitioned_bin_idxs = self.divide_items(range(self.num_bins), num_threads)
+        
             
             my_forces = 0
-            for bin_idx in [0, 1, 2]:
-                
-                current_radii = divided_radii[bin_idx]
+            # # Create computation threads and barrier
+            # barrier = threading.Barrier(num_threads + 1)
+            
 
-                neighbor_radii = torch.concat([divided_radii[i] for i in self.neighbor_bin_mappings[bin_idx]], dim=0)
+            # threads = [threading.Thread(target=self.thread_force_calc,
+            #                             args=(thread_partitioned_radii[i], [torch.concat([divided_radii[j] for j in self.neighbor_bin_mappings[bin_idx]], dim=0) for bin_idx in thread_partitioned_bin_idxs[i]]))
+            #    for i in range(num_threads)]
 
-                
-                _, my_forces = self.force_calc(current_radii, neighbor_radii)
+            
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=num_threads)
+
+            # Define a list to store the future objects representing the results of each thread
+            futures = []
+
+            # Submit tasks to the thread pool and store the future objects
+            for i in range(num_threads):
+                future = executor.submit(self.thread_force_calc, thread_partitioned_radii[i],
+                                        [torch.concat([divided_radii[j] for j in self.neighbor_bin_mappings[bin_idx]], dim=0) for bin_idx in thread_partitioned_bin_idxs[i]])
+                futures.append(future)
+
+            # Retrieve the results from the future objects
+            results = [future.result() for future in futures]
+
+            import pdb; pdb.set_trace()
+            gather_idxs = torch.concat(self.assign_bins(self.radii))
+
 
 
             #
@@ -471,12 +524,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                 
                 calc_rdf = step ==  self.nsteps -1 or (self.save_intermediate_rdf and not self.nn)
                 calc_diffusion = step >= self.nsteps - self.diffusion_window #calculate diffusion coefficient if within window from the end
-                if step < self.n_nvt_steps: #NVT step
-                    radii, velocities, forces, zeta, rdf = self.forward_nvt(self.radii, self.velocities, forces, zeta, calc_rdf = calc_rdf, calc_diffusion=calc_diffusion)
-                else: # NVE step
-                    if step == self.n_nvt_steps:
-                        print("NVT Equilibration Complete, switching to NVE", file=self.f)
-                    radii, velocities, forces, rdf = self.forward(self.radii, self.velocities, forces, calc_rdf = calc_rdf, calc_diffusion=calc_diffusion)
+               
+                radii, velocities, forces, rdf = self.forward(self.radii, self.velocities, forces, calc_rdf = calc_rdf, calc_diffusion=calc_diffusion)
 
                 self.radii.copy_(radii)
                 self.velocities.copy_(velocities)

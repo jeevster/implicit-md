@@ -81,7 +81,8 @@ python nve_implicit.py \
 --n_epochs 100 \
 --diffusion_loss_weight 1 \
 --rdf_loss_weight 0 \
---cutoff 1.25 \
+--nn \
+--cutoff 5 \
 --gaussian_width 0.1 \
 --n_width 128 \
 --n_layers 3 \
