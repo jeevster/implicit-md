@@ -21,8 +21,8 @@ python nve_implicit.py \
 --n_dump 20 \
 --burn_in_frac 0.9 \
 --n_epochs 50 \
---diffusion_loss_weight 100 \
---rdf_loss_weight 0 \
+--diffusion_loss_weight 0 \
+--rdf_loss_weight 1 \
 --nn \
 --cutoff 1.25 \
 --gaussian_width 0.1 \

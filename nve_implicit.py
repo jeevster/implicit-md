@@ -8,6 +8,7 @@ from YParams import YParams
 import argparse
 import os
 from tqdm import tqdm
+from torchviz import make_dot
 import pstats
 import pdb
 import random
@@ -136,8 +137,19 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.n_dump = params.n_dump # dump for configuration
 
     def reset(self, radii_0, velocities_0, rdf_0):
-        import pdb; pdb.set_trace()
-        pass
+        del self.radii
+        del self.velocities
+        del self.rdf
+        del self.diff_coeff
+        del self.zeta
+        self.radii = nn.Parameter(radii_0.clone().detach_(), requires_grad=True).to(self.device)
+        self.velocities = nn.Parameter(velocities_0.clone().detach_(), requires_grad=True).to(self.device)
+        self.rdf = nn.Parameter(rdf_0.clone().detach_(), requires_grad=True).to(self.device)
+        self.diff_coeff = nn.Parameter(torch.Tensor([0.]), requires_grad=True).to(self.device)
+        self.zeta = nn.Parameter(torch.Tensor([0.]), requires_grad=True).to(self.device)
+
+        #this still doesn't do what we want
+        
 
     def check_symmetric(self, a, mode, tol=1e-4):
         if mode == 'opposite':
@@ -185,7 +197,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
 
     '''CORE MD OPERATIONS'''
-    def force_calc(self, radii):
+    def force_calc(self, radii, retain_grad = False):
         
         #Get rij matrix
         with torch.enable_grad():
@@ -205,7 +217,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             #compute energy
             if self.nn:
                 energy = self.model((dists/self.sigma_pairs))
-                forces = -compute_grad(inputs=r, output=energy)
+                forces = -compute_grad(inputs=r, output=energy) if retain_grad else -compute_grad(inputs=r, output=energy).detach()
                 
             #LJ potential
             else:
@@ -213,7 +225,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                     parenth = (self.sigma_pairs/dists)
                     rep_term = parenth ** self.rep_power
                     energy = torch.sum(rep_term + self.c_0 + self.c_2*parenth**-2 + self.c_4*parenth**-4)
-                    forces = -compute_grad(inputs=r, output=energy)
+                    forces = -compute_grad(inputs=r, output=energy) if retain_grad else -compute_grad(inputs=r, output=energy).detach()
                 else:
                     r2i = (self.sigma/dists)**2
                     r6i = r2i**3
@@ -256,7 +268,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         velocities = velocities + 0.5 * self.dt * (accel - zeta * velocities)
 
         # make a full step in accelerations
-        energy, forces = self.force_calc(radii.to(self.device))
+        energy, forces = self.force_calc(radii.to(self.device), retain_grad=calc_diffusion)
         accel = forces
 
         # make a half step in self.zeta
@@ -317,7 +329,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                         (radii-torch.round(radii)), (radii - torch.floor(radii)-1))
 
         #calculate force at new position
-        energy, forces = self.force_calc(radii.to(self.device))
+        energy, forces = self.force_calc(radii.to(self.device), retain_grad=calc_diffusion)
         
         #another half-step in velocity
         velocities = (velocities + 0.5*self.dt*forces) 
@@ -357,7 +369,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         with torch.enable_grad():
             
             #make an MD step (T function)
-            forces = self.force_calc(self.radii)[1]
+            #import pdb; pdb.set_trace()
+            forces = self.force_calc(self.radii, retain_grad=True)[1]
             new_radii, new_velocities, _, new_zeta, new_rdf = self.forward_nvt(self.radii, self.velocities, forces, self.zeta, calc_rdf = True, calc_diffusion = True)
 
             #compute new diffusion coefficient
@@ -585,14 +598,14 @@ if __name__ == "__main__":
             #log stats
             losses.append(outer_loss.item())
             rdf_losses.append(rdf_loss.item())
-            #diffusion_losses.append((diffusion_loss.sqrt()/gt_diff_coeff).item())
+            diffusion_losses.append((diffusion_loss.sqrt()/gt_diff_coeff).item())
             sim_times.append(sim_time)
             grad_times.append(grad_time)
             grad_norms.append(max_norm.item())
 
             writer.add_scalar('Loss', losses[-1], global_step=epoch+1)
             writer.add_scalar('RDF Loss', rdf_losses[-1], global_step=epoch+1)
-            #writer.add_scalar('Relative Diffusion Loss', diffusion_losses[-1], global_step=epoch+1)
+            writer.add_scalar('Relative Diffusion Loss', diffusion_losses[-1], global_step=epoch+1)
             writer.add_scalar('Simulation Time', sim_times[-1], global_step=epoch+1)
             writer.add_scalar('Gradient Time', grad_times[-1], global_step=epoch+1)
             writer.add_scalar('Gradient Norm', grad_norms[-1], global_step=epoch+1)
@@ -603,16 +616,16 @@ if __name__ == "__main__":
         
         #new realization of temperature with different velocities
         velocities_0  = initialize_velocities(params.n_particle, params.temp)
-        #simulator.reset(radii_0, velocities_0, rdf_0) 
+        simulator.reset(radii_0, velocities_0, rdf_0) 
         count = 0
-        for obj in gc.get_objects():
-            try:
-                if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
-                    print(type(obj), obj.size())
-                    count +=1
-            except:
-                pass
-        print(f"{count} tensors in memory")
+        # for obj in gc.get_objects():
+        #     try:
+        #         if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
+        #             print(type(obj), obj.size())
+        #             count +=1
+        #     except:
+        #         pass
+        # print(f"{count} tensors in memory")
 
     if params.nn:
         stats_write_file = os.path.join(simulator.save_dir, 'stats.txt')
