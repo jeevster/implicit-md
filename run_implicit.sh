@@ -13,10 +13,10 @@ python nve_implicit.py \
 --sigma 1.0 \
 --dt 0.005 \
 --dr 0.01 \
---exp_name "test_diffusion" \
---diffusion_window 10 \
---t_total 5 \
---nvt_time 5 \
+--exp_name "test_latest_code_retainforcegrad" \
+--diffusion_window 1000 \
+--t_total 15 \
+--nvt_time 15 \
 --diameter_viz 0.3 \
 --n_dump 20 \
 --burn_in_frac 0.9 \
