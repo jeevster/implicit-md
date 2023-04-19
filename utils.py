@@ -79,6 +79,7 @@ def print_active_torch_tensors():
             if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
                 print(type(obj), obj.size())
                 count +=1
+                del obj
         except:
             pass
     print(f"{count} tensors in memory")

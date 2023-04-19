@@ -78,7 +78,7 @@ python nve_implicit.py \
 --diameter_viz 0.3 \
 --n_dump 1000 \
 --burn_in_frac 0.9 \
---n_epochs 50 \
+--n_epochs 2 \
 --diffusion_loss_weight 100 \
 --rdf_loss_weight 1 \
 --nn \

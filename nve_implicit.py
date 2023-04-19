@@ -18,7 +18,6 @@ import torchopt
 from torchopt.nn import ImplicitMetaGradientModule
 from contextlib import nullcontext
 import time
-from torch.profiler import profile, record_function, ProfilerActivity
 import gc
 import shutil
 from torch.utils.tensorboard import SummaryWriter
@@ -102,11 +101,11 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         torch.set_num_threads(10)
 
         #Register inner parameters
-        self.model = model.to(self.device)
+        self.model = model#.to(self.device)
         #model.train()
-        self.radii = nn.Parameter(radii_0.clone().detach_(), requires_grad=True).to(self.device)
-        self.velocities = nn.Parameter(velocities_0.clone().detach_(), requires_grad=True).to(self.device)
-        self.rdf = nn.Parameter(rdf_0.clone().detach_(), requires_grad=True).to(self.device)
+        self.radii = nn.Parameter(radii_0.detach_(), requires_grad=True).to(self.device)
+        self.velocities = nn.Parameter(velocities_0.detach_(), requires_grad=True).to(self.device)
+        self.rdf = nn.Parameter(rdf_0.detach_(), requires_grad=True).to(self.device)
         self.diff_coeff = nn.Parameter(torch.Tensor([0.]), requires_grad=True).to(self.device)
 
 
@@ -149,12 +148,13 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.t = gsd.hoomd.open(name=f'{self.save_dir}/sim_temp{self.temp}.gsd', mode='wb') 
         self.n_dump = params.n_dump # dump for configuration
 
-    # def reset(self, radii_0, velocities_0, rdf_0):
-    #     import pdb; pdb.set_trace()
-    #     self.radii = nn.Parameter(radii_0.clone().detach_(), requires_grad=True).to(self.device)
-    #     self.velocities = nn.Parameter(velocities_0.clone().detach_(), requires_grad=True).to(self.device)
-    #     self.rdf = nn.Parameter(rdf_0.clone().detach_(), requires_grad=True).to(self.device)
-    #     self.diff_coeff = nn.Parameter(torch.Tensor([0.]), requires_grad=True).to(self.device)
+    def reset(self, radii_0, velocities_0, rdf_0):
+        #self.radii = 
+        self.radii.requires_grad = False
+        self.velocities.requires_grad = False
+        self.rdf.requires_grad = False
+        self.diff_coeff.requires_grad = False
+        
 
     def check_symmetric(self, a, mode, tol=1e-4):
         if mode == 'opposite':
@@ -182,6 +182,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         s.particles.velocity = velocities
         s.particles.diameter = diameter
         s.configuration.box=[self.box,self.box,self.box,0,0,0]
+
         return s
 
     def calc_properties(self, pe):
@@ -396,7 +397,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             #get current forces
             forces = self.force_calc(self.radii, retain_grad=True)[1]
             #make an MD step
-            new_radii, new_velocities, _, new_zeta, new_rdf = self.forward_nvt(self.radii, self.velocities, forces, self.zeta, calc_rdf = True, calc_diffusion = True, retain_grad = True)
+            new_radii, new_velocities, new_forces, new_zeta, new_rdf = self.forward_nvt(self.radii, self.velocities, forces, self.zeta, calc_rdf = True, calc_diffusion = True, retain_grad = True)
 
             #compute new diffusion coefficient
             new_msd_data = msd(torch.cat(self.last_h_radii[1:], dim=0), self.box)
@@ -461,7 +462,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         save_rdf = self.diff_rdf_cpu(self.running_dists[int(self.burn_in_frac*length):]) if not self.nn else self.rdf
         filename ="gt_rdf.npy" if not self.nn else f"rdf_epoch{epoch+1}.npy"
         np.save(os.path.join(self.save_dir, filename), save_rdf.cpu().detach().numpy())
-        import pdb; pdb.set_trace()
         return self
 
     
@@ -538,7 +538,7 @@ if __name__ == "__main__":
     #prior potential only contains repulsive term
     prior = LJFamily(epsilon=params.epsilon, sigma=params.sigma, rep_pow=6, attr_pow=0)
 
-    model = Stack({'nn': NN, 'prior': prior})
+    model = Stack({'nn': NN, 'prior': prior}).to(device)
     radii_0 = fcc_positions(params.n_particle, params.box, device)
     velocities_0  = initialize_velocities(params.n_particle, params.temp)
     rdf_0  = diff_rdf(tuple(radii_to_dists(radii_0.to(device), params)))
@@ -571,10 +571,11 @@ if __name__ == "__main__":
     
     
     for epoch in range(params.n_epochs):
+        simulator = ImplicitMDSimulator(params, model, radii_0, velocities_0, rdf_0)
         print(f"Epoch {epoch+1}")
         #initialize simulator parameterized by a NN model
         
-        simulator = ImplicitMDSimulator(params, model, radii_0, velocities_0, rdf_0)
+        
         
         
 
@@ -629,17 +630,26 @@ if __name__ == "__main__":
             writer.add_scalar('Gradient Time', grad_times[-1], global_step=epoch+1)
             writer.add_scalar('Gradient Norm', grad_norms[-1], global_step=epoch+1)
         
-        #memory accounting
+
         import pdb; pdb.set_trace()
-
-        # Delete 'a' itself
         del simulator
-
-        # Collect any remaining garbage
-        gc.collect()
-        del simulator
+        del equilibriated_simulator
         
         print_active_torch_tensors()
+        del optimizer
+        #del simulator
+        del scheduler
+        optimizer = torch.optim.Adam(list(model.parameters()), lr=1e-3)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=5)
+
+
+    import pdb; pdb.set_trace()
+
+       
+
+    
+        
+        
     
     if params.nn:
         stats_write_file = os.path.join(simulator.save_dir, 'stats.txt')
