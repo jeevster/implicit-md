@@ -16,6 +16,7 @@ from torchmd.potentials import ExcludedVolume, LennardJones, LJFamily,  pairMLP
 from torchmd.observable import rdf, generate_vol_bins, DifferentiableRDF, msd, DiffusionCoefficient
 import torchopt
 from torchopt.nn import ImplicitMetaGradientModule
+from contextlib import nullcontext
 import time
 from torch.profiler import profile, record_function, ProfilerActivity
 import gc
@@ -192,7 +193,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
 
     '''CORE MD OPERATIONS'''
-    def force_calc(self, radii):
+    def force_calc(self, radii, retain_grad = False):
         
         #Get rij matrix
         with torch.enable_grad():
@@ -213,6 +214,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             if self.nn:
                 energy = self.model((dists/self.sigma_pairs))
                 forces = -compute_grad(inputs=r, output=energy)
+                forces = -compute_grad(inputs=r, output=energy) if retain_grad else -compute_grad(inputs=r, output=energy).detach()
                 
             #LJ potential
             else:
@@ -231,7 +233,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                     
                     #import pdb; pdb.set_trace()
                     #forces = r_multiplier * r + r3_multiplier * r**3
-                    forces = -compute_grad(inputs=r, output=energy)
+                    forces = -compute_grad(inputs=r, output=energy) if retain_grad else -compute_grad(inputs=r, output=energy).detach()
                 
                 else:
                     r2i = (self.sigma/dists)**2
@@ -255,7 +257,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #sum forces across particles
         return energy, torch.sum(forces, axis = 1)#.to(self.device)
         
-    def forward_nvt(self, radii, velocities, forces, zeta, calc_rdf = False, calc_diffusion = False):
+    def forward_nvt(self, radii, velocities, forces, zeta, calc_rdf = False, calc_diffusion = False, retain_grad = False):
         # get current acceleration
         accel = forces
 
@@ -276,7 +278,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         velocities = velocities + 0.5 * self.dt * (accel - zeta * velocities)
 
         # make a full step in accelerations
-        energy, forces = self.force_calc(radii.to(self.device))
+        energy, forces = self.force_calc(radii.to(self.device), retain_grad=retain_grad)
         accel = forces
 
         # make a half step in self.zeta
@@ -323,7 +325,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         return radii, velocities, forces, zeta, new_rdf
         
         
-    def forward(self, radii, velocities, forces, calc_rdf = False, calc_diffusion = False):
+    def forward(self, radii, velocities, forces, calc_rdf = False, calc_diffusion = False, retain_grad = False):
         # Forward process - 1 MD step with Velocity-Verlet integration
         #half-step in velocity
         velocities = velocities + 0.5*self.dt*forces
@@ -338,7 +340,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                         (radii-torch.round(radii)), (radii - torch.floor(radii)-1))
 
         #calculate force at new position
-        energy, forces = self.force_calc(radii.to(self.device))
+        energy, forces = self.force_calc(radii.to(self.device), retain_grad=retain_grad)
         
         #another half-step in velocity
         velocities = (velocities + 0.5*self.dt*forces) 
@@ -378,12 +380,14 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         
         with torch.enable_grad():
             #compute current diffusion coefficient
-            msd_data = msd(torch.cat(self.last_h_radii, dim=0), self.box)
-            old_diffusion_coeff = self.diffusion_coefficient(msd_data)
+            # msd_data = msd(torch.cat(self.last_h_radii, dim=0), self.box)
+            # old_diffusion_coeff = self.diffusion_coefficient(msd_data)
+            old_diffusion_coeff = self.diff_coeff
 
+            #get current forces
+            forces = self.force_calc(self.radii, retain_grad=True)[1]
             #make an MD step
-            forces = self.force_calc(self.radii)[1]
-            new_radii, new_velocities, _, _, new_rdf = self.forward_nvt(self.radii, self.velocities, forces, self.zeta_final, calc_rdf = True, calc_diffusion = True)
+            new_radii, new_velocities, _, new_zeta, new_rdf = self.forward_nvt(self.radii, self.velocities, forces, self.zeta, calc_rdf = True, calc_diffusion = True, retain_grad = True)
 
             #compute new diffusion coefficient
             new_msd_data = msd(torch.cat(self.last_h_radii[1:], dim=0), self.box)
@@ -392,9 +396,10 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         radii_residual  = self.radii - new_radii
         velocity_residual  = self.velocities - new_velocities
         rdf_residual = self.rdf - new_rdf
-        diffusion_residual = (new_diffusion_coeff - old_diffusion_coeff).unsqueeze(0)
+        diffusion_residual = (new_diffusion_coeff - old_diffusion_coeff)#q.unsqueeze(0)
+        zeta_residual = (new_zeta - self.zeta)
         
-        return (radii_residual, velocity_residual, rdf_residual, diffusion_residual)
+        return (radii_residual, velocity_residual, rdf_residual, diffusion_residual, zeta_residual)
 
 
     #top level MD simulation code (i.e the "solver") that returns the optimal "parameter" -aka the equilibriated radii
@@ -413,17 +418,20 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                 
                 calc_rdf = step ==  self.nsteps -1 or (self.save_intermediate_rdf and not self.nn)
                 calc_diffusion = step >= self.nsteps - self.diffusion_window #calculate diffusion coefficient if within window from the end
-                if step < self.n_nvt_steps: #NVT step
-                    radii, velocities, forces, zeta, rdf = self.forward_nvt(self.radii, self.velocities, forces, zeta, calc_rdf = calc_rdf, calc_diffusion=calc_diffusion)
-                else: # NVE step
-                    if step == self.n_nvt_steps:
-                        print("NVT Equilibration Complete, switching to NVE", file=self.f)
-                    radii, velocities, forces, rdf = self.forward(self.radii, self.velocities, forces, calc_rdf = calc_rdf, calc_diffusion=calc_diffusion)
+
+                with torch.enable_grad() if calc_diffusion else nullcontext():
+                    if step < self.n_nvt_steps: #NVT step
+                        radii, velocities, forces, zeta, rdf = self.forward_nvt(self.radii, self.velocities, forces, zeta, calc_rdf = calc_rdf, calc_diffusion=calc_diffusion)
+                    else: # NVE step
+                        if step == self.n_nvt_steps:
+                            print("NVT Equilibration Complete, switching to NVE", file=self.f)
+                        radii, velocities, forces, rdf = self.forward(self.radii, self.velocities, forces, calc_rdf = calc_rdf, calc_diffusion=calc_diffusion)
 
                 self.radii.copy_(radii)
                 self.velocities.copy_(velocities)
                 self.rdf.copy_(rdf)
                 self.diff_coeff.copy_(0) #placeholder for now, store final value at the end
+                #self.zeta.copy_(zeta)
                 if not self.nn and self.save_intermediate_rdf and step % self.n_dump == 0:
                     filename = f"step{step+1}_rdf.npy"
                     np.save(os.path.join(self.save_dir, filename), self.rdf.cpu().detach().numpy())
@@ -436,7 +444,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         msd_data = msd(torch.cat(self.last_h_radii, dim=0), self.box)
         diffusion_coeff = self.diffusion_coefficient(msd_data)
         self.diff_coeff.copy_(diffusion_coeff)
-        self.zeta_final = zeta
+        self.zeta = zeta
         filename ="gt_diff_coeff.npy" if not self.nn else f"diff_coeff_epoch{epoch+1}.npy"
         np.save(os.path.join(self.save_dir, filename), diffusion_coeff.cpu().detach().numpy())
 
