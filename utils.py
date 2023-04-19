@@ -5,6 +5,7 @@ from scipy.stats import maxwell
 import math
 import yaml
 import os
+import gc
 
 
 def radii_to_dists(radii, params):
@@ -69,3 +70,15 @@ def powerlaw_inv_cdf(y, power, y_min):
 def dump_params_to_yml(params, filepath):
     with open(os.path.join(filepath, "config.yaml"), 'w') as f:
         yaml.dump(params, f)
+
+
+def print_active_torch_tensors():
+    count = 0
+    for obj in gc.get_objects():
+        try:
+            if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
+                print(type(obj), obj.size())
+                count +=1
+        except:
+            pass
+    print(f"{count} tensors in memory")

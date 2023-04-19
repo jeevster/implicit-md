@@ -70,8 +70,8 @@ python nve_implicit.py \
 --sigma 1.0 \
 --dt 0.005 \
 --dr 0.01 \
---exp_name "with_diffusion_givepolyinfo2_dontretaingrads_exceptatfixedpoint_usediffusionparameter_enablediffusiongrads" \
---diffusion_window 1000 \
+--exp_name "memory_tests" \
+--diffusion_window 100 \
 --save_intermediate_rdf \
 --t_total 15 \
 --nvt_time 15 \

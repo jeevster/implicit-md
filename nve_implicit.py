@@ -22,10 +22,12 @@ from torch.profiler import profile, record_function, ProfilerActivity
 import gc
 import shutil
 from torch.utils.tensorboard import SummaryWriter
+from sys import getrefcount
 
 
 
-from utils import radii_to_dists, fcc_positions, initialize_velocities, dump_params_to_yml, powerlaw_inv_cdf
+from utils import radii_to_dists, fcc_positions, initialize_velocities, \
+                    dump_params_to_yml, powerlaw_inv_cdf, print_active_torch_tensors
 
 
 
@@ -146,6 +148,13 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.f = open(f"{self.save_dir}/log.txt", "a+")
         self.t = gsd.hoomd.open(name=f'{self.save_dir}/sim_temp{self.temp}.gsd', mode='wb') 
         self.n_dump = params.n_dump # dump for configuration
+
+    # def reset(self, radii_0, velocities_0, rdf_0):
+    #     import pdb; pdb.set_trace()
+    #     self.radii = nn.Parameter(radii_0.clone().detach_(), requires_grad=True).to(self.device)
+    #     self.velocities = nn.Parameter(velocities_0.clone().detach_(), requires_grad=True).to(self.device)
+    #     self.rdf = nn.Parameter(rdf_0.clone().detach_(), requires_grad=True).to(self.device)
+    #     self.diff_coeff = nn.Parameter(torch.Tensor([0.]), requires_grad=True).to(self.device)
 
     def check_symmetric(self, a, mode, tol=1e-4):
         if mode == 'opposite':
@@ -452,7 +461,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         save_rdf = self.diff_rdf_cpu(self.running_dists[int(self.burn_in_frac*length):]) if not self.nn else self.rdf
         filename ="gt_rdf.npy" if not self.nn else f"rdf_epoch{epoch+1}.npy"
         np.save(os.path.join(self.save_dir, filename), save_rdf.cpu().detach().numpy())
-
+        import pdb; pdb.set_trace()
         return self
 
     
@@ -560,10 +569,14 @@ if __name__ == "__main__":
     if params.nn:
         writer = SummaryWriter(log_dir = results_dir)
     
+    
     for epoch in range(params.n_epochs):
         print(f"Epoch {epoch+1}")
         #initialize simulator parameterized by a NN model
+        
         simulator = ImplicitMDSimulator(params, model, radii_0, velocities_0, rdf_0)
+        
+        
 
         optimizer.zero_grad()
 
@@ -615,6 +628,18 @@ if __name__ == "__main__":
             writer.add_scalar('Simulation Time', sim_times[-1], global_step=epoch+1)
             writer.add_scalar('Gradient Time', grad_times[-1], global_step=epoch+1)
             writer.add_scalar('Gradient Norm', grad_norms[-1], global_step=epoch+1)
+        
+        #memory accounting
+        import pdb; pdb.set_trace()
+
+        # Delete 'a' itself
+        del simulator
+
+        # Collect any remaining garbage
+        gc.collect()
+        del simulator
+        
+        print_active_torch_tensors()
     
     if params.nn:
         stats_write_file = os.path.join(simulator.save_dir, 'stats.txt')
