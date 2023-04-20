@@ -70,7 +70,7 @@ python nve_implicit.py \
 --sigma 1.0 \
 --dt 0.005 \
 --dr 0.01 \
---exp_name "memory_tests" \
+--exp_name "vectorized_tests" \
 --diffusion_window 100 \
 --save_intermediate_rdf \
 --t_total 15 \
@@ -78,9 +78,9 @@ python nve_implicit.py \
 --diameter_viz 0.3 \
 --n_dump 1000 \
 --burn_in_frac 0.9 \
---n_epochs 2 \
---n_replicas 2
---diffusion_loss_weight 100 \
+--n_epochs 50 \
+--n_replicas 2 \
+--diffusion_loss_weight 0 \
 --rdf_loss_weight 1 \
 --nn \
 --cutoff 1.25 \

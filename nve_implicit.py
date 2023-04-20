@@ -107,7 +107,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.radii = nn.Parameter(radii_0.detach_(), requires_grad=True).to(self.device)
         self.velocities = nn.Parameter(velocities_0.detach_(), requires_grad=True).to(self.device)
         self.rdf = nn.Parameter(rdf_0.detach_(), requires_grad=True).to(self.device)
-        self.diff_coeff = nn.Parameter(torch.Tensor([0.]), requires_grad=True).to(self.device)
+        self.diff_coeff = nn.Parameter(torch.zeros((self.n_replicas,)), requires_grad=True).to(self.device)
 
 
         if self.poly: #get per-particle sigmas
@@ -120,11 +120,10 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             self.particle_sigmas = self.particle_sigmas
         
 
-        #define differentiable rdf and diffusion coefficient functions
-        self.diff_rdf = DifferentiableRDF(params, self.device)
-        self.diff_rdf_cpu = DifferentiableRDF(params, "cpu")
-
-        self.diffusion_coefficient = DiffusionCoefficient(params, self.device)
+        #define vectorized differentiable rdf and diffusion coefficient functions
+        self.diff_rdf = vmap(DifferentiableRDF(params, self.device), -1)
+        self.diff_rdf_cpu = vmap(DifferentiableRDF(params, "cpu"), -1)
+        self.diffusion_coefficient = vmap(DiffusionCoefficient(params, self.device) , 1)
 
         
         #check if inital momentum is zero
@@ -311,17 +310,15 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         velocities = (velocities + 0.5 * self.dt * accel) / \
             (1 + 0.5 * self.dt * zeta)
 
-        
-        
-
-        
+    
         if calc_rdf:
             new_dists = radii_to_dists(radii, self.params)
             if self.poly:
                 #normalize distances by sigma pairs
                 new_dists = new_dists / self.sigma_pairs
 
-        new_rdf = self.diff_rdf(tuple(new_dists.to(self.device))) if calc_rdf else 0 #calculate the RDF from a single frame
+        
+        new_rdf = self.diff_rdf(tuple(new_dists.to(self.device).permute((1, 2, 3, 0)))) if calc_rdf else 0 #calculate the RDF from a single frame
         #new_rdf = 0
 
         if calc_diffusion:
@@ -371,8 +368,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             if self.poly:
                 #normalize distances by sigma pairs
                 new_dists = new_dists/ self.sigma_pairs
-        
-        new_rdf = self.diff_rdf(tuple(new_dists.to(self.device))) if calc_rdf else 0 #calculate the RDF from a single frame
+
+        new_rdf = self.diff_rdf(tuple(new_dists.to(self.device).permute((1, 2, 3, 0)))) if calc_rdf else 0 #calculate the RDF from a single frame
         #new_rdf = 0
         if calc_diffusion:
             self.last_h_radii.append(radii.unsqueeze(0))
@@ -456,24 +453,25 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                 #self.zeta.copy_(zeta)
                 if not self.nn and self.save_intermediate_rdf and step % self.n_dump == 0:
                     filename = f"step{step+1}_rdf.npy"
-                    np.save(os.path.join(self.save_dir, filename), self.rdf.cpu().detach().numpy())
+                    np.save(os.path.join(self.save_dir, filename), self.rdf.mean(dim = 0).cpu().detach().numpy())
 
         
         self.f.close()
         length = len(self.running_dists)
 
         #compute diffusion coefficient
+        
         msd_data = msd(torch.cat(self.last_h_radii, dim=0), self.box)
         diffusion_coeff = self.diffusion_coefficient(msd_data)
         self.diff_coeff.copy_(diffusion_coeff)
         self.zeta = zeta
         filename ="gt_diff_coeff.npy" if not self.nn else f"diff_coeff_epoch{epoch+1}.npy"
-        np.save(os.path.join(self.save_dir, filename), diffusion_coeff.cpu().detach().numpy())
+        np.save(os.path.join(self.save_dir, filename), diffusion_coeff.mean().cpu().detach().numpy())
 
         #compute ground truth rdf over entire trajectory (do it on CPU to avoid memory issues)
         save_rdf = self.diff_rdf_cpu(self.running_dists[int(self.burn_in_frac*length):]) if not self.nn else self.rdf
         filename ="gt_rdf.npy" if not self.nn else f"rdf_epoch{epoch+1}.npy"
-        np.save(os.path.join(self.save_dir, filename), save_rdf.cpu().detach().numpy())
+        np.save(os.path.join(self.save_dir, filename), save_rdf.mean(dim=0).cpu().detach().numpy())
         return self
 
     
@@ -555,7 +553,7 @@ if __name__ == "__main__":
     model = Stack({'nn': NN, 'prior': prior}).to(device)
     radii_0 = fcc_positions(params.n_particle, params.box, device).unsqueeze(0).repeat(params.n_replicas, 1, 1)
     velocities_0  = initialize_velocities(params.n_particle, params.temp, n_replicas = params.n_replicas)
-    rdf_0  = diff_rdf(tuple(radii_to_dists(radii_0.to(device), params))).unsqueeze(0).repeat(params.n_replicas, 1, 1)
+    rdf_0  = diff_rdf(tuple(radii_to_dists(radii_0[0].unsqueeze(0).to(device), params))).unsqueeze(0).repeat(params.n_replicas, 1)
 
     #load ground truth rdf and diffusion coefficient
     if params.nn:
@@ -644,9 +642,7 @@ if __name__ == "__main__":
             writer.add_scalar('Gradient Time', grad_times[-1], global_step=epoch+1)
             writer.add_scalar('Gradient Norm', grad_norms[-1], global_step=epoch+1)
         
-        del simulator
-        del equilibriated_simulator
-        #print_active_torch_tensors()
+        
     
     if params.nn:
         stats_write_file = os.path.join(simulator.save_dir, 'stats.txt')
