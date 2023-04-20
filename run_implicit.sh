@@ -57,7 +57,7 @@
 # --n_layers 3 \
 # --nonlinear 'ELU'
 
-python -m cProfile -o out.prof nve_implicit.py \
+python -m cProfile -o out.prof old_nve_implicit.py \
 --n_particle 8 \
 --temp 0.8 \
 --seed 123 \
