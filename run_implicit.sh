@@ -58,11 +58,11 @@
 # --nonlinear 'ELU'
 
 python -m cProfile -o out.prof nve_implicit.py \
---n_particle 256 \
+--n_particle 8 \
 --temp 0.8 \
 --seed 123 \
 --kbt0 1.8 \
---box 7 \
+--box 2 \
 --epsilon 0.2 \
 --poly \
 --poly_power 3.0 \
@@ -81,7 +81,7 @@ python -m cProfile -o out.prof nve_implicit.py \
 --n_epochs 1 \
 --diffusion_loss_weight 1 \
 --rdf_loss_weight 0 \
---cutoff 7 \
+--cutoff 1.25 \
 --gaussian_width 0.1 \
 --n_width 128 \
 --n_layers 3 \
