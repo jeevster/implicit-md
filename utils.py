@@ -10,20 +10,20 @@ import gc
 
 def radii_to_dists(radii, params):
     #Get rij matrix
-    r = radii.unsqueeze(0) - radii.unsqueeze(1)
+    r = radii.unsqueeze(-3) - radii.unsqueeze(-2)
     
     #Enforce minimum image convention
     r = -1*torch.where(r > 0.5*params.box, r-params.box, torch.where(r<-0.5*params.box, r+params.box, r))
 
     #get rid of diagonal 0 entries of r matrix (for gradient stability)
-    r = r[~torch.eye(r.shape[0],dtype=bool)].reshape(r.shape[0], -1, 3)
+    r = r[:, ~torch.eye(r.shape[1],dtype=bool)].reshape(r.shape[0], r.shape[1], -1, 3)
     try:
         r.requires_grad = True
     except RuntimeError:
         pass
 
     #compute distance matrix:
-    return torch.sqrt(torch.sum(r**2, axis=2)).unsqueeze(-1)
+    return torch.sqrt(torch.sum(r**2, axis=-1)).unsqueeze(-1)
 
 
 # Initialize configuration
@@ -48,17 +48,17 @@ def fcc_positions(n_particle, box, device):
 
    
 # Procedure to initialize velocities
-def initialize_velocities(n_particle, temp):
+def initialize_velocities(n_particle, temp, n_replicas):
     
     vel_dist = maxwell()
-    velocities = vel_dist.rvs(size = (n_particle, 3))
+    velocities = vel_dist.rvs(size = (n_replicas, n_particle, 3))
     #shift so that initial momentum is zero
-    velocities -= np.mean(velocities, axis = 0)
+    velocities -= np.mean(velocities, axis = 1, keepdims=True)
 
     #scale velocities to match desired temperature
-    sum_vsq = np.sum(np.square(velocities))
+    sum_vsq = np.sum(np.square(velocities), axis = (1,2), keepdims=True)
     p_dof = 3*(n_particle-1)
-    correction_factor = math.sqrt(p_dof*temp/sum_vsq)
+    correction_factor = np.sqrt(p_dof*temp/sum_vsq)
     velocities *= correction_factor
     return torch.Tensor(velocities)
 
