@@ -266,7 +266,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
     def top_level_force_calc(self, radii, bins):
 
         #partition the radii, sigma pairs, and bin_idxs among threads
-        
         divided_radii = [radii[idxs] for idxs in bins]
         thread_partitioned_radii = self.divide_items(divided_radii, self.num_threads)
         divided_sigmas = [self.particle_sigmas[idxs] for idxs in bins] if self.poly else [self.sigma * torch.ones((len(idxs),)) for idxs in bins]
@@ -304,45 +303,32 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         return energy, forces
 
     def thread_force_calc(self, all_current_radii, all_neighbor_radii, all_current_sigmas, all_neighbor_sigmas):
-        energies = []
-        forces = []
-        for current_radii, neighbor_radii, current_sigmas, neighbor_sigmas in zip(all_current_radii, all_neighbor_radii, all_current_sigmas, all_neighbor_sigmas):
-            energy, force = self.force_calc(current_radii, neighbor_radii, current_sigmas, neighbor_sigmas)
-            energies.append(energy)
-            forces.append(force)
-            
-        return energies, forces
-
-        
-
-    
-    def force_calc(self, current_radii, neighbor_radii, current_sigmas, neighbor_sigmas):
-
-        #Get rij matrix and sigma pairs
         with torch.enable_grad():
-            
-            r = current_radii.unsqueeze(1) - neighbor_radii.unsqueeze(0)
-            sigma_pairs = self.get_sigma_pairs(current_sigmas.unsqueeze(1), neighbor_sigmas.unsqueeze(0))
+            rs = [current_radii.unsqueeze(1) - neighbor_radii.unsqueeze(0) for current_radii, neighbor_radii in zip(all_current_radii, all_neighbor_radii)]
+            rs = [-1*torch.where(r > 0.5*self.box, r-self.box, torch.where(r<-0.5*self.box, r+self.box, r)) for r in rs]
+            r = torch.stack([torch.block_diag(*[r[:, :, i] for r in rs]) for i in range(3)], dim=2)
             if not r.requires_grad:
-                r.requires_grad = True
+                    r.requires_grad = True
+            vectorized_dists = torch.sqrt(torch.sum(r**2, axis=2))
 
-            #Enforce minimum image convention
-            r = -1*torch.where(r > 0.5*self.box, r-self.box, torch.where(r<-0.5*self.box, r+self.box, r))
             
-            #compute distance matrix:
-            dists = torch.sqrt(torch.sum(r**2, axis=2)).unsqueeze(-1)
-
-            mask = (dists == 0) | (dists > self.cutoff) #remove particles beyond cutoff and remove ourself
-            dists = dists[~mask].unsqueeze(-1)
-            sigma_pairs = sigma_pairs[~mask.squeeze(-1)].unsqueeze(-1)
+            sigma_pairs = [self.get_sigma_pairs(current_sigmas.unsqueeze(1), neighbor_sigmas.unsqueeze(0)) for current_sigmas, neighbor_sigmas in zip(all_current_sigmas, all_neighbor_sigmas)]
+            vectorized_sigma_pairs = torch.block_diag(*sigma_pairs)
+            vectorized_sigma_pairs = torch.where(vectorized_sigma_pairs == 0, 1, vectorized_sigma_pairs)
+            
+            mask = (vectorized_dists == 0) | (vectorized_dists > self.cutoff) #remove particles beyond cutoff and remove ourself
+            vectorized_dists = vectorized_dists[~mask].unsqueeze(-1)
+            vectorized_sigma_pairs = vectorized_sigma_pairs[~mask.squeeze(-1)].unsqueeze(-1)
 
             #compute energy
             if self.nn:
-                energy = self.model(dists/sigma_pairs) if self.poly else self.model(dists)
+                import pdb; pdb.set_trace()
+                energy = self.model(vectorized_dists/vectorized_sigma_pairs) if self.poly else self.model(vectorized_dists)
+                
                 forces = -compute_grad(inputs=r, output=energy)
 
                 #assert no nans except for the mask places
-                assert(not torch.any(torch.isnan(forces[~mask.squeeze(2)])))
+                assert(not torch.any(torch.isnan(forces[~mask])))
 
                 #remove nans
                 forces[forces != forces] = 0.
@@ -381,12 +367,10 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                     # except:
                     #     import pdb; pdb.set_trace()
                         
-
-
-
         #sum forces across particles
         return energy, torch.sum(forces, axis = 1)#.to(self.device)
         
+
     def forward_nvt(self, radii, velocities, forces, zeta, calc_rdf = False, calc_diffusion = False):
         # get current acceleration
         accel = forces

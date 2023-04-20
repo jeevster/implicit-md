@@ -82,7 +82,7 @@ python -m cProfile -o out.prof nve_implicit.py \
 --diffusion_loss_weight 1 \
 --rdf_loss_weight 0 \
 --nn \
---cutoff 10 \
+--cutoff 1.25 \
 --gaussian_width 0.1 \
 --n_width 128 \
 --n_layers 3 \
