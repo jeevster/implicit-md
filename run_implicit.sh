@@ -70,7 +70,7 @@ python nve_implicit.py \
 --sigma 1.0 \
 --dt 0.005 \
 --dr 0.01 \
---exp_name "no_diffusion_vectorized_tests_diffwindow100" \
+--exp_name "MWE" \
 --diffusion_window 100 \
 --save_intermediate_rdf \
 --t_total 15 \
@@ -79,7 +79,7 @@ python nve_implicit.py \
 --n_dump 100 \
 --burn_in_frac 0.9 \
 --n_epochs 50 \
---n_replicas 5 \
+--n_replicas 1 \
 --diffusion_loss_weight 0 \
 --rdf_loss_weight 1 \
 --nn \
