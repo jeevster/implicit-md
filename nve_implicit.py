@@ -304,7 +304,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
     def thread_force_calc(self, all_current_radii, all_neighbor_radii, all_current_sigmas, all_neighbor_sigmas):
         #import pdb; pdb.set_trace()
         with torch.enable_grad():
-            
             rs = [current_radii.unsqueeze(1) - neighbor_radii.unsqueeze(0) for current_radii, neighbor_radii in zip(all_current_radii, all_neighbor_radii)]
             rs = [-1*torch.where(r > 0.5*self.box, r-self.box, torch.where(r<-0.5*self.box, r+self.box, r)) for r in rs]
             r = torch.stack([torch.block_diag(*[r[:, :, i] for r in rs]) for i in range(3)], dim=2)
@@ -390,8 +389,11 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             (1/self.Q) * (ke - self.targeEkin)
 
         # make another half step in velocity
-        velocities = (velocities + 0.5 * self.dt * accel) / \
-            (1 + 0.5 * self.dt * zeta)
+        try:
+            velocities = (velocities + 0.5 * self.dt * accel) / \
+                (1 + 0.5 * self.dt * zeta)
+        except:
+            import pdb; pdb.set_trace()
 
         
         if calc_rdf:
