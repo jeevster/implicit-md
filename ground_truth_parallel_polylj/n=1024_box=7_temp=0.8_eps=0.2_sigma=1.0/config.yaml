@@ -17,7 +17,7 @@ min_sigma: 0.73
 n_dump: 10
 n_epochs: 1
 n_layers: 3
-n_particle: 256
+n_particle: 1024
 n_width: 128
 nn: false
 no_pbc: false

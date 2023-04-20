@@ -26,6 +26,7 @@ from torch.profiler import profile, record_function, ProfilerActivity
 import gc
 import shutil
 from torch.utils.tensorboard import SummaryWriter
+from functorch import vmap
 
 
 
@@ -151,7 +152,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             self.save_dir = os.path.join('results', f"IMPLICIT_{add}_{self.exp_name}_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_dt={self.dt}_ttotal={self.t_total}")
         else: 
             add = "_polylj" if self.poly else ""
-            self.save_dir = os.path.join('ground_truth' + add, f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}")
+            self.save_dir = os.path.join('ground_truth_parallel' + add, f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}")
 
 
         
@@ -294,11 +295,12 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         # Retrieve the results from the future objects
         results = [future.result() for future in futures]
 
+
         #Gather the forces in the correct order, sum the energies
         gather_idxs = torch.cat(bins)
-        forces_aggregated = torch.cat([torch.cat(result[1]) for result in results])
+        forces_aggregated = torch.cat([result[1] for result in results])
         forces = forces_aggregated[gather_idxs]
-        energy = torch.cat([torch.cat(result[0]) for result in results]).sum()
+        energy = torch.cat([result[0].unsqueeze(-1) for result in results]).sum()
 
         return energy, forces
 
@@ -322,51 +324,28 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
             #compute energy
             if self.nn:
-                import pdb; pdb.set_trace()
                 energy = self.model(vectorized_dists/vectorized_sigma_pairs) if self.poly else self.model(vectorized_dists)
-                
-                forces = -compute_grad(inputs=r, output=energy)
-
-                #assert no nans except for the mask places
-                assert(not torch.any(torch.isnan(forces[~mask])))
-
-                #remove nans
-                forces[forces != forces] = 0.
                 
             #LJ potential
             else:
                 if self.poly: #repulsive
-                    parenth = (sigma_pairs/dists)
-                    # r2i = (1/dists)**2
-                    
+                    parenth = (vectorized_sigma_pairs/vectorized_dists)                    
                     rep_term = parenth ** self.rep_power
-                    
                     energy = torch.sum(rep_term + self.c_0 + self.c_2*parenth**-2 + self.c_4*parenth**-4)
-                    
-                    #import pdb; pdb.set_trace()
-                    #forces = r_multiplier * r + r3_multiplier * r**3
-                    forces = -compute_grad(inputs=r, output=energy)
-                
                 else:
-                    r2i = (self.sigma/dists)**2
-                    
+                    r2i = (self.sigma/vectorized_dists)**2
                     r6i = r2i**3
                     energy = (2*self.epsilon*torch.sum(r6i*(r6i - 1))).unsqueeze(-1)
-                    #reuse components of potential to calculate virial and forces
-                    forces = -compute_grad(inputs=r, output=energy)
+                    
+        
+        forces = -compute_grad(inputs=r, output=energy)
+        
+        #assert no nans except for the mask places
+        assert(not torch.any(torch.isnan(forces[~mask])))
 
-                    #assert no nans except for the mask places
-                    assert(not torch.any(torch.isnan(forces[~mask.squeeze(2)])))
+        #remove nans
+        forces[forces != forces] = 0.
 
-                    #remove nans
-                    forces[forces != forces] = 0.
-
-                    # internal_virial = -48*self.epsilon*r6i*(r6i - 0.5)/(self.sigma**2)
-                    # try:
-                    #     forces = (-internal_virial*r[~mask.squeeze(-1)]*r2i).reshape(r.shape[0], -1, 3)
-                    # except:
-                    #     import pdb; pdb.set_trace()
-                        
         #sum forces across particles
         return energy, torch.sum(forces, axis = 1)#.to(self.device)
         
@@ -664,7 +643,7 @@ if __name__ == "__main__":
     #load ground truth rdf and diffusion coefficient
     if params.nn:
         add = "_polylj" if params.poly else ""
-        gt_dir = os.path.join('ground_truth' + add, f"n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}")
+        gt_dir = os.path.join('ground_truth_parallel' + add, f"n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}")
         gt_rdf = torch.Tensor(np.load(os.path.join(gt_dir, "gt_rdf.npy"))).to(device)
         gt_diff_coeff = torch.Tensor(np.load(os.path.join(gt_dir, "gt_diff_coeff.npy"))).to(device)
         add = "polylj_" if params.poly else ""

@@ -1,6 +1,6 @@
 !!python/object:argparse.Namespace
 attr_power: 0
-box: 7
+box: 10
 burn_in_frac: 0.9
 config: default
 cutoff: 1.25
@@ -17,12 +17,12 @@ min_sigma: 0.73
 n_dump: 10
 n_epochs: 1
 n_layers: 3
-n_particle: 256
+n_particle: 1024
 n_width: 128
 nn: false
 no_pbc: false
 nonlinear: ELU
-num_threads: 1
+num_threads: 4
 nvt_time: 1.0
 poly: true
 poly_power: 3.0
