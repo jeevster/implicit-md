@@ -403,9 +403,10 @@ def compute_dihe(xyz, dihes):
 
 # obs.get_loss(q_t[::10])
 
+''''BATCHED'''
 def msd(positions, box):
-    #Input: positions tensor of shape [N_timesteps, N_particles, 3]
-    msd = torch.zeros(positions.shape[0])
+    #Input: positions tensor of shape [N_timesteps, N_replicas, N_particles, 3]
+    msd = torch.zeros(positions.shape[0], positions.shape[1])
     total_displacements = torch.zeros_like(positions[0])
     # Loop over time steps
     for step in range(1, positions.shape[0]):
@@ -414,10 +415,10 @@ def msd(positions, box):
         displacements = torch.where(displacements > 0.5*box, displacements-box, torch.where(displacements<-0.5*box, displacements+box, displacements))
         total_displacements = total_displacements + displacements
         # Calculate squared displacements
-        total_squared_displacements = torch.linalg.norm(total_displacements, axis=1) ** 2
+        total_squared_displacements = torch.linalg.norm(total_displacements, axis=-1) ** 2
 
         # Accumulate squared displacements and update number of displacements
-        msd[step] = total_squared_displacements.mean()
+        msd[step] = total_squared_displacements.mean(axis = 1)
 
     # Optionally, calculate standard deviation for error estimates
     #std_msd = (msd.var() / len(msd)).sqrt()
@@ -425,6 +426,7 @@ def msd(positions, box):
 
 
 '''Sanjeev's Diffusion Coefficient implementation - doesn't use system stuff'''
+''''NOT BATCHED'''
 class DiffusionCoefficient(torch.nn.Module):
     def __init__(self, params, device):
         super(DiffusionCoefficient, self).__init__()
