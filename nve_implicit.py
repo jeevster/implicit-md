@@ -275,6 +275,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
         # Submit tasks to the thread pool and store the future objects
         for i in range(self.num_threads):
+
             radii = thread_partitioned_radii[i]
             neighbor_radii = [torch.concat([divided_radii[j] \
                                 for j in self.neighbor_bin_mappings[bin_idx]], dim=0) \
@@ -292,11 +293,10 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         # Retrieve the results from the future objects
         results = [future.result() for future in futures]
 
-
-        #Gather the forces in the correct order, sum the energies
-        gather_idxs = torch.cat(bins)
+        #Scatter the forces in the correct order, sum the energies
+        scatter_idxs = torch.cat(bins)
         forces_aggregated = torch.cat([result[1] for result in results])
-        forces = forces_aggregated[gather_idxs]
+        forces = torch.scatter(forces_aggregated, 0, scatter_idxs.unsqueeze(-1), forces_aggregated)
         energy = torch.cat([result[0].unsqueeze(-1) for result in results]).sum()
 
         return energy, forces
@@ -304,21 +304,21 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
     def thread_force_calc(self, all_current_radii, all_neighbor_radii, all_current_sigmas, all_neighbor_sigmas):
         #import pdb; pdb.set_trace()
         with torch.enable_grad():
+            
             rs = [current_radii.unsqueeze(1) - neighbor_radii.unsqueeze(0) for current_radii, neighbor_radii in zip(all_current_radii, all_neighbor_radii)]
             rs = [-1*torch.where(r > 0.5*self.box, r-self.box, torch.where(r<-0.5*self.box, r+self.box, r)) for r in rs]
             r = torch.stack([torch.block_diag(*[r[:, :, i] for r in rs]) for i in range(3)], dim=2)
             if not r.requires_grad:
                     r.requires_grad = True
-            vectorized_dists = torch.sqrt(torch.sum(r**2, axis=2))
 
-            
-            sigma_pairs = [self.get_sigma_pairs(current_sigmas.unsqueeze(1), neighbor_sigmas.unsqueeze(0)) for current_sigmas, neighbor_sigmas in zip(all_current_sigmas, all_neighbor_sigmas)]
-            vectorized_sigma_pairs = torch.block_diag(*sigma_pairs)
-            vectorized_sigma_pairs = torch.where(vectorized_sigma_pairs == 0, 1, vectorized_sigma_pairs)
-            
+            vectorized_dists = torch.sqrt(torch.sum(r**2, axis=2))
             mask = (vectorized_dists == 0) | (vectorized_dists > self.cutoff) #remove particles beyond cutoff and remove ourself
             vectorized_dists = vectorized_dists[~mask].unsqueeze(-1)
-            vectorized_sigma_pairs = vectorized_sigma_pairs[~mask.squeeze(-1)].unsqueeze(-1)
+
+            if self.poly:
+                sigma_pairs = [self.get_sigma_pairs(current_sigmas.unsqueeze(1), neighbor_sigmas.unsqueeze(0)) for current_sigmas, neighbor_sigmas in zip(all_current_sigmas, all_neighbor_sigmas)]
+                vectorized_sigma_pairs = torch.block_diag(*sigma_pairs)
+                vectorized_sigma_pairs = vectorized_sigma_pairs[~mask].unsqueeze(-1)
 
             #compute energy
             if self.nn:
@@ -335,14 +335,15 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                     r6i = r2i**3
                     energy = (2*self.epsilon*torch.sum(r6i*(r6i - 1))).unsqueeze(-1)
                     
-        
-        forces = -compute_grad(inputs=r, output=energy)
+        #not sure why we have to do this
+        forces = 2*compute_grad(inputs=r, output=energy)
         
         #assert no nans except for the mask places
         assert(not torch.any(torch.isnan(forces[~mask])))
 
         #remove nans
         forces[forces != forces] = 0.
+
 
         #sum forces across particles
         return energy, torch.sum(forces, axis = 1)#.to(self.device)
@@ -371,7 +372,10 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #assign new bins
         bins = self.assign_bins(radii)
         #compute energy and forces and aggregate them
+        
+        #breaking here on the second iteration
         energy, forces = self.top_level_force_calc(radii, bins)
+        
         accel = forces
 
         # make a half step in self.zeta
@@ -388,6 +392,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         # make another half step in velocity
         velocities = (velocities + 0.5 * self.dt * accel) / \
             (1 + 0.5 * self.dt * zeta)
+
         
         if calc_rdf:
             new_dists = radii_to_dists(radii, self.params)
@@ -511,7 +516,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
             #compute energy and forces and aggregate them
             energy, forces = self.top_level_force_calc(self.radii, bins)
-
+            self.forces = forces
             #
             #Run MD
             print("Start MD trajectory", file=self.f)
@@ -534,6 +539,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                 self.velocities.copy_(velocities)
                 self.rdf.copy_(rdf)
                 self.diff_coeff.copy_(0) #placeholder for now, store final value at the end
+                self.forces = forces # temp for debugging
                 if not self.nn and self.save_intermediate_rdf and step % self.n_dump == 0:
                     filename = f"step{step+1}_rdf.npy"
                     np.save(os.path.join(self.save_dir, filename), self.rdf.cpu().detach().numpy())

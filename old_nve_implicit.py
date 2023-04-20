@@ -167,6 +167,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         radii = self.radii.detach()
         partpos = radii.tolist()
         velocities = self.velocities.detach().tolist()
+        forces = self.forces
         sigmas = self.particle_sigmas if self.poly else self.sigma
         diameter = self.diameter_viz*sigmas*np.ones((self.n_particle,))
         diameter = diameter.tolist()
@@ -267,7 +268,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
     def forward_nvt(self, radii, velocities, forces, zeta, calc_rdf = False, calc_diffusion = False, retain_grad = False):
         # get current acceleration
         accel = forces
-
+        
         # make full step in position
         radii = radii + velocities * self.dt + \
             (accel - zeta * velocities) * (0.5 * self.dt ** 2)
@@ -285,7 +286,9 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         velocities = velocities + 0.5 * self.dt * (accel - zeta * velocities)
 
         # make a full step in accelerations
+        
         energy, forces = self.force_calc(radii.to(self.device), retain_grad=retain_grad)
+        
         accel = forces
 
         # make a half step in self.zeta
@@ -302,6 +305,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         # make another half step in velocity
         velocities = (velocities + 0.5 * self.dt * accel) / \
             (1 + 0.5 * self.dt * zeta)
+
         
         if calc_rdf:
             new_dists = radii_to_dists(radii, self.params)
@@ -417,6 +421,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #Initialize forces/potential of starting configuration
         with torch.no_grad():
             _, forces = self.force_calc(self.radii)
+            self.forces = forces
             #Run MD
             print("Start MD trajectory", file=self.f)
             zeta = 0
@@ -438,6 +443,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                 self.velocities.copy_(velocities)
                 self.rdf.copy_(rdf)
                 self.diff_coeff.copy_(0) #placeholder for now, store final value at the end
+                self.forces = forces # temp  debugging
                 #self.zeta.copy_(zeta)
                 if not self.nn and self.save_intermediate_rdf and step % self.n_dump == 0:
                     filename = f"step{step+1}_rdf.npy"

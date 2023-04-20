@@ -25,7 +25,12 @@ if __name__ == "__main__":
     vel_true = torch.cat([torch.tensor(frame.particles.velocity).unsqueeze(0) for frame in f_true], dim = 0)
     vel = torch.cat([torch.tensor(frame.particles.velocity).unsqueeze(0) for frame in f], dim = 0)
 
+    
+
+   
+
     for i in tqdm(range(pos_true.shape[0])):
+
         try:
             assert(torch.all(pos_true[i] == pos[i]))  
         except:
@@ -37,3 +42,5 @@ if __name__ == "__main__":
         except:
             print(f"Velocity {i+1} failed")
             break
+
+        
