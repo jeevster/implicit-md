@@ -26,7 +26,7 @@ from sys import getrefcount
 
 
 from utils import radii_to_dists, fcc_positions, initialize_velocities, \
-                    dump_params_to_yml, powerlaw_inv_cdf, print_active_torch_tensors
+                    dump_params_to_yml, powerlaw_inv_cdf#, print_active_torch_tensors
 
 
 
@@ -510,6 +510,8 @@ if __name__ == "__main__":
 
     parser.add_argument('--rdf_loss_weight', type=float, default=1, help='coefficient in front of RDF loss term')
     parser.add_argument('--diffusion_loss_weight', type=float, default=100, help='coefficient in front of diffusion coefficient loss term')
+
+    parser.add_argument('--num_threads', type=int, default=1, help='# of threads')
 
 
     params = parser.parse_args()
