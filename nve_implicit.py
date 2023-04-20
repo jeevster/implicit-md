@@ -38,10 +38,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
     def __init__(self, params, model, radii_0, velocities_0, rdf_0):
         super(ImplicitMDSimulator, self).__init__()
         
-        #Set random seeds
-        np.random.seed(seed=params.seed)
-        torch.manual_seed(params.seed)
-        random.seed(params.seed)
+        
 
         self.params = params
         self.n_particle = params.n_particle
@@ -305,7 +302,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         return energy, forces
 
     def thread_force_calc(self, all_current_radii, all_neighbor_radii, all_current_sigmas, all_neighbor_sigmas):
-        import pdb; pdb.set_trace()
+        #import pdb; pdb.set_trace()
         with torch.enable_grad():
             rs = [current_radii.unsqueeze(1) - neighbor_radii.unsqueeze(0) for current_radii, neighbor_radii in zip(all_current_radii, all_neighbor_radii)]
             rs = [-1*torch.where(r > 0.5*self.box, r-self.box, torch.where(r<-0.5*self.box, r+self.box, r)) for r in rs]
@@ -611,6 +608,11 @@ if __name__ == "__main__":
 
 
     params = parser.parse_args()
+
+    #Set random seeds
+    np.random.seed(seed=params.seed)
+    torch.manual_seed(params.seed)
+    random.seed(params.seed)
 
     #GPU
     try:

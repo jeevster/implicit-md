@@ -57,7 +57,7 @@
 # --n_layers 3 \
 # --nonlinear 'ELU'
 
-python -m cProfile -o out.prof old_nve_implicit.py \
+python -m cProfile -o out.prof nve_implicit.py \
 --n_particle 8 \
 --temp 0.8 \
 --seed 123 \
@@ -72,7 +72,6 @@ python -m cProfile -o out.prof old_nve_implicit.py \
 --dr 0.01 \
 --exp_name "test_parallel" \
 --diffusion_window 10 \
---save_intermediate_rdf \
 --t_total 1 \
 --nvt_time 1 \
 --diameter_viz 0.3 \

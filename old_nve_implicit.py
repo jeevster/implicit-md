@@ -34,10 +34,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
     def __init__(self, params, model, radii_0, velocities_0, rdf_0):
         super(ImplicitMDSimulator, self).__init__()
         
-        #Set random seeds
-        np.random.seed(seed=params.seed)
-        torch.manual_seed(params.seed)
-        random.seed(params.seed)
+        
 
         self.params = params
         self.n_particle = params.n_particle
@@ -145,7 +142,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
         #File dump stuff
         self.f = open(f"{self.save_dir}/log.txt", "a+")
-        self.t = gsd.hoomd.open(name=f'{self.save_dir}/sim_temp{self.temp}.gsd', mode='wb') 
+        self.t = gsd.hoomd.open(name=f'{self.save_dir}/sim_TRUE_temp{self.temp}.gsd', mode='wb') 
         self.n_dump = params.n_dump # dump for configuration
 
     def reset(self, radii_0, velocities_0, rdf_0):
@@ -515,6 +512,11 @@ if __name__ == "__main__":
 
 
     params = parser.parse_args()
+
+    #Set random seeds
+    np.random.seed(seed=params.seed)
+    torch.manual_seed(params.seed)
+    random.seed(params.seed)
 
     #GPU
     try:
