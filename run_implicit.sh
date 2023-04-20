@@ -76,12 +76,12 @@ python -m cProfile -o out.prof nve_implicit.py \
 --t_total 1 \
 --nvt_time 1 \
 --diameter_viz 0.3 \
---n_dump 10 \
+--n_dump 1 \
 --burn_in_frac 0.9 \
 --n_epochs 1 \
 --diffusion_loss_weight 1 \
 --rdf_loss_weight 0 \
---cutoff 1.25 \
+--cutoff 7 \
 --gaussian_width 0.1 \
 --n_width 128 \
 --n_layers 3 \
