@@ -203,6 +203,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
     '''CORE MD OPERATIONS'''
     def force_calc(self, radii, retain_grad = False):
         
+         
         #Get rij matrix
         with torch.enable_grad():
             r = radii.unsqueeze(0) - radii.unsqueeze(1)
@@ -287,7 +288,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         # make a full step in accelerations
         
         energy, forces = self.force_calc(radii.to(self.device), retain_grad=retain_grad)
-        
+              
         accel = forces
 
         # make a half step in self.zeta

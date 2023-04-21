@@ -303,10 +303,11 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
     def thread_force_calc(self, all_current_radii, all_neighbor_radii, all_current_sigmas, all_neighbor_sigmas):
         #import pdb; pdb.set_trace()
+        
         with torch.enable_grad():
             rs = [current_radii.unsqueeze(1) - neighbor_radii.unsqueeze(0) for current_radii, neighbor_radii in zip(all_current_radii, all_neighbor_radii)]
-            rs = [-1*torch.where(r > 0.5*self.box, r-self.box, torch.where(r<-0.5*self.box, r+self.box, r)) for r in rs]
             r = torch.stack([torch.block_diag(*[r[:, :, i] for r in rs]) for i in range(3)], dim=2)
+            r = -1*torch.where(r > 0.5*self.box, r-self.box, torch.where(r<-0.5*self.box, r+self.box, r))
             if not r.requires_grad:
                     r.requires_grad = True
 
@@ -315,6 +316,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             vectorized_dists = vectorized_dists[~mask].unsqueeze(-1)
 
             if self.poly:
+                
                 sigma_pairs = [self.get_sigma_pairs(current_sigmas.unsqueeze(1), neighbor_sigmas.unsqueeze(0)) for current_sigmas, neighbor_sigmas in zip(all_current_sigmas, all_neighbor_sigmas)]
                 vectorized_sigma_pairs = torch.block_diag(*sigma_pairs)
                 vectorized_sigma_pairs = vectorized_sigma_pairs[~mask].unsqueeze(-1)
@@ -374,7 +376,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         
         #breaking here on the second iteration
         energy, forces = self.top_level_force_calc(radii, bins)
-        import pdb; pdb.set_trace()
+        
         
         accel = forces
 
@@ -514,6 +516,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             #assign new bins
             bins = self.assign_bins(self.radii)
 
+            
             #compute energy and forces and aggregate them
             energy, forces = self.top_level_force_calc(self.radii, bins)
             self.forces = forces

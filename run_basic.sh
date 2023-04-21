@@ -1,11 +1,12 @@
 #!/bin/bash
 python -m cProfile -o out.prof old_nve_implicit.py \
---n_particle 256 \
+--n_particle 8 \
 --temp 0.8 \
 --seed 123 \
 --kbt0 1.8 \
---box 7 \
+--box 2 \
 --epsilon 0.2 \
+--poly \
 --poly_power 3.0 \
 --min_sigma 0.73 \
 --sigma 1.0 \
@@ -27,3 +28,5 @@ python -m cProfile -o out.prof old_nve_implicit.py \
 --n_layers 3 \
 --nonlinear 'ELU' \
 --num_threads 1
+
+
