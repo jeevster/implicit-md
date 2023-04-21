@@ -1,11 +1,11 @@
 #!/bin/bash
 
 python -m cProfile -o out.prof nve_implicit.py \
---n_particle 8 \
+--n_particle 256 \
 --temp 0.8 \
 --seed 123 \
 --kbt0 1.8 \
---box 2 \
+--box 7 \
 --epsilon 0.2 \
 --poly_power 3.0 \
 --min_sigma 0.73 \

@@ -94,7 +94,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.num_threads)
        
         self.neighbor_bin_mappings = self.get_neighbor_bin_mappings()
-        
+        self.binrange = torch.arange(self.num_bins).to(device).unsqueeze(1)
 
         # Constant box properties
         self.vol = self.box**3.0
@@ -239,11 +239,9 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
     """ Returns list mapping bin id to particles for in the bin's domain """
     def assign_bins(self, radii):
         bin_idxs = self.bin_index(radii)
-        bin_to_particles = []
-        for i in range(self.num_bins):
-            bin_to_particles.append(torch.nonzero(bin_idxs == i).squeeze(-1))
-
-        return bin_to_particles
+        idxs = torch.nonzero(bin_idxs == self.binrange) # num_parts by 2[]
+        splits = torch.bincount(idxs[:, 0], minlength=self.num_bins)
+        return torch.split(idxs[:, 1], splits.tolist())
 
     ''''Gets the neighbor bin indices for every bin'''
     def get_neighbor_bin_mappings(self):
@@ -264,6 +262,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
     def top_level_force_calc(self, radii, bins):
 
         #partition the radii, sigma pairs, and bin_idxs among threads
+        import pdb; pdb.set_trace()
         divided_radii = [radii[idxs] for idxs in bins]
         thread_partitioned_radii = self.divide_items(divided_radii, self.num_threads)
         divided_sigmas = [self.particle_sigmas[idxs] for idxs in bins] if self.poly else [self.sigma * torch.ones((len(idxs),)) for idxs in bins]
@@ -271,35 +270,45 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         thread_partitioned_bin_idxs = self.divide_items(range(self.num_bins), self.num_threads)
 
         # Define a list to store the future objects representing the results of each thread
-        futures = []
+        # futures = []
 
-        # Submit tasks to the thread pool and store the future objects
-        for i in range(self.num_threads):
+        # # Submit tasks to the thread pool and store the future objects
+        # for i in range(self.num_threads):
 
-            radii = thread_partitioned_radii[i]
-            neighbor_radii = [torch.concat([divided_radii[j] \
-                                for j in self.neighbor_bin_mappings[bin_idx]], dim=0) \
-                                 for bin_idx in thread_partitioned_bin_idxs[i]]
+        #     radii = thread_partitioned_radii[i]
+        #     neighbor_radii = [torch.concat([divided_radii[j] \
+        #                         for j in self.neighbor_bin_mappings[bin_idx]], dim=0) \
+        #                          for bin_idx in thread_partitioned_bin_idxs[i]]
 
-            sigmas = thread_partitioned_sigmas[i]
-            neighbor_sigmas = [torch.concat([divided_sigmas[j] \
-                                for j in self.neighbor_bin_mappings[bin_idx]], dim=0) \
-                                 for bin_idx in thread_partitioned_bin_idxs[i]]
+        #     sigmas = thread_partitioned_sigmas[i]
+        #     neighbor_sigmas = [torch.concat([divided_sigmas[j] \
+        #                         for j in self.neighbor_bin_mappings[bin_idx]], dim=0) \
+        #                          for bin_idx in thread_partitioned_bin_idxs[i]]
 
-            future = self.executor.submit(self.thread_force_calc, radii, neighbor_radii, sigmas, neighbor_sigmas)
+        #     future = self.executor.submit(self.thread_force_calc, radii, neighbor_radii, sigmas, neighbor_sigmas)
                                     
-            futures.append(future)
+        #     futures.append(future)
 
-        # Retrieve the results from the future objects
-        results = [future.result() for future in futures]
+        # # Retrieve the results from the future objects
+        # results = [future.result() for future in futures]
 
-        #Scatter the forces in the correct order, sum the energies
-        scatter_idxs = torch.cat(bins)
-        forces_aggregated = torch.cat([result[1] for result in results])
-        forces = torch.scatter(forces_aggregated, 0, scatter_idxs.unsqueeze(-1).repeat(1, 3), forces_aggregated)
-        energy = torch.cat([result[0].unsqueeze(-1) for result in results]).sum()
+        # #Scatter the forces in the correct order, sum the energies
+        # scatter_idxs = torch.cat(bins)
+        # forces_aggregated = torch.cat([result[1] for result in results])
+        # forces = torch.scatter(forces_aggregated, 0, scatter_idxs.unsqueeze(-1).repeat(1, 3), forces_aggregated)
+        # energy = torch.cat([result[0].unsqueeze(-1) for result in results]).sum()
 
-        return energy, forces
+        radii = thread_partitioned_radii[0]
+        neighbor_radii = [torch.concat([divided_radii[j] \
+                            for j in self.neighbor_bin_mappings[bin_idx]], dim=0) \
+                                for bin_idx in thread_partitioned_bin_idxs[0]]
+
+        sigmas = thread_partitioned_sigmas[0]
+        neighbor_sigmas = [torch.concat([divided_sigmas[j] \
+                            for j in self.neighbor_bin_mappings[bin_idx]], dim=0) \
+                                for bin_idx in thread_partitioned_bin_idxs[0]]
+
+        return self.thread_force_calc(radii, neighbor_radii, sigmas, neighbor_sigmas)
 
     def thread_force_calc(self, all_current_radii, all_neighbor_radii, all_current_sigmas, all_neighbor_sigmas):
         #import pdb; pdb.set_trace()
