@@ -90,6 +90,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.vol = self.box**3.0
         self.rho = self.n_particle/self.vol
 
+        self.diffusion_loss_weight = params.diffusion_loss_weight
+
         #GPU
         try:
             self.device = torch.device(torch.cuda.current_device())
@@ -107,7 +109,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.radii = nn.Parameter(radii_0.detach_(), requires_grad=True).to(self.device)
         self.velocities = nn.Parameter(velocities_0.detach_(), requires_grad=True).to(self.device)
         self.rdf = nn.Parameter(rdf_0.detach_(), requires_grad=True).to(self.device)
-        self.diff_coeff = nn.Parameter(torch.zeros((self.n_replicas,)), requires_grad=True).to(self.device)
+        if self.diffusion_loss_weight != 0:
+            self.diff_coeff = nn.Parameter(torch.zeros((self.n_replicas,)), requires_grad=True).to(self.device)
 
 
         if self.poly: #get per-particle sigmas
@@ -123,7 +126,9 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #define vectorized differentiable rdf and diffusion coefficient functions
         self.diff_rdf = vmap(DifferentiableRDF(params, self.device), -1)
         self.diff_rdf_cpu = vmap(DifferentiableRDF(params, "cpu"), -1)
-        self.diffusion_coefficient = vmap(DiffusionCoefficient(params, self.device) , 1)
+
+        if self.diffusion_loss_weight != 0:
+            self.diffusion_coefficient = vmap(DiffusionCoefficient(params, self.device) , 1)
 
         
         #check if inital momentum is zero
@@ -399,7 +404,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             #compute current diffusion coefficient
             # msd_data = msd(torch.cat(self.last_h_radii, dim=0), self.box)
             # old_diffusion_coeff = self.diffusion_coefficient(msd_data)
-            old_diffusion_coeff = self.diff_coeff
+            if self.diffusion_loss_weight != 0:
+                old_diffusion_coeff = self.diff_coeff
 
             #get current forces
             forces = self.force_calc(self.radii, retain_grad=True)[1]
@@ -407,16 +413,21 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             new_radii, new_velocities, new_forces, new_zeta, new_rdf = self.forward_nvt(self.radii, self.velocities, forces, self.zeta, calc_rdf = True, calc_diffusion = True, retain_grad = True)
 
             #compute new diffusion coefficient
-            new_msd_data = msd(torch.cat(self.last_h_radii[1:], dim=0), self.box)
-            new_diffusion_coeff = self.diffusion_coefficient(new_msd_data)
+            if self.diffusion_loss_weight != 0:
+                new_msd_data = msd(torch.cat(self.last_h_radii[1:], dim=0), self.box)
+                new_diffusion_coeff = self.diffusion_coefficient(new_msd_data)
 
         radii_residual  = self.radii - new_radii
         velocity_residual  = self.velocities - new_velocities
         rdf_residual = self.rdf - new_rdf
-        diffusion_residual = (new_diffusion_coeff - old_diffusion_coeff)#q.unsqueeze(0)
-        zeta_residual = (new_zeta - self.zeta)
+        if self.diffusion_loss_weight != 0:
+            diffusion_residual = (new_diffusion_coeff - old_diffusion_coeff)#q.unsqueeze(0)
+            zeta_residual = (new_zeta - self.zeta)
         
-        return (radii_residual, velocity_residual, rdf_residual, diffusion_residual, zeta_residual)
+        if self.diffusion_loss_weight != 0:
+            return (radii_residual, velocity_residual, rdf_residual, diffusion_residual, zeta_residual)
+        else:
+            return (radii_residual, velocity_residual, rdf_residual)
 
 
     #top level MD simulation code (i.e the "solver") that returns the optimal "parameter" -aka the equilibriated radii
@@ -436,7 +447,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                 self.step = step
                 
                 calc_rdf = step ==  self.nsteps -1 or (self.save_intermediate_rdf and not self.nn)
-                calc_diffusion = step >= self.nsteps - self.diffusion_window #calculate diffusion coefficient if within window from the end
+                calc_diffusion = step >= self.nsteps - self.diffusion_window and self.diffusion_loss_weight != 0#calculate diffusion coefficient if within window from the end
 
                 with torch.enable_grad() if calc_diffusion else nullcontext():
                     if step < self.n_nvt_steps: #NVT step
@@ -449,8 +460,9 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                 self.radii.copy_(radii)
                 self.velocities.copy_(velocities)
                 self.rdf.copy_(rdf)
-                self.diff_coeff.copy_(0) #placeholder for now, store final value at the end
-                #self.zeta.copy_(zeta)
+                if self.diffusion_loss_weight != 0:
+                    self.diff_coeff.copy_(0) #placeholder for now, store final value at the end
+                
                 if not self.nn and self.save_intermediate_rdf and step % self.n_dump == 0:
                     filename = f"step{step+1}_rdf.npy"
                     np.save(os.path.join(self.save_dir, filename), self.rdf.mean(dim = 0).cpu().detach().numpy())
@@ -458,15 +470,15 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         
         self.f.close()
         length = len(self.running_dists)
-
-        #compute diffusion coefficient
-        
-        msd_data = msd(torch.cat(self.last_h_radii, dim=0), self.box)
-        diffusion_coeff = self.diffusion_coefficient(msd_data)
-        self.diff_coeff.copy_(diffusion_coeff)
         self.zeta = zeta
-        filename ="gt_diff_coeff.npy" if not self.nn else f"diff_coeff_epoch{epoch+1}.npy"
-        np.save(os.path.join(self.save_dir, filename), diffusion_coeff.mean().cpu().detach().numpy())
+        #compute diffusion coefficient
+        if self.diffusion_loss_weight != 0:
+            msd_data = msd(torch.cat(self.last_h_radii, dim=0), self.box)
+            diffusion_coeff = self.diffusion_coefficient(msd_data)
+            self.diff_coeff.copy_(diffusion_coeff)
+            
+            filename ="gt_diff_coeff.npy" if not self.nn else f"diff_coeff_epoch{epoch+1}.npy"
+            np.save(os.path.join(self.save_dir, filename), diffusion_coeff.mean().cpu().detach().numpy())
 
         #compute ground truth rdf over entire trajectory (do it on CPU to avoid memory issues)
         save_rdf = self.diff_rdf_cpu(self.running_dists[int(self.burn_in_frac*length):]) if not self.nn else self.rdf
@@ -522,6 +534,7 @@ if __name__ == "__main__":
 
     parser.add_argument('--rdf_loss_weight', type=float, default=1, help='coefficient in front of RDF loss term')
     parser.add_argument('--diffusion_loss_weight', type=float, default=100, help='coefficient in front of diffusion coefficient loss term')
+    parser.add_argument('--lr', type=float, default=0.001, help='learning rate')
 
 
     params = parser.parse_args()
@@ -565,7 +578,7 @@ if __name__ == "__main__":
         results_dir = os.path.join('results', f"IMPLICIT_{add}_{params.exp_name}_n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}_dt={params.dt}_ttotal={params.t_total}")
 
     #initialize outer loop optimizer/scheduler
-    optimizer = torch.optim.Adam(list(model.parameters()), lr=1e-3)
+    optimizer = torch.optim.Adam(list(model.parameters()), lr=params.lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=5)
 
     if not params.nn:
@@ -586,10 +599,7 @@ if __name__ == "__main__":
         simulator = ImplicitMDSimulator(params, model, radii_0, velocities_0, rdf_0)
         print(f"Epoch {epoch+1}")
         #initialize simulator parameterized by a NN model
-        
-        
-        
-        
+    
 
         optimizer.zero_grad()
 
@@ -603,7 +613,7 @@ if __name__ == "__main__":
         #compute loss at the end of the trajectory
         if params.nn:
             rdf_loss = (equilibriated_simulator.rdf - gt_rdf).pow(2).mean()
-            diffusion_loss = (equilibriated_simulator.diff_coeff - gt_diff_coeff).pow(2).mean()
+            diffusion_loss = (equilibriated_simulator.diff_coeff - gt_diff_coeff).pow(2).mean() if params.diffusion_loss_weight != 0 else torch.Tensor([0.]).to(device)
             outer_loss = params.rdf_loss_weight*rdf_loss + params.diffusion_loss_weight*diffusion_loss
                             
             print("Loss: ", outer_loss.item())
@@ -642,7 +652,7 @@ if __name__ == "__main__":
             writer.add_scalar('Gradient Time', grad_times[-1], global_step=epoch+1)
             writer.add_scalar('Gradient Norm', grad_norms[-1], global_step=epoch+1)
         
-        
+        # print_active_torch_tensors()
     
     if params.nn:
         stats_write_file = os.path.join(simulator.save_dir, 'stats.txt')
