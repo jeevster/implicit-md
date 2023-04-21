@@ -71,7 +71,7 @@ python nve_implicit.py \
 --dt 0.005 \
 --dr 0.01 \
 --exp_name "MWE" \
---diffusion_window 100 \
+--diffusion_window 1000 \
 --save_intermediate_rdf \
 --t_total 15 \
 --nvt_time 15 \
@@ -80,7 +80,7 @@ python nve_implicit.py \
 --burn_in_frac 0.9 \
 --n_epochs 50 \
 --n_replicas 1 \
---diffusion_loss_weight 0 \
+--diffusion_loss_weight 10 \
 --rdf_loss_weight 1 \
 --nn \
 --cutoff 1.25 \
