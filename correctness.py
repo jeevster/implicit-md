@@ -25,20 +25,19 @@ if __name__ == "__main__":
     vel_true = torch.cat([torch.tensor(frame.particles.velocity).unsqueeze(0) for frame in f_true], dim = 0)
     vel = torch.cat([torch.tensor(frame.particles.velocity).unsqueeze(0) for frame in f], dim = 0)
 
-    
+    tol = 1e-3
 
    
-
     for i in tqdm(range(pos_true.shape[0])):
 
         try:
-            assert(torch.all(pos_true[i] == pos[i]))  
+            assert(torch.all(torch.abs(pos_true[i] == pos[i]) < tol))  
         except:
             print(f"Position {i+1} failed")
             break
         
         try:
-            assert(torch.all(vel_true[i] == vel[i])) 
+            assert(torch.all(torch.abs(pos_true[i] == pos[i]) < tol))   
         except:
             print(f"Velocity {i+1} failed")
             break

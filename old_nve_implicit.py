@@ -221,7 +221,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             #compute energy
             if self.nn:
                 energy = self.model((dists/self.sigma_pairs))
-                forces = -compute_grad(inputs=r, output=energy)
                 forces = -compute_grad(inputs=r, output=energy) if retain_grad else -compute_grad(inputs=r, output=energy).detach()
                 
             #LJ potential
