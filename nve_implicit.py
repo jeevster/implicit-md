@@ -303,22 +303,28 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         # forces = torch.scatter(forces_aggregated, 0, scatter_idxs.unsqueeze(-1).repeat(1, 3), forces_aggregated)
         # energy = torch.cat([result[0].unsqueeze(-1) for result in results]).sum()
         radii = thread_partitioned_radii[0]
-        neighbor_radii = pad_sequence([torch.concat([divided_radii[j] \
-                            for j in self.neighbor_bin_mappings[bin_idx]], dim=0) \
-                                for bin_idx in thread_partitioned_bin_idxs[0]], batch_first=True)
-
-        sigmas = thread_partitioned_sigmas[0]
-        neighbor_sigmas = pad_sequence([torch.concat([divided_sigmas[j] \
+        neighbor_radii = torch.stack([torch.cat([divided_radii[j] \
                             for j in self.neighbor_bin_mappings[bin_idx]], dim=0) \
                                 for bin_idx in thread_partitioned_bin_idxs[0]])
 
-        return self.thread_force_calc(radii, neighbor_radii, sigmas, neighbor_sigmas)
+        sigmas = thread_partitioned_sigmas[0]
+        neighbor_sigmas = torch.stack([torch.cat([divided_sigmas[j] \
+                            for j in self.neighbor_bin_mappings[bin_idx]], dim=0) \
+                                for bin_idx in thread_partitioned_bin_idxs[0]])
+
+        energy, forces =  self.thread_force_calc(radii, neighbor_radii, sigmas, neighbor_sigmas)
+        mask = bins != self.n_particle
+        forces = forces[mask]
+        scatter_idxs = bins[mask].unsqueeze(-1).repeat(1, 3) 
+        forces = torch.scatter(forces, 0, scatter_idxs, forces)
+      
+        return energy, forces
+        
 
     def thread_force_calc(self, all_current_radii, all_neighbor_radii, all_current_sigmas, all_neighbor_sigmas):
         #import pdb; pdb.set_trace()
         
         with torch.enable_grad():
-            import pdb; pdb.set_trace()
             r = all_current_radii.unsqueeze(2) - all_neighbor_radii.unsqueeze(1)
             r = torch.where(r > 1e5, 0, torch.where(r < -1e5, 0, r))
             r = -1*torch.where(r > 0.5*self.box, r-self.box, torch.where(r<-0.5*self.box, r+self.box, r))
@@ -359,9 +365,11 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #remove nans
         forces[forces != forces] = 0.
 
+        #sum across particles
+        forces = torch.sum(forces, axis = -2)
 
         #sum forces across particles
-        return energy, torch.sum(forces, axis = 1)#.to(self.device)
+        return energy, forces#.to(self.device)
         
 
     def forward_nvt(self, radii, velocities, forces, zeta, calc_rdf = False, calc_diffusion = False):
@@ -389,8 +397,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #assert(max([len(bin) for bin in bins]) <= self.max_parts_per_bin)
         #compute energy and forces and aggregate them
         
-        #breaking here on the second iteration
         energy, forces = self.top_level_force_calc(radii, bins)
+        
         
         
         accel = forces

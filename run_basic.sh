@@ -6,7 +6,6 @@ python -m cProfile -o out.prof old_nve_implicit.py \
 --kbt0 1.8 \
 --box 2 \
 --epsilon 0.2 \
---poly \
 --poly_power 3.0 \
 --min_sigma 0.73 \
 --sigma 1.0 \
@@ -28,5 +27,3 @@ python -m cProfile -o out.prof old_nve_implicit.py \
 --n_layers 3 \
 --nonlinear 'ELU' \
 --num_threads 1
-
-

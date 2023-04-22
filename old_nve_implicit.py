@@ -288,7 +288,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         # make a full step in accelerations
         
         energy, forces = self.force_calc(radii.to(self.device), retain_grad=retain_grad)
-              
+        import pdb; pdb.set_trace()
         accel = forces
 
         # make a half step in self.zeta
