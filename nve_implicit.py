@@ -4,9 +4,11 @@ import concurrent.futures
 import numpy as np
 import gsd.hoomd
 import torch
+import math
 import torch.nn as nn
 from nff.utils.scatter import compute_grad
 from nff.nn.layers import GaussianSmearing
+from torch.nn.utils.rnn import pad_sequence
 from YParams import YParams
 import argparse
 import threading
@@ -92,6 +94,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.num_cols = int(np.ceil(self.box / self.bin_size))
         self.num_bins = self.num_cols**3
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.num_threads)
+        self.max_parts_per_bin = 5*math.ceil(self.n_particle / self.num_bins)
        
         self.neighbor_bin_mappings = self.get_neighbor_bin_mappings()
         self.binrange = torch.arange(self.num_bins).to(device).unsqueeze(1)
@@ -107,6 +110,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             self.device = "cpu"
 
         self.zeros = torch.zeros((1, 1, 3)).to(self.device)
+        self.infs = 1e8* torch.ones((1, 3)).to(self.device)
         
         #limit CPU usage
         torch.set_num_threads(1)
@@ -241,7 +245,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         bin_idxs = self.bin_index(radii)
         idxs = torch.nonzero(bin_idxs == self.binrange) # num_parts by 2[]
         splits = torch.bincount(idxs[:, 0], minlength=self.num_bins)
-        return torch.split(idxs[:, 1], splits.tolist())
+        return pad_sequence(torch.split(idxs[:, 1], splits.tolist()), batch_first=True, padding_value=self.n_particle)
+        
 
     ''''Gets the neighbor bin indices for every bin'''
     def get_neighbor_bin_mappings(self):
@@ -262,12 +267,12 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
     def top_level_force_calc(self, radii, bins):
 
         #partition the radii, sigma pairs, and bin_idxs among threads
-        import pdb; pdb.set_trace()
-        divided_radii = [radii[idxs] for idxs in bins]
+        
+        divided_radii = torch.cat((radii, self.infs))[bins]
         thread_partitioned_radii = self.divide_items(divided_radii, self.num_threads)
-        divided_sigmas = [self.particle_sigmas[idxs] for idxs in bins] if self.poly else [self.sigma * torch.ones((len(idxs),)) for idxs in bins]
+        divided_sigmas = torch.cat(self.particle_sigmas, torch.Tensor([1.]))[bins] if self.poly else self.sigma * torch.ones_like(divided_radii[:, :, 0])
         thread_partitioned_sigmas = self.divide_items(divided_sigmas, self.num_threads)
-        thread_partitioned_bin_idxs = self.divide_items(range(self.num_bins), self.num_threads)
+        thread_partitioned_bin_idxs = self.divide_items(np.arange(self.num_bins), self.num_threads)
 
         # Define a list to store the future objects representing the results of each thread
         # futures = []
@@ -297,16 +302,15 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         # forces_aggregated = torch.cat([result[1] for result in results])
         # forces = torch.scatter(forces_aggregated, 0, scatter_idxs.unsqueeze(-1).repeat(1, 3), forces_aggregated)
         # energy = torch.cat([result[0].unsqueeze(-1) for result in results]).sum()
-
         radii = thread_partitioned_radii[0]
-        neighbor_radii = [torch.concat([divided_radii[j] \
+        neighbor_radii = pad_sequence([torch.concat([divided_radii[j] \
                             for j in self.neighbor_bin_mappings[bin_idx]], dim=0) \
-                                for bin_idx in thread_partitioned_bin_idxs[0]]
+                                for bin_idx in thread_partitioned_bin_idxs[0]], batch_first=True)
 
         sigmas = thread_partitioned_sigmas[0]
-        neighbor_sigmas = [torch.concat([divided_sigmas[j] \
+        neighbor_sigmas = pad_sequence([torch.concat([divided_sigmas[j] \
                             for j in self.neighbor_bin_mappings[bin_idx]], dim=0) \
-                                for bin_idx in thread_partitioned_bin_idxs[0]]
+                                for bin_idx in thread_partitioned_bin_idxs[0]])
 
         return self.thread_force_calc(radii, neighbor_radii, sigmas, neighbor_sigmas)
 
@@ -314,13 +318,14 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #import pdb; pdb.set_trace()
         
         with torch.enable_grad():
-            rs = [current_radii.unsqueeze(1) - neighbor_radii.unsqueeze(0) for current_radii, neighbor_radii in zip(all_current_radii, all_neighbor_radii)]
-            r = torch.stack([torch.block_diag(*[r[:, :, i] for r in rs]) for i in range(3)], dim=2)
+            import pdb; pdb.set_trace()
+            r = all_current_radii.unsqueeze(2) - all_neighbor_radii.unsqueeze(1)
+            r = torch.where(r > 1e5, 0, torch.where(r < -1e5, 0, r))
             r = -1*torch.where(r > 0.5*self.box, r-self.box, torch.where(r<-0.5*self.box, r+self.box, r))
             if not r.requires_grad:
                     r.requires_grad = True
 
-            vectorized_dists = torch.sqrt(torch.sum(r**2, axis=2))
+            vectorized_dists = torch.sqrt(torch.sum(r**2, axis=-1))
             mask = (vectorized_dists == 0) | (vectorized_dists > self.cutoff) #remove particles beyond cutoff and remove ourself
             vectorized_dists = vectorized_dists[~mask].unsqueeze(-1)
 
@@ -381,6 +386,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
         #assign new bins
         bins = self.assign_bins(radii)
+        #assert(max([len(bin) for bin in bins]) <= self.max_parts_per_bin)
         #compute energy and forces and aggregate them
         
         #breaking here on the second iteration
@@ -452,6 +458,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
         #assign new bins
         bins = self.assign_bins(radii)
+        #assert(max([len(bin) for bin in bins]) <= self.max_parts_per_bin)
 
         #compute energy and forces and aggregate them
         energy, forces = self.top_level_force_calc(radii, bins)
@@ -524,6 +531,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             
             #assign new bins
             bins = self.assign_bins(self.radii)
+            #assert(max([len(bin) for bin in bins]) <= self.max_parts_per_bin)
 
             
             #compute energy and forces and aggregate them
