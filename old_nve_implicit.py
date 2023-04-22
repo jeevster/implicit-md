@@ -550,8 +550,8 @@ if __name__ == "__main__":
     model = Stack({'nn': NN, 'prior': prior}).to(device)
     radii_0 = fcc_positions(params.n_particle, params.box, device)
     velocities_0  = initialize_velocities(params.n_particle, params.temp)
-    rdf_0  = diff_rdf(tuple(radii_to_dists(radii_0.to(device), params)))
-
+    #rdf_0  = diff_rdf(tuple(radii_to_dists(radii_0.to(device), params)))
+    rdf_0 = torch.Tensor([0.])
     #load ground truth rdf and diffusion coefficient
     if params.nn:
         add = "_polylj" if params.poly else ""

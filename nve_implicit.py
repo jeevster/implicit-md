@@ -249,7 +249,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         splits = torch.bincount(idxs[:, 0], minlength=self.num_bins)
         return pad_sequence(torch.split(idxs[:, 1], splits.tolist()), batch_first=True, padding_value=self.n_particle)
         
-
     ''''Gets the neighbor bin indices for every bin'''
     def get_neighbor_bin_mappings(self):
         neighbor_bin_mappings = torch.zeros((self.num_bins, 27)).to(self.device) #max 27 neighbors per 
@@ -474,7 +473,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #compute energy and forces and aggregate them
         energy, forces = self.top_level_force_calc(radii, bins)
 
-    
         #another half-step in velocity
         velocities = (velocities + 0.5*self.dt*forces) 
         #props = self.calc_properties()
@@ -678,7 +676,8 @@ if __name__ == "__main__":
     model = Stack({'nn': NN, 'prior': prior})
     radii_0 = fcc_positions(params.n_particle, params.box, device)
     velocities_0  = initialize_velocities(params.n_particle, params.temp)
-    rdf_0  = diff_rdf(tuple(radii_to_dists(radii_0.to(device), params)))
+    #rdf_0  = diff_rdf(tuple(radii_to_dists(radii_0.to(device), params)))
+    rdf_0 = torch.Tensor([0.])
 
     #load ground truth rdf and diffusion coefficient
     if params.nn:

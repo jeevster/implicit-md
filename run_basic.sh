@@ -1,15 +1,15 @@
 #!/bin/bash
 python -m cProfile -o out.prof old_nve_implicit.py \
---n_particle 1024 \
+--n_particle 16000 \
 --temp 0.8 \
 --seed 123 \
 --kbt0 1.8 \
---box 15 \
+--box 20 \
 --epsilon 0.2 \
 --poly_power 3.0 \
 --min_sigma 0.73 \
 --sigma 1.0 \
---dt 0.005 \
+--dt 0.001 \
 --dr 0.01 \
 --exp_name "test_parallel" \
 --diffusion_window 10 \
