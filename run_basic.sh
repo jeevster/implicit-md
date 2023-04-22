@@ -1,10 +1,10 @@
 #!/bin/bash
 python -m cProfile -o out.prof old_nve_implicit.py \
---n_particle 8 \
+--n_particle 1024 \
 --temp 0.8 \
 --seed 123 \
 --kbt0 1.8 \
---box 2 \
+--box 15 \
 --epsilon 0.2 \
 --poly_power 3.0 \
 --min_sigma 0.73 \
@@ -13,8 +13,8 @@ python -m cProfile -o out.prof old_nve_implicit.py \
 --dr 0.01 \
 --exp_name "test_parallel" \
 --diffusion_window 10 \
---t_total 1 \
---nvt_time 1 \
+--t_total 10 \
+--nvt_time 10 \
 --diameter_viz 0.3 \
 --n_dump 1 \
 --burn_in_frac 0.9 \

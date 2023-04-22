@@ -14,8 +14,8 @@ python -m cProfile -o out.prof nve_implicit.py \
 --dr 0.01 \
 --exp_name "test_parallel" \
 --diffusion_window 10 \
---t_total 1 \
---nvt_time 1 \
+--t_total 10 \
+--nvt_time 10 \
 --diameter_viz 0.3 \
 --n_dump 1 \
 --burn_in_frac 0.9 \

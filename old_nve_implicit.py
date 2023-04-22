@@ -288,7 +288,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         # make a full step in accelerations
         
         energy, forces = self.force_calc(radii.to(self.device), retain_grad=retain_grad)
-        import pdb; pdb.set_trace()
         accel = forces
 
         # make a half step in self.zeta
@@ -324,12 +323,12 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             print(self.step, self.calc_properties(energy), file=self.f)
             self.t.append(self.create_frame(frame = self.step/self.n_dump))
             #append dists to running_dists for RDF calculation (remove diagonal entries)
-            if not self.nn:
-                new_dists = radii_to_dists(radii, self.params)
-                if self.poly:
-                    #normalize distances by sigma pairs
-                    new_dists = new_dists / self.sigma_pairs
-                self.running_dists.append(new_dists.cpu().detach())
+            # if not self.nn:
+            #     new_dists = radii_to_dists(radii, self.params)
+            #     if self.poly:
+            #         #normalize distances by sigma pairs
+            #         new_dists = new_dists / self.sigma_pairs
+            #     self.running_dists.append(new_dists.cpu().detach())
 
 
 
@@ -373,12 +372,12 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             print(self.step, self.calc_properties(energy), file=self.f)
             self.t.append(self.create_frame(frame = self.step/self.n_dump))
             #append dists to running_dists for RDF calculation (remove diagonal entries)
-            if not self.nn:
-                new_dists = radii_to_dists(radii, self.params)
-                if self.poly:
-                    #normalize distances by sigma pairs
-                    new_dists = new_dists / self.sigma_pairs
-                self.running_dists.append(new_dists.cpu().detach())
+            # if not self.nn:
+            #     new_dists = radii_to_dists(radii, self.params)
+            #     if self.poly:
+            #         #normalize distances by sigma pairs
+            #         new_dists = new_dists / self.sigma_pairs
+            #     self.running_dists.append(new_dists.cpu().detach())
 
         return radii, velocities, forces, new_rdf # return the new distance matrix 
 

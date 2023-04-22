@@ -88,6 +88,12 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.c_4 = -21*self.epsilon / (self.cutoff**16)
 
 
+        #GPU
+        try:
+            self.device = torch.device(torch.cuda.current_device())
+        except:
+            self.device = "cpu"
+
         #parallelization stuff
         self.num_threads = params.num_threads
         self.bin_size = self.cutoff
@@ -103,11 +109,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.vol = self.box**3.0
         self.rho = self.n_particle/self.vol
 
-        #GPU
-        try:
-            self.device = torch.device(torch.cuda.current_device())
-        except:
-            self.device = "cpu"
+        
 
         self.zeros = torch.zeros((1, 1, 3)).to(self.device)
         self.infs = 1e8* torch.ones((1, 3)).to(self.device)
@@ -250,7 +252,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
     ''''Gets the neighbor bin indices for every bin'''
     def get_neighbor_bin_mappings(self):
-        neighbor_bin_mappings = {}
+        neighbor_bin_mappings = torch.zeros((self.num_bins, 27)).to(self.device) #max 27 neighbors per 
         for bin in range(self.num_bins):
             x = bin % self.num_cols
             y = (bin % self.num_cols**2 - x) / self.num_cols
@@ -258,7 +260,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
             neighbor_coords = torch.Tensor([[x - 1, x, x + 1], [y - 1, y, y + 1], [z - 1, z, z + 1]]) % self.num_cols
             neighbor_bin_idxs = [int(x_ + self.num_cols * y_ + self.num_cols**2 * z_) for x_, y_, z_ in product(*neighbor_coords)]
-            neighbor_bin_mappings[bin] = list(set(neighbor_bin_idxs))
+            l = torch.Tensor(list(set(neighbor_bin_idxs)))
+            neighbor_bin_mappings[bin] = torch.nn.functional.pad(l, (0,27 - l.shape[0]), value = self.num_bins).to(torch.long)
         return neighbor_bin_mappings
         
         
@@ -275,40 +278,42 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         thread_partitioned_bin_idxs = self.divide_items(np.arange(self.num_bins), self.num_threads)
 
         # Define a list to store the future objects representing the results of each thread
-        futures = []
+        # futures = []
 
-        # Submit tasks to the thread pool and store the future objects
-        for i in range(self.num_threads):
+        # # Submit tasks to the thread pool and store the future objects
+        # for i in range(self.num_threads):
 
-            radii = thread_partitioned_radii[0]
-            neighbor_radii = torch.stack([torch.cat([divided_radii[j] \
-                            for j in self.neighbor_bin_mappings[bin_idx]], dim=0) \
-                                for bin_idx in thread_partitioned_bin_idxs[0]])
-
-            sigmas = thread_partitioned_sigmas[0]
-            neighbor_sigmas = torch.stack([torch.cat([divided_sigmas[j] \
-                                for j in self.neighbor_bin_mappings[bin_idx]], dim=0) \
-                                    for bin_idx in thread_partitioned_bin_idxs[0]])
-
-            future = self.executor.submit(self.thread_force_calc, radii, neighbor_radii, sigmas, neighbor_sigmas)                
-            futures.append(future)
-
-        # Retrieve the results from the future objects
-        results = [future.result() for future in futures]
-
-        forces = torch.cat([result[1] for result in results])
-        energy = torch.cat([result[0].unsqueeze(-1) for result in results]).sum()
-        # radii = thread_partitioned_radii[0]
-        # neighbor_radii = torch.stack([torch.cat([divided_radii[j] \
+        #     radii = thread_partitioned_radii[0]
+        #     neighbor_radii = torch.stack([torch.cat([divided_radii[j] \
         #                     for j in self.neighbor_bin_mappings[bin_idx]], dim=0) \
         #                         for bin_idx in thread_partitioned_bin_idxs[0]])
 
-        # sigmas = thread_partitioned_sigmas[0]
+        #     sigmas = thread_partitioned_sigmas[0]
+        #     neighbor_sigmas = torch.stack([torch.cat([divided_sigmas[j] \
+        #                         for j in self.neighbor_bin_mappings[bin_idx]], dim=0) \
+        #                             for bin_idx in thread_partitioned_bin_idxs[0]])
+
+        #     future = self.executor.submit(self.thread_force_calc, radii, neighbor_radii, sigmas, neighbor_sigmas)                
+        #     futures.append(future)
+
+        # # Retrieve the results from the future objects
+        # results = [future.result() for future in futures]
+
+        # forces = torch.cat([result[1] for result in results])
+        # energy = torch.cat([result[0].unsqueeze(-1) for result in results]).sum()
+        radii = thread_partitioned_radii[0]
+        temp_radii = torch.cat((divided_radii, 1e8*torch.ones_like(divided_radii[0].unsqueeze(0)).to(self.device)))
+        neighbor_radii = temp_radii[self.neighbor_bin_mappings[thread_partitioned_bin_idxs[0]].long()].reshape(self.num_bins, -1, 3)
+
+        sigmas = thread_partitioned_sigmas[0]
+
+        #not doing poly
+        neighbor_sigmas = 0
         # neighbor_sigmas = torch.stack([torch.cat([divided_sigmas[j] \
         #                     for j in self.neighbor_bin_mappings[bin_idx]], dim=0) \
         #                         for bin_idx in thread_partitioned_bin_idxs[0]])
 
-        # energy, forces =  self.thread_force_calc(radii, neighbor_radii, sigmas, neighbor_sigmas)
+        energy, forces =  self.thread_force_calc(radii, neighbor_radii, sigmas, neighbor_sigmas)
 
         #recollect the forces into the correct order - this doesn't work for multiple threads
         mask = bins != self.n_particle
@@ -434,12 +439,12 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             print(self.step, self.calc_properties(energy), file=self.f)
             self.t.append(self.create_frame(frame = self.step/self.n_dump))
             #append dists to running_dists for RDF calculation (remove diagonal entries)
-            if not self.nn:
-                new_dists = radii_to_dists(radii, self.params)
-                if self.poly:
-                    #normalize distances by sigma pairs
-                    new_dists = new_dists/ self.sigma_pairs[~torch.eye(new_dists.shape[0],dtype=bool)].reshape(new_dists.shape[0], -1, 1)
-                self.running_dists.append(new_dists.cpu().detach())
+            # if not self.nn:
+            #     new_dists = radii_to_dists(radii, self.params)
+            #     if self.poly:
+            #         #normalize distances by sigma pairs
+            #         new_dists = new_dists/ self.sigma_pairs[~torch.eye(new_dists.shape[0],dtype=bool)].reshape(new_dists.shape[0], -1, 1)
+            #     self.running_dists.append(new_dists.cpu().detach())
 
 
 
@@ -490,12 +495,12 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             print(self.step, self.calc_properties(energy), file=self.f)
             self.t.append(self.create_frame(frame = self.step/self.n_dump))
             #append dists to running_dists for RDF calculation (remove diagonal entries)
-            if not self.nn:
-                new_dists = radii_to_dists(radii, self.params)
-                if self.poly:
-                    #normalize distances by sigma pairs
-                    new_dists = new_dists/ self.sigma_pairs[~torch.eye(new_dists.shape[0],dtype=bool)].reshape(new_dists.shape[0], -1, 1)
-                self.running_dists.append(new_dists.cpu().detach())
+            # if not self.nn:
+            #     new_dists = radii_to_dists(radii, self.params)
+            #     if self.poly:
+            #         #normalize distances by sigma pairs
+            #         new_dists = new_dists/ self.sigma_pairs[~torch.eye(new_dists.shape[0],dtype=bool)].reshape(new_dists.shape[0], -1, 1)
+            #     self.running_dists.append(new_dists.cpu().detach())
 
         return radii, velocities, forces, new_rdf # return the new distance matrix 
 
