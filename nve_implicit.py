@@ -275,44 +275,42 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         thread_partitioned_bin_idxs = self.divide_items(np.arange(self.num_bins), self.num_threads)
 
         # Define a list to store the future objects representing the results of each thread
-        # futures = []
+        futures = []
 
-        # # Submit tasks to the thread pool and store the future objects
-        # for i in range(self.num_threads):
+        # Submit tasks to the thread pool and store the future objects
+        for i in range(self.num_threads):
 
-        #     radii = thread_partitioned_radii[i]
-        #     neighbor_radii = [torch.concat([divided_radii[j] \
-        #                         for j in self.neighbor_bin_mappings[bin_idx]], dim=0) \
-        #                          for bin_idx in thread_partitioned_bin_idxs[i]]
-
-        #     sigmas = thread_partitioned_sigmas[i]
-        #     neighbor_sigmas = [torch.concat([divided_sigmas[j] \
-        #                         for j in self.neighbor_bin_mappings[bin_idx]], dim=0) \
-        #                          for bin_idx in thread_partitioned_bin_idxs[i]]
-
-        #     future = self.executor.submit(self.thread_force_calc, radii, neighbor_radii, sigmas, neighbor_sigmas)
-                                    
-        #     futures.append(future)
-
-        # # Retrieve the results from the future objects
-        # results = [future.result() for future in futures]
-
-        # #Scatter the forces in the correct order, sum the energies
-        # scatter_idxs = torch.cat(bins)
-        # forces_aggregated = torch.cat([result[1] for result in results])
-        # forces = torch.scatter(forces_aggregated, 0, scatter_idxs.unsqueeze(-1).repeat(1, 3), forces_aggregated)
-        # energy = torch.cat([result[0].unsqueeze(-1) for result in results]).sum()
-        radii = thread_partitioned_radii[0]
-        neighbor_radii = torch.stack([torch.cat([divided_radii[j] \
+            radii = thread_partitioned_radii[0]
+            neighbor_radii = torch.stack([torch.cat([divided_radii[j] \
                             for j in self.neighbor_bin_mappings[bin_idx]], dim=0) \
                                 for bin_idx in thread_partitioned_bin_idxs[0]])
 
-        sigmas = thread_partitioned_sigmas[0]
-        neighbor_sigmas = torch.stack([torch.cat([divided_sigmas[j] \
-                            for j in self.neighbor_bin_mappings[bin_idx]], dim=0) \
-                                for bin_idx in thread_partitioned_bin_idxs[0]])
+            sigmas = thread_partitioned_sigmas[0]
+            neighbor_sigmas = torch.stack([torch.cat([divided_sigmas[j] \
+                                for j in self.neighbor_bin_mappings[bin_idx]], dim=0) \
+                                    for bin_idx in thread_partitioned_bin_idxs[0]])
 
-        energy, forces =  self.thread_force_calc(radii, neighbor_radii, sigmas, neighbor_sigmas)
+            future = self.executor.submit(self.thread_force_calc, radii, neighbor_radii, sigmas, neighbor_sigmas)                
+            futures.append(future)
+
+        # Retrieve the results from the future objects
+        results = [future.result() for future in futures]
+
+        forces = torch.cat([result[1] for result in results])
+        energy = torch.cat([result[0].unsqueeze(-1) for result in results]).sum()
+        # radii = thread_partitioned_radii[0]
+        # neighbor_radii = torch.stack([torch.cat([divided_radii[j] \
+        #                     for j in self.neighbor_bin_mappings[bin_idx]], dim=0) \
+        #                         for bin_idx in thread_partitioned_bin_idxs[0]])
+
+        # sigmas = thread_partitioned_sigmas[0]
+        # neighbor_sigmas = torch.stack([torch.cat([divided_sigmas[j] \
+        #                     for j in self.neighbor_bin_mappings[bin_idx]], dim=0) \
+        #                         for bin_idx in thread_partitioned_bin_idxs[0]])
+
+        # energy, forces =  self.thread_force_calc(radii, neighbor_radii, sigmas, neighbor_sigmas)
+
+        #recollect the forces into the correct order - this doesn't work for multiple threads
         mask = bins != self.n_particle
         forces = forces[mask]
         scatter_idxs = bins[mask].unsqueeze(-1).repeat(1, 3) 
