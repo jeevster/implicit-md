@@ -1,11 +1,11 @@
 !!python/object:argparse.Namespace
 attr_power: 0
 box: 7
-burn_in_frac: 0.2
+burn_in_frac: 0.8
 config: default
-cutoff: 2.5
+cutoff: 1.25
 diameter_viz: 0.3
-diffusion_loss_weight: 100
+diffusion_loss_weight: 0.0
 diffusion_window: 100
 dr: 0.01
 dt: 0.005
@@ -15,13 +15,13 @@ gaussian_width: 0.1
 kbt0: 1.8
 lr: 0.001
 min_sigma: 0.73
-n_dump: 10
-n_epochs: 1
+n_dump: 100
+n_epochs: 50
 n_layers: 3
 n_particle: 256
 n_replicas: 10
 n_width: 128
-nn: false
+nn: true
 no_pbc: false
 nonlinear: ELU
 nvt_time: 15.0
