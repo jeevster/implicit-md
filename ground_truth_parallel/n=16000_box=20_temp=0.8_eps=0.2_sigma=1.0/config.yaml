@@ -23,7 +23,7 @@ nn: false
 no_pbc: false
 nonlinear: ELU
 num_threads: 1
-nvt_time: 10.0
+nvt_time: 0.1
 poly: false
 poly_power: 3.0
 rdf_loss_weight: 0.0
@@ -32,6 +32,6 @@ rep_power: 12
 save_intermediate_rdf: false
 seed: 123
 sigma: 1.0
-t_total: 10.0
+t_total: 0.1
 temp: 0.8
 yaml_config: config.yaml
