@@ -109,13 +109,12 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
 
         if self.poly: #get per-particle sigmas
-            u = torch.rand(self.n_particle)
+            u = torch.rand((self.n_replicas, self.n_particle))
             self.particle_sigmas = powerlaw_inv_cdf(u, power = self.poly_power, y_min = self.min_sigma).clip(max = 1/0.45 * self.min_sigma)
-            sigma1 = self.particle_sigmas.unsqueeze(0)
-            sigma2 = self.particle_sigmas.unsqueeze(1)
+            sigma1 = self.particle_sigmas.unsqueeze(1)
+            sigma2 = self.particle_sigmas.unsqueeze(2)
             self.sigma_pairs = 1/2 * (sigma1 + sigma2)*(1 - self.epsilon*torch.abs(sigma1 - sigma2))
-            self.sigma_pairs = self.sigma_pairs[~torch.eye(self.sigma_pairs.shape[0],dtype=bool)].reshape(1, self.sigma_pairs.shape[0], -1, 1).to(self.device)
-            self.particle_sigmas = self.particle_sigmas
+            self.sigma_pairs = self.sigma_pairs[:, ~torch.eye(self.sigma_pairs.shape[1],dtype=bool)].reshape(self.n_replicas, self.sigma_pairs.shape[1], -1, 1).to(self.device)
         
 
         #define vectorized differentiable rdf and diffusion coefficient functions
@@ -172,7 +171,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         radii = self.radii[0].detach()
         partpos = radii.tolist()
         velocities = self.velocities[0].detach().tolist()
-        sigmas = self.particle_sigmas if self.poly else self.sigma
+        sigmas = self.particle_sigmas[0] if self.poly else self.sigma
         diameter = self.diameter_viz*sigmas*np.ones((self.n_particle,))
         diameter = diameter.tolist()
 
