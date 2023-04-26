@@ -35,12 +35,13 @@ from functorch import vmap
 from utils import radii_to_dists, fcc_positions, initialize_velocities, dump_params_to_yml, powerlaw_inv_cdf
 
 
+def foo(x,y):
+    return x+y
+
 
 class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.linear_solve.solve_normal_cg(maxiter=5, atol=0)):
     def __init__(self, params, model, radii_0, velocities_0, rdf_0):
         super(ImplicitMDSimulator, self).__init__()
-        
-        
 
         self.params = params
         self.n_particle = params.n_particle
@@ -282,7 +283,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #partition the radii, sigma pairs, and bin_idxs among threads
         
         divided_radii = torch.cat((radii, self.infs))[bins]
-        thread_partitioned_radii = self.divide_items(divided_radii, self.num_threads)
+        thread_partitioned_radii = torch.stack(self.divide_items(divided_radii, self.num_threads), dim=0)
         # divided_sigmas = torch.cat(self.particle_sigmas, torch.Tensor([1.]))[bins] if self.poly else self.sigma * torch.ones_like(divided_radii[:, :, 0])
         # thread_partitioned_sigmas = self.divide_items(divided_sigmas, self.num_threads)
         thread_partitioned_bin_idxs = pad_sequence(self.divide_items(torch.arange(self.num_bins), self.num_threads), batch_first=True, padding_value=self.num_bins)
@@ -309,11 +310,18 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         # forces = torch.cat([result[1] for result in results])
         # energy = torch.cat([result[0].unsqueeze(-1) for result in results]).sum()
         #recollect the forces into the correct order - this doesn't work for multiple threads
+        # import pdb; pdb.set_trace()
+        # bar = [1,2,3]
+        # baz = [4,6,7]
+        # with concurrent.futures.ProcessPoolExecutor() as executor:
+        #     for out in executor.map(foo, bar, baz):
+        #         print(out)
+
         with concurrent.futures.ProcessPoolExecutor() as executor:
-            import pdb; pdb.set_trace()
             temp_radii = torch.cat((divided_radii, 1e8*torch.ones_like(divided_radii[0].unsqueeze(0)).to(self.device)))
-            thread_partitioned_neighbor_radii = temp_radii[self.neighbor_bin_mappings[thread_partitioned_bin_idxs].long()].reshape(self.num_threads, -1, 27*radii.shape[1], 3)
-            out = executor.map(self.thread_force_calc, thread_partitioned_radii, thread_partitioned_neighbor_radii)
+            thread_partitioned_neighbor_radii = temp_radii[self.neighbor_bin_mappings[thread_partitioned_bin_idxs].long()].reshape(self.num_threads, -1, 27*thread_partitioned_radii[0].shape[1], 3)
+            for out in executor.map(self.thread_force_calc, thread_partitioned_radii, thread_partitioned_neighbor_radii):
+                print(out)
         import pdb; pdb.set_trace()
         mask = bins != self.n_particle
         forces = forces[mask]
@@ -341,6 +349,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
     def thread_force_calc(self, all_current_radii, all_neighbor_radii):
         #import pdb; pdb.set_trace()
+        print("Doing force calc")
         
         with torch.enable_grad():
             r = all_current_radii.unsqueeze(2) - all_neighbor_radii.unsqueeze(1)
@@ -387,7 +396,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         forces = torch.sum(forces, axis = -2)
 
         #sum forces across particles
-        return energy, forces#.to(self.device)
+        return energy.detach(), forces.detach()#.to(self.device)
         
 
     def forward_nvt(self, radii, velocities, forces, zeta, calc_rdf = False, calc_diffusion = False):
@@ -610,6 +619,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
     
 if __name__ == "__main__":
+
 
     #parse args
     parser = argparse.ArgumentParser()

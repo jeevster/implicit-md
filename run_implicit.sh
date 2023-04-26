@@ -1,6 +1,6 @@
 #!/bin/bash
-
-python -m cProfile -o out.prof nve_implicit.py \
+#-m cProfile -o out.prof
+python nve_implicit.py \
 --n_particle 256 \
 --temp 0.8 \
 --seed 123 \
