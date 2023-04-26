@@ -33,7 +33,11 @@ from utils import radii_to_dists, fcc_positions, initialize_velocities, \
 class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.linear_solve.solve_normal_cg(maxiter=5, atol=0)):
     def __init__(self, params, model, radii_0, velocities_0, rdf_0):
         super(ImplicitMDSimulator, self).__init__()
-        
+
+        #Set random seeds
+        np.random.seed(seed=params.seed)
+        torch.manual_seed(params.seed)
+        random.seed(params.seed)
         self.params = params
         self.n_particle = params.n_particle
         self.temp = params.temp
@@ -467,7 +471,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         length = len(self.running_dists)
         self.zeta = zeta
         #compute diffusion coefficient
-        if self.diffusion_loss_weight != 0:
+        if self.diffusion_loss_weight != 0 or not self.nn:
             msd_data = msd(torch.cat(self.last_h_radii, dim=0), self.box)
             diffusion_coeff = self.diffusion_coefficient(msd_data)
             self.diff_coeff.copy_(diffusion_coeff)
@@ -540,11 +544,7 @@ if __name__ == "__main__":
     except:
         device = "cpu"
 
-    #Set random seeds
-    np.random.seed(seed=params.seed)
-    torch.manual_seed(params.seed)
-    random.seed(params.seed)
-
+    
     #initialize RDF calculator
     diff_rdf = DifferentiableRDF(params, device)#, sample_frac = params.rdf_sample_frac)
 
@@ -579,7 +579,7 @@ if __name__ == "__main__":
         results_dir = os.path.join(results, f"IMPLICIT_{add}_{params.exp_name}_n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}_dt={params.dt}_ttotal={params.t_total}")
 
     #initialize outer loop optimizer/scheduler
-    optimizer = torch.optim.Adam(list(model.parameters()), lr=params.lr)
+    optimizer = torch.optim.Adam(list(NN.parameters()), lr=params.lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=5)
 
     if not params.nn:
@@ -597,9 +597,10 @@ if __name__ == "__main__":
     
     
     for epoch in range(params.n_epochs):
-        simulator = ImplicitMDSimulator(params, model, radii_0, velocities_0, rdf_0)
         print(f"Epoch {epoch+1}")
         #initialize simulator parameterized by a NN model
+        simulator = ImplicitMDSimulator(params, model, radii_0, velocities_0, rdf_0)
+
     
 
         optimizer.zero_grad()
