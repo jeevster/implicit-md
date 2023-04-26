@@ -99,7 +99,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.bin_size = self.cutoff
         self.num_cols = int(np.ceil(self.box / self.bin_size))
         self.num_bins = self.num_cols**3
-        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.num_threads)
+        self.executor = concurrent.futures.ProcessPoolExecutor(max_workers=self.num_threads)
         self.max_parts_per_bin = 5*math.ceil(self.n_particle / self.num_bins)
        
         self.neighbor_bin_mappings = self.get_neighbor_bin_mappings()
@@ -167,6 +167,17 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.f = open(f"{self.save_dir}/log.txt", "a+")
         self.t = gsd.hoomd.open(name=f'{self.save_dir}/sim_temp{self.temp}.gsd', mode='wb') 
         self.n_dump = params.n_dump # dump for configuration
+
+
+
+    # def __getstate__(self):
+    #     print("I'm being pickled")
+    #     self.val *= 2
+    #     return self.
+    # def __setstate__(self, d):
+    #     print("I'm being unpickled with these values: " + repr(d))
+    #     self.__dict__ = d
+    #     self.val *= 3
 
     def check_symmetric(self, a, mode, tol=1e-4):
         if mode == 'opposite':
@@ -274,29 +285,36 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         thread_partitioned_radii = self.divide_items(divided_radii, self.num_threads)
         # divided_sigmas = torch.cat(self.particle_sigmas, torch.Tensor([1.]))[bins] if self.poly else self.sigma * torch.ones_like(divided_radii[:, :, 0])
         # thread_partitioned_sigmas = self.divide_items(divided_sigmas, self.num_threads)
-        thread_partitioned_bin_idxs = self.divide_items(np.arange(self.num_bins), self.num_threads)
+        thread_partitioned_bin_idxs = pad_sequence(self.divide_items(torch.arange(self.num_bins), self.num_threads), batch_first=True, padding_value=self.num_bins)
 
         # # Define a list to store the future objects representing the results of each thread
-        futures = []
-        # Submit tasks to the thread pool and store the future objects
-        for i in range(self.num_threads):
+        # futures = []
+        # # # Submit tasks to the thread pool and store the future objects
+        # for i in range(self.num_threads):
 
-            radii = thread_partitioned_radii[i]
-            temp_radii = torch.cat((divided_radii, 1e8*torch.ones_like(divided_radii[i].unsqueeze(0)).to(self.device)))
-            neighbor_radii = temp_radii[self.neighbor_bin_mappings[thread_partitioned_bin_idxs[i]].long()].reshape(-1, 27*radii.shape[1], 3)
+        #     radii = thread_partitioned_radii[i]
+        #     temp_radii = torch.cat((divided_radii, 1e8*torch.ones_like(divided_radii[i].unsqueeze(0)).to(self.device)))
+        #     import pdb; pdb.set_trace()
+        #     neighbor_radii = temp_radii[self.neighbor_bin_mappings[thread_partitioned_bin_idxs].long()].reshape(self.num_threads, -1, 27*radii.shape[1], 3)
             
-            #not doing variable sigmas
-            sigmas = 0
-            neighbor_sigmas=0
+        #     #not doing variable sigmas
+        #     sigmas = 0
+        #     neighbor_sigmas=0
 
-            future = self.executor.submit(self.thread_force_calc, radii, neighbor_radii, sigmas, neighbor_sigmas)                
-            futures.append(future)
+        #     future = self.executor.submit(self.thread_force_calc, radii, neighbor_radii, sigmas, neighbor_sigmas)                
+        #     futures.append(future)
 
-        # Retrieve the results from the future objects
-        results = [future.result() for future in futures]
-        forces = torch.cat([result[1] for result in results])
-        energy = torch.cat([result[0].unsqueeze(-1) for result in results]).sum()
+        # # Retrieve the results from the future objects
+        # results = [future.result() for future in futures]
+        # forces = torch.cat([result[1] for result in results])
+        # energy = torch.cat([result[0].unsqueeze(-1) for result in results]).sum()
         #recollect the forces into the correct order - this doesn't work for multiple threads
+        with concurrent.futures.ProcessPoolExecutor() as executor:
+            import pdb; pdb.set_trace()
+            temp_radii = torch.cat((divided_radii, 1e8*torch.ones_like(divided_radii[0].unsqueeze(0)).to(self.device)))
+            thread_partitioned_neighbor_radii = temp_radii[self.neighbor_bin_mappings[thread_partitioned_bin_idxs].long()].reshape(self.num_threads, -1, 27*radii.shape[1], 3)
+            out = executor.map(self.thread_force_calc, thread_partitioned_radii, thread_partitioned_neighbor_radii)
+        import pdb; pdb.set_trace()
         mask = bins != self.n_particle
         forces = forces[mask]
         scatter_idxs = bins[mask].unsqueeze(-1).repeat(1, 3) 
@@ -321,7 +339,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         return energy, forces
         
 
-    def thread_force_calc(self, all_current_radii, all_neighbor_radii, all_current_sigmas, all_neighbor_sigmas):
+    def thread_force_calc(self, all_current_radii, all_neighbor_radii):
         #import pdb; pdb.set_trace()
         
         with torch.enable_grad():
