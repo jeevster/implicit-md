@@ -1,5 +1,6 @@
 from itertools import product
 import concurrent.futures
+import multiprocessing as mp
 
 import numpy as np
 import gsd.hoomd
@@ -29,20 +30,71 @@ import gc
 import shutil
 from torch.utils.tensorboard import SummaryWriter
 from functorch import vmap
+mp.set_start_method("spawn", force = True)
 
 
 
 from utils import radii_to_dists, fcc_positions, initialize_velocities, dump_params_to_yml, powerlaw_inv_cdf
 
+def init_params(params):
+    global g_params
+    g_params =  params
 
-def foo(x,y):
-    return x+y
+def thread_force_calc(all_current_radii, all_neighbor_radii):
+
+        with torch.enable_grad():
+            r = all_current_radii.unsqueeze(2) - all_neighbor_radii.unsqueeze(1)
+            r = torch.where(r > 1e5, 0, torch.where(r < -1e5, 0, r))
+            r = -1*torch.where(r > 0.5*g_params.box, r-g_params.box, torch.where(r<-0.5*g_params.box, r+g_params.box, r))
+            if not r.requires_grad:
+                    r.requires_grad = True
+
+            vectorized_dists = torch.sqrt(torch.sum(r**2, axis=-1))
+            mask = (vectorized_dists == 0) | (vectorized_dists > g_params.cutoff) #remove particles beyond cutoff and remove ourself
+            vectorized_dists = vectorized_dists[~mask].unsqueeze(-1)
+
+            if g_params.poly:
+                
+                sigma_pairs = [g_params.get_sigma_pairs(current_sigmas.unsqueeze(1), neighbor_sigmas.unsqueeze(0)) for current_sigmas, neighbor_sigmas in zip(all_current_sigmas, all_neighbor_sigmas)]
+                vectorized_sigma_pairs = torch.block_diag(*sigma_pairs)
+                vectorized_sigma_pairs = vectorized_sigma_pairs[~mask].unsqueeze(-1)
+
+            #compute energy
+            if g_params.nn:
+                energy = model(vectorized_dists/vectorized_sigma_pairs) if g_params.poly else model(vectorized_dists)
+                
+            #LJ potential
+            else:
+                if g_params.poly: #repulsive
+                    parenth = (vectorized_sigma_pairs/vectorized_dists)                    
+                    rep_term = parenth ** g_params.rep_power
+                    energy = torch.sum(rep_term + g_params.c_0 + g_params.c_2*parenth**-2 + g_params.c_4*parenth**-4)
+                else:
+                    r2i = (g_params.sigma/vectorized_dists)**2
+                    r6i = r2i**3
+                    energy = (2*g_params.epsilon*torch.sum(r6i*(r6i - 1))).unsqueeze(-1)
+                    
+        #not sure why we have to do this
+        forces = 2*compute_grad(inputs=r, output=energy)
+        
+        #assert no nans except for the mask places
+        assert(not torch.any(torch.isnan(forces[~mask])))
+
+        #remove nans
+        forces[forces != forces] = 0.
+
+        #sum across particles
+        forces = torch.sum(forces, axis = -2)
+
+        #sum forces across particles
+        return energy, forces#.to(self.device)
 
 
 class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.linear_solve.solve_normal_cg(maxiter=5, atol=0)):
     def __init__(self, params, model, radii_0, velocities_0, rdf_0):
         super(ImplicitMDSimulator, self).__init__()
 
+        
         self.params = params
         self.n_particle = params.n_particle
         self.temp = params.temp
@@ -100,7 +152,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.bin_size = self.cutoff
         self.num_cols = int(np.ceil(self.box / self.bin_size))
         self.num_bins = self.num_cols**3
-        self.executor = concurrent.futures.ProcessPoolExecutor(max_workers=self.num_threads)
         self.max_parts_per_bin = 5*math.ceil(self.n_particle / self.num_bins)
        
         self.neighbor_bin_mappings = self.get_neighbor_bin_mappings()
@@ -120,6 +171,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
         #Register inner parameters
         self.model = model.to(self.device)
+        globals()['model'] = self.model
         #model.train()
         self.radii = nn.Parameter(radii_0.clone().detach_(), requires_grad=True).to(self.device)
         self.velocities = nn.Parameter(velocities_0.clone().detach_(), requires_grad=True).to(self.device)
@@ -284,8 +336,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         
         divided_radii = torch.cat((radii, self.infs))[bins]
         thread_partitioned_radii = torch.stack(self.divide_items(divided_radii, self.num_threads), dim=0)
-        # divided_sigmas = torch.cat(self.particle_sigmas, torch.Tensor([1.]))[bins] if self.poly else self.sigma * torch.ones_like(divided_radii[:, :, 0])
-        # thread_partitioned_sigmas = self.divide_items(divided_sigmas, self.num_threads)
         thread_partitioned_bin_idxs = pad_sequence(self.divide_items(torch.arange(self.num_bins), self.num_threads), batch_first=True, padding_value=self.num_bins)
 
         # # Define a list to store the future objects representing the results of each thread
@@ -317,12 +367,15 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #     for out in executor.map(foo, bar, baz):
         #         print(out)
 
-        with concurrent.futures.ProcessPoolExecutor() as executor:
+        
+        with concurrent.futures.ProcessPoolExecutor(max_workers = self.num_threads, initializer=init_params, initargs  = (self.params,)) as executor:
             temp_radii = torch.cat((divided_radii, 1e8*torch.ones_like(divided_radii[0].unsqueeze(0)).to(self.device)))
             thread_partitioned_neighbor_radii = temp_radii[self.neighbor_bin_mappings[thread_partitioned_bin_idxs].long()].reshape(self.num_threads, -1, 27*thread_partitioned_radii[0].shape[1], 3)
-            for out in executor.map(self.thread_force_calc, thread_partitioned_radii, thread_partitioned_neighbor_radii):
-                print(out)
-        import pdb; pdb.set_trace()
+            
+            energy, forces =  zip(*list(executor.map(thread_force_calc, thread_partitioned_radii, thread_partitioned_neighbor_radii)))
+        energy = torch.cat(energy).sum()
+        forces = torch.cat(forces)
+        # energy = torch.cat([result[0].unsqueeze(-1) for result in results]).sum()
         mask = bins != self.n_particle
         forces = forces[mask]
         scatter_idxs = bins[mask].unsqueeze(-1).repeat(1, 3) 
@@ -346,57 +399,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
       
         return energy, forces
         
-
-    def thread_force_calc(self, all_current_radii, all_neighbor_radii):
-        #import pdb; pdb.set_trace()
-        print("Doing force calc")
-        
-        with torch.enable_grad():
-            r = all_current_radii.unsqueeze(2) - all_neighbor_radii.unsqueeze(1)
-            r = torch.where(r > 1e5, 0, torch.where(r < -1e5, 0, r))
-            r = -1*torch.where(r > 0.5*self.box, r-self.box, torch.where(r<-0.5*self.box, r+self.box, r))
-            if not r.requires_grad:
-                    r.requires_grad = True
-
-            vectorized_dists = torch.sqrt(torch.sum(r**2, axis=-1))
-            mask = (vectorized_dists == 0) | (vectorized_dists > self.cutoff) #remove particles beyond cutoff and remove ourself
-            vectorized_dists = vectorized_dists[~mask].unsqueeze(-1)
-
-            if self.poly:
-                
-                sigma_pairs = [self.get_sigma_pairs(current_sigmas.unsqueeze(1), neighbor_sigmas.unsqueeze(0)) for current_sigmas, neighbor_sigmas in zip(all_current_sigmas, all_neighbor_sigmas)]
-                vectorized_sigma_pairs = torch.block_diag(*sigma_pairs)
-                vectorized_sigma_pairs = vectorized_sigma_pairs[~mask].unsqueeze(-1)
-
-            #compute energy
-            if self.nn:
-                energy = self.model(vectorized_dists/vectorized_sigma_pairs) if self.poly else self.model(vectorized_dists)
-                
-            #LJ potential
-            else:
-                if self.poly: #repulsive
-                    parenth = (vectorized_sigma_pairs/vectorized_dists)                    
-                    rep_term = parenth ** self.rep_power
-                    energy = torch.sum(rep_term + self.c_0 + self.c_2*parenth**-2 + self.c_4*parenth**-4)
-                else:
-                    r2i = (self.sigma/vectorized_dists)**2
-                    r6i = r2i**3
-                    energy = (2*self.epsilon*torch.sum(r6i*(r6i - 1))).unsqueeze(-1)
-                    
-        #not sure why we have to do this
-        forces = 2*compute_grad(inputs=r, output=energy)
-        
-        #assert no nans except for the mask places
-        assert(not torch.any(torch.isnan(forces[~mask])))
-
-        #remove nans
-        forces[forces != forces] = 0.
-
-        #sum across particles
-        forces = torch.sum(forces, axis = -2)
-
-        #sum forces across particles
-        return energy.detach(), forces.detach()#.to(self.device)
         
 
     def forward_nvt(self, radii, velocities, forces, zeta, calc_rdf = False, calc_diffusion = False):
