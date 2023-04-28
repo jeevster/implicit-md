@@ -12,16 +12,16 @@ python nve_implicit.py \
 --sigma 1.0 \
 --dt 0.005 \
 --dr 0.01 \
---exp_name "understand_ift_nozeroinit_obs=state" \
---diffusion_window 100 \
+--exp_name "understand_ift_zeroinit_obs=state_memissuesfixed_noinitialforcegrad" \
+--diffusion_window 1000 \
 --lr 0.001 \
---t_total 1 \
---nvt_time 1 \
+--t_total 15 \
+--nvt_time 15 \
 --n_replicas 1 \
 --diameter_viz 0.3 \
 --n_dump 20 \
 --burn_in_frac 0.8 \
---n_epochs 2 \
+--n_epochs 50 \
 --diffusion_loss_weight 0 \
 --rdf_loss_weight 1 \
 --nn \

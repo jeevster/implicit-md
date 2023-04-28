@@ -396,19 +396,16 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
     def optimality(self, enable_grad = True):
         # Stationary condition construction for calculating implicit gradient
-        #print("optimality")
-        #Stationarity of the RDF - doesn't change if we do another step of MD
+        
+        #get current forces - treat as a constant (since it's coming from before the fixed point)
+        forces = self.force_calc(self.radii, retain_grad=False)[1]
+
         with torch.enable_grad() if enable_grad else nullcontext():
-            #compute current diffusion coefficient
-            # msd_data = msd(torch.cat(self.last_h_radii, dim=0), self.box)
-            # old_diffusion_coeff = self.diffusion_coefficient(msd_data)
             if self.diffusion_loss_weight != 0:
                 old_diffusion_coeff = self.diff_coeff
-
-            #get current forces
-            forces = self.force_calc(self.radii, retain_grad=True)[1]
-            #make an MD step
-            new_radii, new_velocities, new_forces, new_zeta, new_rdf = self.forward_nvt(self.radii, self.velocities, forces, self.zeta, calc_rdf = True, calc_diffusion = True, retain_grad = True)
+            
+            #make an MD step - retain grads
+            new_radii, new_velocities, new_forces, new_zeta, new_rdf = self.forward_nvt(self.radii, self.velocities, forces, self.zeta, calc_rdf = True, calc_diffusion = self.diffusion_loss_weight!=0, retain_grad = True)
 
             #compute new diffusion coefficient
             if self.diffusion_loss_weight != 0:
@@ -418,7 +415,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         radii_residual  = self.radii - new_radii
         velocity_residual  = self.velocities - new_velocities
         rdf_residual = self.rdf - new_rdf
-        if self.diffusion_loss_weight != 0:
+        if self.diffusion_loss_weight != 0: 
             diffusion_residual = (new_diffusion_coeff - old_diffusion_coeff)
             zeta_residual = (self.zeta - new_zeta)
         
@@ -624,6 +621,10 @@ if __name__ == "__main__":
             #compute (implicit) gradient of outer loss wrt model parameters
             start = time.time()
             torch.autograd.backward(tensors = outer_loss, inputs = list(NN.parameters()))
+
+            #detach the radii after finished computing the gradient - saves some memory
+            equilibriated_simulator.last_h_radii = [radii.detach() for radii in equilibriated_simulator.last_h_radii]
+                
             end = time.time()
             grad_time = end-start
             print("gradient calculation time (s): ",  grad_time)
@@ -656,9 +657,9 @@ if __name__ == "__main__":
             writer.add_scalar('Gradient Time', grad_times[-1], global_step=epoch+1)
             writer.add_scalar('Gradient Norm', grad_norms[-1], global_step=epoch+1)
         
-        print_active_torch_tensors()
-        torch.cuda.empty_cache()
-        gc.collect()
+        # print_active_torch_tensors()
+        # torch.cuda.empty_cache()
+        # gc.collect()
 
     
     if params.nn:
