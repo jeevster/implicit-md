@@ -398,7 +398,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         # Stationary condition construction for calculating implicit gradient
         #print("optimality")
         #Stationarity of the RDF - doesn't change if we do another step of MD
-        
         with torch.enable_grad():
             #compute current diffusion coefficient
             # msd_data = msd(torch.cat(self.last_h_radii, dim=0), self.box)
@@ -426,6 +425,9 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         if self.diffusion_loss_weight != 0:
             return (radii_residual, velocity_residual, rdf_residual, diffusion_residual, zeta_residual)
         else:
+            radii_residual = torch.cat([radii_residual, torch.ones((1, 1, 3)).to(self.device)], dim=1)
+            velocity_residual = torch.cat([velocity_residual, torch.ones((1, 1, 3)).to(self.device)], dim=1)
+            rdf_residual = torch.cat([rdf_residual, torch.ones((1, 1)).to(self.device)], dim=1)
             return (radii_residual, velocity_residual, rdf_residual)
 
 
@@ -621,6 +623,7 @@ if __name__ == "__main__":
             print("Loss: ", outer_loss.item())
             #compute (implicit) gradient of outer loss wrt model parameters
             start = time.time()
+            #import pdb; pdb.set_trace()
             torch.autograd.backward(tensors = outer_loss, inputs = list(model.parameters()))
             end = time.time()
             grad_time = end-start
