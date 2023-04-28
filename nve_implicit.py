@@ -394,11 +394,11 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
 
 
-    def optimality(self):
+    def optimality(self, enable_grad = True):
         # Stationary condition construction for calculating implicit gradient
         #print("optimality")
         #Stationarity of the RDF - doesn't change if we do another step of MD
-        with torch.enable_grad():
+        with torch.enable_grad() if enable_grad else nullcontext():
             #compute current diffusion coefficient
             # msd_data = msd(torch.cat(self.last_h_radii, dim=0), self.box)
             # old_diffusion_coeff = self.diffusion_coefficient(msd_data)
@@ -419,15 +419,15 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         velocity_residual  = self.velocities - new_velocities
         rdf_residual = self.rdf - new_rdf
         if self.diffusion_loss_weight != 0:
-            diffusion_residual = (new_diffusion_coeff - old_diffusion_coeff)#q.unsqueeze(0)
-            zeta_residual = (new_zeta - self.zeta)
+            diffusion_residual = (new_diffusion_coeff - old_diffusion_coeff)
+            zeta_residual = (self.zeta - new_zeta)
         
         if self.diffusion_loss_weight != 0:
             return (radii_residual, velocity_residual, rdf_residual, diffusion_residual, zeta_residual)
         else:
-            radii_residual = torch.cat([radii_residual, torch.ones((1, 1, 3)).to(self.device)], dim=1)
-            velocity_residual = torch.cat([velocity_residual, torch.ones((1, 1, 3)).to(self.device)], dim=1)
-            rdf_residual = torch.cat([rdf_residual, torch.ones((1, 1)).to(self.device)], dim=1)
+            # radii_residual = torch.cat([radii_residual, torch.ones((1, 1, 3)).to(self.device)], dim=1)
+            # velocity_residual = torch.cat([velocity_residual, torch.ones((1, 1, 3)).to(self.device)], dim=1)
+            # rdf_residual = torch.cat([rdf_residual, torch.ones((1, 1)).to(self.device)], dim=1)
             return (radii_residual, velocity_residual, rdf_residual)
 
 
@@ -623,8 +623,7 @@ if __name__ == "__main__":
             print("Loss: ", outer_loss.item())
             #compute (implicit) gradient of outer loss wrt model parameters
             start = time.time()
-            #import pdb; pdb.set_trace()
-            torch.autograd.backward(tensors = outer_loss, inputs = list(model.parameters()))
+            torch.autograd.backward(tensors = outer_loss, inputs = list(NN.parameters()))
             end = time.time()
             grad_time = end-start
             print("gradient calculation time (s): ",  grad_time)
@@ -658,6 +657,8 @@ if __name__ == "__main__":
             writer.add_scalar('Gradient Norm', grad_norms[-1], global_step=epoch+1)
         
         print_active_torch_tensors()
+        torch.cuda.empty_cache()
+        gc.collect()
 
     
     if params.nn:
