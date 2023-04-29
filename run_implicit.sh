@@ -12,12 +12,12 @@ python nve_implicit.py \
 --sigma 1.0 \
 --dt 0.005 \
 --dr 0.01 \
---exp_name "understand_ift_zeroinit_obs=state_memissuesfixed_noinitialforcegrad" \
+--exp_name "newtest_replicas4" \
 --diffusion_window 1000 \
 --lr 0.001 \
 --t_total 15 \
 --nvt_time 15 \
---n_replicas 1 \
+--n_replicas 4 \
 --diameter_viz 0.3 \
 --n_dump 20 \
 --burn_in_frac 0.8 \

@@ -152,15 +152,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.t = gsd.hoomd.open(name=f'{self.save_dir}/sim_temp{self.temp}.gsd', mode='wb') 
         self.n_dump = params.n_dump # dump for configuration
 
-        #self.vec_force_calc = vmap(self.force_calc, 0)
-
-    def reset(self, radii_0, velocities_0, rdf_0):
-        #self.radii = 
-        self.radii.requires_grad = False
-        self.velocities.requires_grad = False
-        self.rdf.requires_grad = False
-        self.diff_coeff.requires_grad = False
-        
 
     def check_symmetric(self, a, mode, tol=1e-4):
         if mode == 'opposite':
@@ -246,8 +237,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                     
                     energy = torch.sum(rep_term + self.c_0 + self.c_2*parenth**-2 + self.c_4*parenth**-4)
                     
-                    #import pdb; pdb.set_trace()
-                    #forces = r_multiplier * r + r3_multiplier * r**3
                     forces = -compute_grad(inputs=r, output=energy) if retain_grad else -compute_grad(inputs=r, output=energy).detach()
                 
                 else:
@@ -265,20 +254,17 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                 forces = torch.where(~keep, self.zeros, forces)
 
                     
-        # #Ensure symmetries
+        # #Ensure no NaNs
         assert(not torch.any(torch.isnan(forces)))
         
-                
         #sum forces across particles
         return energy, torch.sum(forces, axis = -2)#.to(self.device)
         
     def forward_nvt(self, radii, velocities, forces, zeta, calc_rdf = False, calc_diffusion = False, retain_grad = False):
-        # get current acceleration
-        
+        # get current accelerations (assume unit mass)
         accel = forces
 
-        # make full step in position
-        
+        # make full step in position 
         radii = radii + velocities * self.dt + \
             (accel - zeta * velocities) * (0.5 * self.dt ** 2)
 
@@ -299,7 +285,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         energy, forces = self.force_calc(radii.to(self.device), retain_grad=retain_grad)
         accel = forces
 
-        
         # make a half step in self.zeta
         zeta = zeta + 0.5 * self.dt * (1/self.Q) * (KE_0 - self.targeEkin)
 
@@ -314,7 +299,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         velocities = (velocities + 0.5 * self.dt * accel) / \
             (1 + 0.5 * self.dt * zeta)
 
-    
         if calc_rdf:
             new_dists = radii_to_dists(radii, self.params)
             if self.poly:
@@ -400,6 +384,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #get current forces - treat as a constant (since it's coming from before the fixed point)
         forces = self.force_calc(self.radii, retain_grad=False)[1]
 
+        if type(enable_grad) != bool:
+            enable_grad = False
         with torch.enable_grad() if enable_grad else nullcontext():
             if self.diffusion_loss_weight != 0:
                 old_diffusion_coeff = self.diff_coeff
@@ -429,7 +415,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
 
     #top level MD simulation code (i.e the "solver") that returns the optimal "parameter" -aka the equilibriated radii
-    def solve(self):
+    def solve(self, zeta_initial=None):
         
         self.running_dists = []
         self.last_h_radii = []
@@ -440,7 +426,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             _, forces = self.force_calc(self.radii)
             #Run MD
             print("Start MD trajectory", file=self.f)
-            zeta = torch.zeros((self.n_replicas, 1, 1)).to(self.device)
+            
+            zeta = zeta_initial if zeta_initial is not None else torch.zeros((self.n_replicas, 1, 1)).to(self.device)
             for step in tqdm(range(self.nsteps)):
                 self.step = step
                 
@@ -598,18 +585,19 @@ if __name__ == "__main__":
     for epoch in range(params.n_epochs):
         print(f"Epoch {epoch+1}")
         #initialize simulator parameterized by a NN model
-        simulator = ImplicitMDSimulator(params, model, radii_0, velocities_0, rdf_0)
-
-    
+        if epoch ==0 :
+            simulator = ImplicitMDSimulator(params, model, radii_0, velocities_0, rdf_0)
+        else:
+            simulator = ImplicitMDSimulator(params, model, equilibriated_simulator.radii, equilibriated_simulator.velocities, equilibriated_simulator.rdf)
 
         optimizer.zero_grad()
 
         #run MD simulation to get equilibriated radii
         start = time.time()
-        equilibriated_simulator = simulator.solve()
+        equilibriated_simulator = simulator.solve() if epoch == 0 else simulator.solve(equilibriated_simulator.zeta)
         end = time.time()
         sim_time = end-start
-        print("MD simulation time (s): ",  sim_time)
+        print("MD simulation time (s): ", sim_time)
         
         #compute loss at the end of the trajectory
         if params.nn:
@@ -657,7 +645,7 @@ if __name__ == "__main__":
             writer.add_scalar('Gradient Time', grad_times[-1], global_step=epoch+1)
             writer.add_scalar('Gradient Norm', grad_norms[-1], global_step=epoch+1)
         
-        # print_active_torch_tensors()
+        print_active_torch_tensors()
         # torch.cuda.empty_cache()
         # gc.collect()
 
