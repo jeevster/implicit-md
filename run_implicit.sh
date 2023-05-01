@@ -27,4 +27,4 @@ python nve_implicit.py \
 --n_width 128 \
 --n_layers 3 \
 --nonlinear 'ELU' \
---num_threads 4
+--num_threads 16

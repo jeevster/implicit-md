@@ -156,6 +156,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
        
         self.neighbor_bin_mappings = self.get_neighbor_bin_mappings()
         self.binrange = torch.arange(self.num_bins).to(device).unsqueeze(1)
+        self.executor = concurrent.futures.ProcessPoolExecutor(max_workers = self.num_threads, initializer=init_params, initargs  = (self.params,))
+
 
         # Constant box properties
         self.vol = self.box**3.0
@@ -368,11 +370,10 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #         print(out)
 
         
-        with concurrent.futures.ProcessPoolExecutor(max_workers = self.num_threads, initializer=init_params, initargs  = (self.params,)) as executor:
-            temp_radii = torch.cat((divided_radii, 1e8*torch.ones_like(divided_radii[0].unsqueeze(0)).to(self.device)))
-            thread_partitioned_neighbor_radii = temp_radii[self.neighbor_bin_mappings[thread_partitioned_bin_idxs].long()].reshape(self.num_threads, -1, 27*thread_partitioned_radii[0].shape[1], 3)
-            
-            energy, forces =  zip(*list(executor.map(thread_force_calc, thread_partitioned_radii, thread_partitioned_neighbor_radii)))
+        temp_radii = torch.cat((divided_radii, 1e8*torch.ones_like(divided_radii[0].unsqueeze(0)).to(self.device)))
+        thread_partitioned_neighbor_radii = temp_radii[self.neighbor_bin_mappings[thread_partitioned_bin_idxs].long()].reshape(self.num_threads, -1, 27*thread_partitioned_radii[0].shape[1], 3)
+        
+        energy, forces =  zip(*list(self.executor.map(thread_force_calc, thread_partitioned_radii, thread_partitioned_neighbor_radii)))
         energy = torch.cat(energy).sum()
         forces = torch.cat(forces)
         # energy = torch.cat([result[0].unsqueeze(-1) for result in results]).sum()
@@ -559,6 +560,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
     #top level MD simulation code (i.e the "solver") that returns the optimal "parameter" -aka the equilibriated radii
     def solve(self):
+
         self.running_dists = []
         self.last_h_radii = []
         
@@ -577,6 +579,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             #Run MD
             print("Start MD trajectory", file=self.f)
             zeta = 0
+            
             for step in tqdm(range(self.nsteps)):
                 self.step = step
                 
