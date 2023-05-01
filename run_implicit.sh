@@ -1,5 +1,5 @@
 #!/bin/bash
-#-m cProfile -o out.prof
+#
 python nve_implicit.py \
 --n_particle 98304 \
 --temp 0.8 \
