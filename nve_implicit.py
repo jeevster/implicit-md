@@ -520,6 +520,8 @@ if __name__ == "__main__":
     parser.add_argument('--rdf_loss_weight', type=float, default=1, help='coefficient in front of RDF loss term')
     parser.add_argument('--diffusion_loss_weight', type=float, default=100, help='coefficient in front of diffusion coefficient loss term')
     parser.add_argument('--lr', type=float, default=0.001, help='learning rate')
+    parser.add_argument('--restart_probability', type=float, default=1.0, help='probability of restarting from FCC vs continuing simulation')
+
 
 
     params = parser.parse_args()
@@ -584,17 +586,19 @@ if __name__ == "__main__":
     
     for epoch in range(params.n_epochs):
         print(f"Epoch {epoch+1}")
+        restart = epoch==0 or (torch.rand(size=(1,)) < params.restart_probability).item()
         #initialize simulator parameterized by a NN model
-        if epoch ==0 :
+        if restart: #start from FCC lattice
             simulator = ImplicitMDSimulator(params, model, radii_0, velocities_0, rdf_0)
-        else:
+        else: #continue from where we left off in the last epoch
             simulator = ImplicitMDSimulator(params, model, equilibriated_simulator.radii, equilibriated_simulator.velocities, equilibriated_simulator.rdf)
 
         optimizer.zero_grad()
 
         #run MD simulation to get equilibriated radii
         start = time.time()
-        equilibriated_simulator = simulator.solve() if epoch == 0 else simulator.solve(equilibriated_simulator.zeta)
+        #if continuing simulation, initialize with equilibriated NVT coupling constant 
+        equilibriated_simulator = simulator.solve() if restart else simulator.solve(equilibriated_simulator.zeta)
         end = time.time()
         sim_time = end-start
         print("MD simulation time (s): ", sim_time)
@@ -609,14 +613,13 @@ if __name__ == "__main__":
             #compute (implicit) gradient of outer loss wrt model parameters
             start = time.time()
             torch.autograd.backward(tensors = outer_loss, inputs = list(NN.parameters()))
-
-            #detach the radii after finished computing the gradient - saves some memory
-            equilibriated_simulator.last_h_radii = [radii.detach() for radii in equilibriated_simulator.last_h_radii]
-                
             end = time.time()
             grad_time = end-start
             print("gradient calculation time (s): ",  grad_time)
 
+            #detach the radii after finished computing the gradient - saves some memory
+            equilibriated_simulator.last_h_radii = [radii.detach() for radii in equilibriated_simulator.last_h_radii]
+                
             max_norm = 0
             for param in model.parameters():
                 if param.grad is not None:
@@ -645,7 +648,7 @@ if __name__ == "__main__":
             writer.add_scalar('Gradient Time', grad_times[-1], global_step=epoch+1)
             writer.add_scalar('Gradient Norm', grad_norms[-1], global_step=epoch+1)
         
-        print_active_torch_tensors()
+        #print_active_torch_tensors()
         # torch.cuda.empty_cache()
         # gc.collect()
 

@@ -30,6 +30,7 @@ poly_power: 3.0
 rdf_loss_weight: 1.0
 rdf_sample_frac: 1
 rep_power: 12
+restart_probability: 1.0
 save_intermediate_rdf: false
 seed: 123
 sigma: 1.0
