@@ -266,7 +266,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         
     '''CORE MD OPERATIONS'''
 
-    def top_level_force_calc(self, radii, bins, retain_grad = False):
+    def top_level_force_calc(self, radii, bins, retain_grad = False, stop = False):
 
         #partition the radii, sigma pairs, and bin_idxs among threads
         
@@ -289,7 +289,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             sigmas = 0
             neighbor_sigmas=0
 
-            future = self.executor.submit(self.thread_force_calc, radii, neighbor_radii, sigmas, neighbor_sigmas, retain_grad)                
+            future = self.executor.submit(self.thread_force_calc, radii, neighbor_radii, sigmas, neighbor_sigmas, retain_grad, stop)                
             futures.append(future)
 
         # Retrieve the results from the future objects
@@ -306,8 +306,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         return energy, forces
         
 
-    def thread_force_calc(self, all_current_radii, all_neighbor_radii, all_current_sigmas, all_neighbor_sigmas, retain_grad = False):
-        #import pdb; pdb.set_trace()
+    def thread_force_calc(self, all_current_radii, all_neighbor_radii, all_current_sigmas, all_neighbor_sigmas, retain_grad = False, stop = False):
         
         with torch.enable_grad():
             r = all_current_radii.unsqueeze(2) - all_neighbor_radii.unsqueeze(1)
@@ -342,6 +341,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                     energy = (2*self.epsilon*torch.sum(r6i*(r6i - 1))).unsqueeze(-1)
                     
         #not sure why we have to do this
+        if stop:
+            import pdb; pdb.set_trace()
         forces = 2*compute_grad(inputs=r, output=energy)
         
         #assert no nans except for the mask places
@@ -492,9 +493,9 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         # Stationary condition construction for calculating implicit gradient
         
         #get current forces - treat as a constant (since it's coming from before the fixed point)
+        
         bins = self.assign_bins(self.radii)
-        import pdb; pdb.set_trace()
-        forces = self.top_level_force_calc(self.radii, bins, retain_grad=False)[1]
+        forces = self.top_level_force_calc(self.radii, bins, retain_grad=False, stop = True)[1]
 
         if type(enable_grad) != bool:
             enable_grad = False
