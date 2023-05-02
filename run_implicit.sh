@@ -1,6 +1,6 @@
 #!/bin/bash
 
-python -m cProfile -o out.prof nve_implicit.py \
+python nve_implicit.py \
 --n_particle 256 \
 --temp 0.8 \
 --seed 123 \
@@ -14,14 +14,15 @@ python -m cProfile -o out.prof nve_implicit.py \
 --dr 0.01 \
 --exp_name "test_parallel" \
 --diffusion_window 10 \
---t_total 5 \
---nvt_time 5 \
+--t_total 1 \
+--nvt_time 1 \
 --diameter_viz 0.3 \
---n_dump 1 \
+--n_dump 100 \
 --burn_in_frac 0.9 \
 --n_epochs 1 \
 --diffusion_loss_weight 1 \
 --rdf_loss_weight 0 \
+--nn \
 --cutoff 1.25 \
 --gaussian_width 0.1 \
 --n_width 128 \
