@@ -156,7 +156,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
        
         self.neighbor_bin_mappings = self.get_neighbor_bin_mappings()
         self.binrange = torch.arange(self.num_bins).to(device).unsqueeze(1)
-        self.thread_partitioned_bin_idxs = pad_sequence(self.divide_items(torch.arange(self.num_bins), self.num_threads), batch_first=True, padding_value=self.num_bins)
+        self.thread_partitioned_bin_idxs = self.divide_items(np.arange(self.num_bins), self.num_threads)
 
         # Constant box properties
         self.vol = self.box**3.0
@@ -330,8 +330,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             l = torch.Tensor(list(set(neighbor_bin_idxs)))
             neighbor_bin_mappings[bin] = torch.nn.functional.pad(l, (0,27 - l.shape[0]), value = self.num_bins).to(torch.long)
 
-        #add extra row
-        neighbor_bin_mappings = torch.cat((neighbor_bin_mappings, self.num_bins*torch.ones((1, 27)).to(self.device)))
+        
         return neighbor_bin_mappings
         
         
@@ -339,14 +338,16 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
     def top_level_force_calc(self, radii, bins):
 
-        #partition the radii, sigma pairs, and bin_idxs among threads
-        divided_radii = torch.cat((radii, self.infs))[bins]
-        thread_partitioned_radii = pad_sequence(torch.tensor_split(divided_radii, self.num_threads), batch_first = True, padding_value=1e8)
-    
-
-        temp_radii = torch.cat((divided_radii, 1e8*torch.ones_like(divided_radii[0].unsqueeze(0)).to(self.device)))
-        thread_partitioned_neighbor_radii = temp_radii[self.neighbor_bin_mappings[self.thread_partitioned_bin_idxs].long()].reshape(self.num_threads, -1, 27*thread_partitioned_radii[0].shape[1], 3)
+        divided_radii = torch.cat((radii, self.infs))[bins]	
+        thread_partitioned_radii = self.divide_items(divided_radii, self.num_threads)	
         
+        thread_partitioned_neighbor_radii = []
+        # Get thread partitioned neighbor radii
+        for i in range(self.num_threads):	
+            temp_radii = torch.cat((divided_radii, 1e8*torch.ones_like(divided_radii[i].unsqueeze(0)).to(self.device)))	
+            neighbor_radii = temp_radii[self.neighbor_bin_mappings[self.thread_partitioned_bin_idxs[i]].long()].reshape(-1, 27*thread_partitioned_radii[i].shape[1], 3)	
+            thread_partitioned_neighbor_radii.append(neighbor_radii)
+
         energy, forces =  zip(*list(self.executor.map(thread_force_calc, thread_partitioned_radii, thread_partitioned_neighbor_radii)))
 
         energy = torch.cat(energy).sum()

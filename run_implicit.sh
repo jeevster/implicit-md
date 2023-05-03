@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 python nve_implicit.py \
---n_particle 12228 \
+--n_particle 12288 \
 --temp 0.8 \
 --seed 123 \
 --kbt0 1.8 \
@@ -17,15 +17,14 @@ python nve_implicit.py \
 --t_total 1 \
 --nvt_time 1 \
 --diameter_viz 0.3 \
---n_dump 1 \
+--n_dump 20 \
 --burn_in_frac 0.9 \
 --n_epochs 1 \
 --diffusion_loss_weight 1 \
 --rdf_loss_weight 0 \
---nn \
 --cutoff 1.25 \
 --gaussian_width 0.1 \
 --n_width 128 \
 --n_layers 3 \
 --nonlinear 'ELU' \
---num_threads 1
+--num_threads 16
