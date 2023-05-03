@@ -61,7 +61,7 @@ def thread_force_calc(all_current_radii, all_neighbor_radii):
 
             #compute energy
             if g_params.nn:
-                energy = model(vectorized_dists/vectorized_sigma_pairs) if g_params.poly else model(vectorized_dists)
+                energy = g_params.model(vectorized_dists/vectorized_sigma_pairs) if g_params.poly else g_params.model(vectorized_dists)
                 
             #LJ potential
             else:
@@ -156,7 +156,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
        
         self.neighbor_bin_mappings = self.get_neighbor_bin_mappings()
         self.binrange = torch.arange(self.num_bins).to(device).unsqueeze(1)
-        self.executor = concurrent.futures.ProcessPoolExecutor(max_workers = self.num_threads, initializer=init_params, initargs  = (self.params,))
         self.thread_partitioned_bin_idxs = pad_sequence(self.divide_items(torch.arange(self.num_bins), self.num_threads), batch_first=True, padding_value=self.num_bins)
 
         # Constant box properties
@@ -173,7 +172,10 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
         #Register inner parameters
         self.model = model.to(self.device)
-        globals()['model'] = self.model
+        self.params.model =  self.model
+
+        self.executor = concurrent.futures.ProcessPoolExecutor(max_workers = self.num_threads, initializer=init_params, initargs  = (self.params,))
+
         #model.train()
         self.radii = nn.Parameter(radii_0.clone().detach_(), requires_grad=True).to(self.device)
         self.velocities = nn.Parameter(velocities_0.clone().detach_(), requires_grad=True).to(self.device)
