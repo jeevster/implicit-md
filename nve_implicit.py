@@ -13,7 +13,7 @@ import pdb
 import random
 from torchmd.interface import GNNPotentials, PairPotentials, Stack
 from torchmd.potentials import ExcludedVolume, LennardJones, LJFamily,  pairMLP
-from torchmd.observable import rdf, generate_vol_bins, DifferentiableRDF, msd, DiffusionCoefficient
+from torchmd.observable import generate_vol_bins, DifferentiableRDF, DifferentiableVelHist, DifferentiableVACF, msd, DiffusionCoefficient
 import torchopt
 from torchopt.nn import ImplicitMetaGradientModule
 from contextlib import nullcontext
@@ -73,6 +73,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.exp_name = params.exp_name
 
         self.diffusion_window = params.diffusion_window
+        self.vacf_window = params.vacf_window
 
         self.cutoff = params.cutoff
         self.gaussian_width = params.gaussian_width
@@ -124,8 +125,13 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #define vectorized differentiable rdf and diffusion coefficient functions
         self.diff_rdf = vmap(DifferentiableRDF(params, self.device), -1)
         self.diff_rdf_cpu = vmap(DifferentiableRDF(params, "cpu"), -1)
+        self.diff_vel_hist = vmap(DifferentiableVelHist(params, self.device), 0)
+        self.diff_vel_hist_cpu = vmap(DifferentiableVelHist(params, "cpu"), 0)
+
+        self.diff_vacf = vmap(DifferentiableVACF(params), 0)
 
         if self.diffusion_loss_weight != 0:
+            #vectorize over dim 1 (the input will be of shape [diffusion_window , n_replicas])
             self.diffusion_coefficient = vmap(DiffusionCoefficient(params, self.device) , 1)
 
         
@@ -195,7 +201,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                 #"Pressure": pressure,
                 "Potential Energy": pe.item(),
                 "Total Energy": (ke+pe).item(),
-                "Momentum Magnitude": torch.norm(torch.sum(self.velocities, axis =0)).item()}
+                "Momentum Magnitude": torch.norm(torch.sum(self.velocities, axis =-2)).item()}
 
 
     '''CORE MD OPERATIONS'''
@@ -260,7 +266,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #sum forces across particles
         return energy, torch.sum(forces, axis = -2)#.to(self.device)
         
-    def forward_nvt(self, radii, velocities, forces, zeta, calc_rdf = False, calc_diffusion = False, retain_grad = False):
+    def forward_nvt(self, radii, velocities, forces, zeta, calc_rdf = False, calc_diffusion = False, calc_vacf = False, retain_grad = False):
         # get current accelerations (assume unit mass)
         accel = forces
 
@@ -305,12 +311,14 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                 #normalize distances by sigma pairs
                 new_dists = new_dists / self.sigma_pairs
 
-        
+        new_velhist = self.diff_vel_hist(torch.linalg.norm(velocities, dim=-1).permute((1,0))) if calc_rdf else 0 #calculate velocity histogram from a single frame
         new_rdf = self.diff_rdf(tuple(new_dists.to(self.device).permute((1, 2, 3, 0)))) if calc_rdf else 0 #calculate the RDF from a single frame
         #new_rdf = 0
 
         if calc_diffusion:
             self.last_h_radii.append(radii.unsqueeze(0))
+        if calc_vacf:
+            self.last_h_velocities.append(velocities.unsqueeze(0))
 
         # dump frames
         if self.step%self.n_dump == 0:
@@ -323,13 +331,14 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                     #normalize distances by sigma pairs
                     new_dists = new_dists / self.sigma_pairs
                 self.running_dists.append(new_dists.cpu().detach())
+                self.running_vels.append(torch.linalg.norm(velocities, dim = -1).cpu().detach())
 
 
 
-        return radii, velocities, forces, zeta, new_rdf
+        return radii, velocities, forces, zeta, new_rdf, new_velhist
         
         
-    def forward(self, radii, velocities, forces, calc_rdf = False, calc_diffusion = False, retain_grad = False):
+    def forward(self, radii, velocities, forces, calc_rdf = False, calc_diffusion = False, calc_vacf = False, retain_grad = False):
         # Forward process - 1 MD step with Velocity-Verlet integration
         #half-step in velocity
         
@@ -357,10 +366,13 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                 #normalize distances by sigma pairs
                 new_dists = new_dists/ self.sigma_pairs
 
+        new_velhist = self.diff_vel_hist(torch.linalg.norm(velocities, dim=-1).permute((1,0))) if calc_rdf else 0 #calculate velocity histogram from a single frame
         new_rdf = self.diff_rdf(tuple(new_dists.to(self.device).permute((1, 2, 3, 0)))) if calc_rdf else 0 #calculate the RDF from a single frame
         #new_rdf = 0
         if calc_diffusion:
             self.last_h_radii.append(radii.unsqueeze(0))
+        if calc_vacf:
+            self.last_h_velocities.append(velocities.unsqueeze(0))
 
         # dump frame
         if self.step%self.n_dump == 0:
@@ -373,8 +385,9 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                     #normalize distances by sigma pairs
                     new_dists = new_dists / self.sigma_pairs
                 self.running_dists.append(new_dists.cpu().detach())
+                self.running_vels.append(torch.linalg.norm(velocities, dim = -1).cpu().detach())
 
-        return radii, velocities, forces, new_rdf # return the new distance matrix 
+        return radii, velocities, forces, new_rdf, new_velhist # return the new distance matrix 
 
 
 
@@ -418,7 +431,9 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
     def solve(self, zeta_initial=None):
         
         self.running_dists = []
+        self.running_vels = []
         self.last_h_radii = []
+        self.last_h_velocities = []
         
         #Initialize forces/potential of starting configuration
         with torch.no_grad():
@@ -433,14 +448,15 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                 
                 calc_rdf = step ==  self.nsteps -1 or (self.save_intermediate_rdf and not self.nn)
                 calc_diffusion = step >= self.nsteps - self.diffusion_window and self.diffusion_loss_weight != 0#calculate diffusion coefficient if within window from the end
+                calc_vacf = step >= self.nsteps - self.vacf_window or (self.save_intermediate_rdf and not self.nn)
 
                 with torch.enable_grad() if calc_diffusion else nullcontext():
                     if step < self.n_nvt_steps: #NVT step
-                        radii, velocities, forces, zeta, rdf = self.forward_nvt(self.radii, self.velocities, forces, zeta, calc_rdf = calc_rdf, calc_diffusion=calc_diffusion)
+                        radii, velocities, forces, zeta, rdf, velhist = self.forward_nvt(self.radii, self.velocities, forces, zeta, calc_rdf = calc_rdf, calc_diffusion=calc_diffusion, calc_vacf = calc_vacf)
                     else: # NVE step
                         if step == self.n_nvt_steps:
                             print("NVT Equilibration Complete, switching to NVE", file=self.f)
-                        radii, velocities, forces, rdf = self.forward(self.radii, self.velocities, forces, calc_rdf = calc_rdf, calc_diffusion=calc_diffusion)
+                        radii, velocities, forces, rdf, velhist = self.forward(self.radii, self.velocities, forces, calc_rdf = calc_rdf, calc_diffusion=calc_diffusion, calc_vacf = calc_vacf)
 
                 self.radii.copy_(radii)
                 self.velocities.copy_(velocities)
@@ -452,6 +468,15 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                     filename = f"step{step+1}_rdf.npy"
                     np.save(os.path.join(self.save_dir, filename), self.rdf.mean(dim = 0).cpu().detach().numpy())
 
+                    filename = f"step{step+1}_velhist.npy"
+                    np.save(os.path.join(self.save_dir, filename), velhist.mean(dim = 0).cpu().detach().numpy())
+
+                    if step > self.vacf_window:
+                        last_h_vels = torch.cat(self.last_h_velocities[-self.vacf_window:], dim = 0).permute((1,0,2,3))
+                        vacf = self.diff_vacf(last_h_vels)
+                        filename = f"step{step+1}_vacf.npy"
+                        np.save(os.path.join(self.save_dir, filename), vacf.mean(dim = 0).cpu().detach().numpy())
+                        
         
         self.f.close()
         length = len(self.running_dists)
@@ -465,10 +490,21 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             filename ="gt_diff_coeff.npy" if not self.nn else f"diff_coeff_epoch{epoch+1}.npy"
             np.save(os.path.join(self.save_dir, filename), diffusion_coeff.mean().cpu().detach().numpy())
 
+
+        #compute VACF
+        last_h_vels = torch.cat(self.last_h_velocities, dim = 0).permute((1,0,2,3))
+        vacf = self.diff_vacf(last_h_vels)
+        filename ="gt_vacf.npy" if not self.nn else f"vacf_epoch{epoch+1}.npy"
+        np.save(os.path.join(self.save_dir, filename), vacf.mean(dim=0).cpu().detach().numpy())
+
         #compute ground truth rdf over entire trajectory (do it on CPU to avoid memory issues)
+        save_velhist = self.diff_vel_hist_cpu(torch.stack(self.running_vels[int(self.burn_in_frac*length):], dim = 1)) if not self.nn else velhist
         save_rdf = self.diff_rdf_cpu(self.running_dists[int(self.burn_in_frac*length):]) if not self.nn else self.rdf
         filename ="gt_rdf.npy" if not self.nn else f"rdf_epoch{epoch+1}.npy"
         np.save(os.path.join(self.save_dir, filename), save_rdf.mean(dim=0).cpu().detach().numpy())
+
+        filename ="gt_velhist.npy" if not self.nn else f"velhist_epoch{epoch+1}.npy"
+        np.save(os.path.join(self.save_dir, filename), save_velhist.mean(dim=0).cpu().detach().numpy())
         return self
 
     
@@ -493,9 +529,12 @@ if __name__ == "__main__":
     parser.add_argument('--min_sigma', type=float, default = 0.5, help='minimum sigma for power law distribution')
     parser.add_argument('--sigma', type=float, default=1.0, help='LJ sigma for non-poly systems')
     parser.add_argument('--dt', type=float, default=0.005, help='time step for integration')
-    parser.add_argument('--dr', type=float, default=0.01, help='bin size for RDF calculation (non-differentiable version)')
+    parser.add_argument('--dr', type=float, default=0.01, help='bin size for RDF calculation')
+    parser.add_argument('--dv', type=float, default=0.1, help='bin size for velocity histogram calculation')
+
     parser.add_argument('--rdf_sample_frac', type=float, default=1, help='fraction of particles to sample for RDF')
     parser.add_argument('--diffusion_window', type=int, default=100, help='number of timesteps on which to fit linear regression for estimating diffusion coefficient')
+    parser.add_argument('--vacf_window', type=int, default=50, help='number of timesteps on which to calculate the velocity autocorrelation function')
 
     parser.add_argument('--t_total', type=float, default=5, help='total time')
     parser.add_argument('--nvt_time', type=float, default=5, help='time for NVT equilibration')
