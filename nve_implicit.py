@@ -1,6 +1,6 @@
 from itertools import product
 import concurrent.futures
-
+from pypapi import events, papi_high as high
 import numpy as np
 import gsd.hoomd
 import torch
@@ -270,7 +270,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
         #partition the radii, sigma pairs, and bin_idxs among threads
         
-        divided_radii = torch.cat((radii, self.infs))[bins]
+        divided_radii = torch.cat((radii, self.infs))[bins] #4n+3
         thread_partitioned_radii = self.divide_items(divided_radii, self.num_threads)
         # divided_sigmas = torch.cat(self.particle_sigmas, torch.Tensor([1.]))[bins] if self.poly else self.sigma * torch.ones_like(divided_radii[:, :, 0])
         # thread_partitioned_sigmas = self.divide_items(divided_sigmas, self.num_threads)
@@ -309,6 +309,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
     def thread_force_calc(self, all_current_radii, all_neighbor_radii, all_current_sigmas, all_neighbor_sigmas, retain_grad = False, stop = False):
         
         with torch.enable_grad():
+            import pdb; pdb.set_trace()
             r = all_current_radii.unsqueeze(2) - all_neighbor_radii.unsqueeze(1)
             r = torch.where(r > 1e5, 0, torch.where(r < -1e5, 0, r))
             r = -1*torch.where(r > 0.5*self.box, r-self.box, torch.where(r<-0.5*self.box, r+self.box, r))
@@ -363,22 +364,28 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
     def forward_nvt(self, radii, velocities, forces, zeta, calc_rdf = False, calc_diffusion = False, retain_grad = False):
         # get current acceleration
-        accel = forces
+        accel = forces #
 
         # make full step in position
         radii = radii + velocities * self.dt + \
             (accel - zeta * velocities) * (0.5 * self.dt ** 2)
+        # 3n + 3n + 3n + 3n + 3n + 2 + 3n = 18n + 2
 
         #PBC correction
         if self.pbc:
-            radii = radii/self.box 
+            radii = radii/self.box  # 3n + 3n = 6n
+            #9n + 3n + 3n + 9n + 3n + 3n + 9n + 3n + 3n  + 3n + 3n
+            # 51n
             radii = self.box*torch.where(radii-torch.round(radii) >= 0, \
                         (radii-torch.round(radii)), (radii - torch.floor(radii)-1))
+            
 
         # record current velocities
+        # 3n + 3n + 3n + 3n = 12n
         KE_0 = torch.sum(torch.square(velocities)) / 2
         
         # make half a step in velocity
+        #1 + 3n + 3n + 3n + 3n + 3n = 15n+1
         velocities = velocities + 0.5 * self.dt * (accel - zeta * velocities)
 
         #assign new bins
@@ -388,21 +395,25 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         
         energy, forces = self.top_level_force_calc(radii, bins, retain_grad = retain_grad)
         
+        #3n
         accel = forces
 
         # make a half step in self.zeta
+        #3n + 1 + 3n + 3n + 1 + 3n + 3n = 15n+2
         zeta = zeta + 0.5 * self.dt * \
             (1/self.Q) * (KE_0 - self.targeEkin)
 
         #get updated KE
+        # 3n + 3n + 3n + 3n = 12n
         ke = torch.sum(torch.square(velocities)) / 2
 
         # make another halfstep in self.zeta
+        #3n + 1 + 3n + 3n + 1 + 3n + 3n = 15n+2
         zeta = zeta + 0.5 * self.dt * \
             (1/self.Q) * (ke - self.targeEkin)
 
         # make another half step in velocity
-       
+        #1 + 3n + 3n + 3n + 3n + 3n = 15n+1
         velocities = (velocities + 0.5 * self.dt * accel) / \
             (1 + 0.5 * self.dt * zeta)
         
@@ -708,7 +719,11 @@ if __name__ == "__main__":
 
         #run MD simulation to get equilibriated radii
         start = time.time()
+        high.start_counters([events.PAPI_FP_OPS,])
         equilibriated_simulator = simulator.solve()
+        x=high.stop_counters()
+        import pdb; pdb.set_trace()
+
         end = time.time()
         sim_time = end-start
         print("MD simulation time (s): ",  sim_time)
