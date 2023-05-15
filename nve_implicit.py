@@ -216,7 +216,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         rdf = self.diff_rdf(tuple(dists.to(self.device).permute((1, 2, 3, 0))))
         
         #velocity histogram
-        velhist = self.diff_vel_hist(torch.linalg.norm(self.velocities, dim=-1).permute((1,0)))
+        velhist = self.diff_vel_hist(torch.linalg.norm(self.velocities, dim=-1))
 
         return rdf, velhist, vacf, diffusion_coeff
     '''CORE MD OPERATIONS'''
@@ -326,7 +326,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                 #normalize distances by sigma pairs
                 new_dists = new_dists / self.sigma_pairs
 
-        new_velhist = self.diff_vel_hist(torch.linalg.norm(velocities, dim=-1).permute((1,0))) if calc_rdf else 0 #calculate velocity histogram from a single frame
+        new_velhist = self.diff_vel_hist(torch.linalg.norm(velocities, dim=-1)) if calc_rdf else 0 #calculate velocity histogram from a single frame
         new_rdf = self.diff_rdf(tuple(new_dists.to(self.device).permute((1, 2, 3, 0)))) if calc_rdf else 0 #calculate the RDF from a single frame
         #new_rdf = 0
 
@@ -381,7 +381,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                 #normalize distances by sigma pairs
                 new_dists = new_dists/ self.sigma_pairs
 
-        new_velhist = self.diff_vel_hist(torch.linalg.norm(velocities, dim=-1).permute((1,0))) if calc_rdf else 0 #calculate velocity histogram from a single frame
+        new_velhist = self.diff_vel_hist(torch.linalg.norm(velocities, dim=-1)) if calc_rdf else 0 #calculate velocity histogram from a single frame
         new_rdf = self.diff_rdf(tuple(new_dists.to(self.device).permute((1, 2, 3, 0)))) if calc_rdf else 0 #calculate the RDF from a single frame
         #new_rdf = 0
         if calc_diffusion:
@@ -416,7 +416,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             #normalize distances by sigma pairs
             dists = dists / self.sigma_pairs
         rdf = self.diff_rdf(tuple(dists.to(self.device).permute((1, 2, 3, 0))))
-        velhist = self.diff_vel_hist(torch.linalg.norm(self.velocities, dim=-1).permute((1,0)))
+        velhist = self.diff_vel_hist(torch.linalg.norm(self.velocities, dim=-1))
 
         #hacky fix for non-square matrix stuff
         if type(enable_grad) != bool:
@@ -425,16 +425,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         with torch.enable_grad() if enable_grad else nullcontext():
             
             #make an MD step - retain grads
-            new_radii, new_velocities, new_forces, new_zeta, new_rdf, _ = self.forward_nvt(self.radii, self.velocities, forces, self.zeta, calc_rdf = True, calc_diffusion = self.diffusion_loss_weight!=0, calc_vacf = self.vacf_loss_weight!=0, retain_grad = True)
+            new_radii, new_velocities, new_forces, new_zeta, new_rdf, new_velhist = self.forward_nvt(self.radii, self.velocities, forces, self.zeta, calc_rdf = True, calc_diffusion = self.diffusion_loss_weight!=0, calc_vacf = self.vacf_loss_weight!=0, retain_grad = True)
             
-            #get new observables: 
-            dists = radii_to_dists(new_radii, self.params)
-            if self.poly:
-                #normalize distances by sigma pairs
-                dists = dists / self.sigma_pairs
-            new_rdf = self.diff_rdf(tuple(dists.to(self.device).permute((1, 2, 3, 0))))
-            new_velhist = self.diff_vel_hist(torch.linalg.norm(new_velocities, dim=-1).permute((1,0)))
-
             radii_residual = new_rdf - rdf
             velocity_residual = new_velhist - velhist
 
@@ -460,9 +452,9 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             for step in tqdm(range(self.nsteps)):
                 self.step = step
                 
-                calc_rdf = step ==  self.nsteps -1 or self.save_intermediate_rdf or not self.nn
-                calc_diffusion = (step >= self.nsteps - self.diffusion_window) or self.save_intermediate_rdf or not self.nn #calculate diffusion coefficient if within window from the end
-                calc_vacf = (step >= self.nsteps - self.vacf_window) or self.save_intermediate_rdf or not self.nn #calculate VACF if within window from the end
+                calc_rdf = (step ==  self.nsteps -1) or self.save_intermediate_rdf
+                calc_diffusion = (step >= self.nsteps - self.diffusion_window) or self.save_intermediate_rdf #calculate diffusion coefficient if within window from the end
+                calc_vacf = (step >= self.nsteps - self.vacf_window) or self.save_intermediate_rdf #calculate VACF if within window from the end
 
                 with torch.enable_grad() if (calc_diffusion and self.diffusion_loss_weight!=0) or (calc_vacf and self.diffusion_loss_weight!=0) else nullcontext():
                     if step < self.n_nvt_steps: #NVT step
