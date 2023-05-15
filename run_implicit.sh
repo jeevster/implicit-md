@@ -1,5 +1,5 @@
 #!/bin/bash
-python nve_implicit.py \
+python -m cProfile -o out.prof nve_implicit.py \
 --n_particle 256 \
 --temp 0.8 \
 --seed 123 \
@@ -17,15 +17,15 @@ python nve_implicit.py \
 --diffusion_window 1000 \
 --vacf_window 100 \
 --lr 0.001 \
---t_total 2 \
---nvt_time 2 \
+--t_total 0.5 \
+--nvt_time 0.5 \
 --n_replicas 1 \
 --diameter_viz 0.3 \
 --n_dump 20 \
 --burn_in_frac 0.8 \
---n_epochs 50 \
+--n_epochs 1 \
 --diffusion_loss_weight 0 \
---vacf_loss_weight 0 \
+--vacf_loss_weight 1 \
 --rdf_loss_weight 1 \
 --nn \
 --cutoff 1.25 \

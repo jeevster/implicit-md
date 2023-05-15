@@ -110,9 +110,9 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #model.train()
         self.radii = nn.Parameter(radii_0.detach_(), requires_grad=True).to(self.device)
         self.velocities = nn.Parameter(velocities_0.detach_(), requires_grad=True).to(self.device)
-        self.rdf = nn.Parameter(rdf_0.detach_(), requires_grad=True).to(self.device)
-        self.diff_coeff = nn.Parameter(torch.zeros((self.n_replicas,)), requires_grad=True).to(self.device)
-        self.vacf = nn.Parameter(torch.zeros((self.n_replicas,self.vacf_window)), requires_grad=True).to(self.device)
+        # self.rdf = nn.Parameter(rdf_0.detach_(), requires_grad=True).to(self.device)
+        # self.diff_coeff = nn.Parameter(torch.zeros((self.n_replicas,)), requires_grad=True).to(self.device)
+        # self.vacf = nn.Parameter(torch.zeros((self.n_replicas,self.vacf_window)), requires_grad=True).to(self.device)
 
         if self.poly: #get per-particle sigmas
             u = torch.rand((self.n_replicas, self.n_particle))
@@ -199,7 +199,26 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                 "Total Energy": (ke+pe).item(),
                 "Momentum Magnitude": torch.norm(torch.sum(self.velocities, axis =-2)).item()}
 
+    def calc_final_observables(self):
+        #diffusion coefficient
+        msd_data = msd(torch.cat(self.last_h_radii, dim=0), self.box)
+        diffusion_coeff = self.diffusion_coefficient(msd_data)
+            
+        #VACF
+        last_h_vels = torch.cat(self.last_h_velocities, dim = 0).permute((1,0,2,3))
+        vacf = self.diff_vacf(last_h_vels)
+            
+        #RDF
+        dists = radii_to_dists(self.radii, self.params)
+        if self.poly:
+            #normalize distances by sigma pairs
+            dists = dists / self.sigma_pairs
+        rdf = self.diff_rdf(tuple(dists.to(self.device).permute((1, 2, 3, 0))))
+        
+        #velocity histogram
+        velhist = self.diff_vel_hist(torch.linalg.norm(self.velocities, dim=-1).permute((1,0)))
 
+        return rdf, velhist, vacf, diffusion_coeff
     '''CORE MD OPERATIONS'''
     def force_calc(self, radii, retain_grad = False):
         
@@ -390,43 +409,36 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
     def optimality(self, enable_grad = True):
         #get current forces - treat as a constant (since it's coming from before the fixed point)
         forces = self.force_calc(self.radii, retain_grad=False)[1]
-        
+
+        #get current observables: 
+        dists = radii_to_dists(self.radii, self.params)
+        if self.poly:
+            #normalize distances by sigma pairs
+            dists = dists / self.sigma_pairs
+        rdf = self.diff_rdf(tuple(dists.to(self.device).permute((1, 2, 3, 0))))
+        velhist = self.diff_vel_hist(torch.linalg.norm(self.velocities, dim=-1).permute((1,0)))
+
         #hacky fix for non-square matrix stuff
         if type(enable_grad) != bool:
             enable_grad = False
 
         with torch.enable_grad() if enable_grad else nullcontext():
-            if self.vacf_loss_weight != 0:
-                old_vacf = self.vacf
-
+            
             #make an MD step - retain grads
             new_radii, new_velocities, new_forces, new_zeta, new_rdf, _ = self.forward_nvt(self.radii, self.velocities, forces, self.zeta, calc_rdf = True, calc_diffusion = self.diffusion_loss_weight!=0, calc_vacf = self.vacf_loss_weight!=0, retain_grad = True)
             
-            #compute residuals
-            radii_residual  = self.radii - new_radii
-            velocity_residual  = self.velocities - new_velocities
-            rdf_residual = self.rdf - new_rdf
+            #get new observables: 
+            dists = radii_to_dists(new_radii, self.params)
+            if self.poly:
+                #normalize distances by sigma pairs
+                dists = dists / self.sigma_pairs
+            new_rdf = self.diff_rdf(tuple(dists.to(self.device).permute((1, 2, 3, 0))))
+            new_velhist = self.diff_vel_hist(torch.linalg.norm(new_velocities, dim=-1).permute((1,0)))
 
-            #compute diffusion coefficient residual
-            if self.diffusion_loss_weight != 0:
-                new_msd_data = msd(torch.cat(self.last_h_radii[1:], dim=0), self.box)
-                new_diffusion_coeff = self.diffusion_coefficient(new_msd_data)
-                diffusion_residual = (new_diffusion_coeff - self.diff_coeff)
-                zeta_residual = (self.zeta - new_zeta)
+            radii_residual = new_rdf - rdf
+            velocity_residual = new_velhist - velhist
 
-            #compute VACF residual
-            if self.vacf_loss_weight != 0:
-                last_h_vels = torch.cat(self.last_h_velocities[1:], dim = 0).permute((1,0,2,3))
-                new_vacf = self.diff_vacf(last_h_vels)
-                vacf_residual = (new_vacf - self.vacf)
-            
-            #for now assume rdf + only one dynamical observable: either diffusion coefficient or VACF, not both
-            if self.diffusion_loss_weight != 0:
-                return (radii_residual, velocity_residual, rdf_residual, diffusion_residual, zeta_residual)
-            elif self.vacf_loss_weight != 0:
-                return (radii_residual, velocity_residual, rdf_residual, vacf_residual)
-
-            return (radii_residual, velocity_residual, rdf_residual)
+            return (radii_residual, velocity_residual)
 
 
     #top level MD simulation code (i.e the "solver") that returns the optimal "parameter" -aka the equilibriated radii
@@ -463,11 +475,10 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                 #update values
                 self.radii.copy_(radii)
                 self.velocities.copy_(velocities)
-                self.rdf.copy_(rdf)
-                
+
                 if not self.nn and self.save_intermediate_rdf and step % self.n_dump == 0:
                     filename = f"step{step+1}_rdf.npy"
-                    np.save(os.path.join(self.save_dir, filename), self.rdf.mean(dim = 0).cpu().detach().numpy())
+                    np.save(os.path.join(self.save_dir, filename), rdf.mean(dim = 0).cpu().detach().numpy())
 
                     filename = f"step{step+1}_velhist.npy"
                     np.save(os.path.join(self.save_dir, filename), velhist.mean(dim = 0).cpu().detach().numpy())
@@ -486,7 +497,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             #if self.diffusion_loss_weight != 0 or not self.nn:
             msd_data = msd(torch.cat(self.last_h_radii, dim=0), self.box)
             diffusion_coeff = self.diffusion_coefficient(msd_data)
-            self.diff_coeff.copy_(diffusion_coeff)
             
             filename ="gt_diff_coeff.npy" if not self.nn else f"diff_coeff_epoch{epoch+1}.npy"
             np.save(os.path.join(self.save_dir, filename), diffusion_coeff.mean().cpu().detach().numpy())
@@ -495,13 +505,12 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             #if self.vacf_loss_weight != 0 or not self.nn:
             last_h_vels = torch.cat(self.last_h_velocities, dim = 0).permute((1,0,2,3))
             vacf = self.diff_vacf(last_h_vels)
-            self.vacf.copy_(vacf)
             filename ="gt_vacf.npy" if not self.nn else f"vacf_epoch{epoch+1}.npy"
             np.save(os.path.join(self.save_dir, filename), vacf.mean(dim=0).cpu().detach().numpy())
 
             #compute ground truth rdf over entire trajectory (do it on CPU to avoid memory issues)
             save_velhist = self.diff_vel_hist_cpu(torch.stack(self.running_vels[int(self.burn_in_frac*length):], dim = 1)) if not self.nn else velhist
-            save_rdf = self.diff_rdf_cpu(self.running_dists[int(self.burn_in_frac*length):]) if not self.nn else self.rdf
+            save_rdf = self.diff_rdf_cpu(self.running_dists[int(self.burn_in_frac*length):]) if not self.nn else rdf
             filename ="gt_rdf.npy" if not self.nn else f"rdf_epoch{epoch+1}.npy"
             np.save(os.path.join(self.save_dir, filename), save_rdf.mean(dim=0).cpu().detach().numpy())
 
@@ -650,9 +659,13 @@ if __name__ == "__main__":
         
         #compute loss at the end of the trajectory
         if params.nn:
-            rdf_loss = (equilibriated_simulator.rdf - gt_rdf).pow(2).mean()
-            diffusion_loss = (equilibriated_simulator.diff_coeff - gt_diff_coeff).pow(2).mean()# if params.diffusion_loss_weight != 0 else torch.Tensor([0.]).to(device)
-            vacf_loss = (equilibriated_simulator.vacf - gt_vacf).pow(2).mean()# if params.vacf_loss_weight != 0 else torch.Tensor([0.]).to(device)
+            #calculate the RDF
+            pred_rdf, pred_velhist, pred_vacf, pred_diff_coeff = \
+                                equilibriated_simulator.calc_final_observables()
+            
+            rdf_loss = (pred_rdf - gt_rdf).pow(2).mean()
+            diffusion_loss = (pred_diff_coeff - gt_diff_coeff).pow(2).mean()# if params.diffusion_loss_weight != 0 else torch.Tensor([0.]).to(device)
+            vacf_loss = (pred_vacf - gt_vacf).pow(2).mean()# if params.vacf_loss_weight != 0 else torch.Tensor([0.]).to(device)
             outer_loss = params.rdf_loss_weight*rdf_loss + \
                          params.diffusion_loss_weight*diffusion_loss + \
                          params.vacf_loss_weight*vacf_loss
