@@ -28,11 +28,20 @@ from functorch import vmap
 from utils import radii_to_dists, fcc_positions, initialize_velocities, \
                     dump_params_to_yml, powerlaw_inv_cdf, print_active_torch_tensors
 
+TIMEFACTOR = 48.88821
+BOLTZMAN = 1.0
+PICOSEC2TIMEU = 1000.0 / TIMEFACTOR
 
 
 class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.linear_solve.solve_normal_cg(maxiter=5, atol=0)):
     def __init__(self, params, model, radii_0, velocities_0, rdf_0):
         super(ImplicitMDSimulator, self).__init__()
+
+        #GPU
+        try:
+            self.device = torch.device(torch.cuda.current_device())
+        except:
+            self.device = "cpu"
 
         #Set random seeds
         np.random.seed(seed=params.seed)
@@ -54,6 +63,9 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #self.Q = 3.0 * self.n_particle * self.temp * (self.t_total * self.dt)**2
         self.Q = 3.0 * self.n_particle * self.temp * (50 * self.dt)**2 #found that this setting works well
 
+        #Langevin thermostat stuff
+        self.gamma = params.gamma
+        self.noise_f = torch.sqrt(torch.Tensor([2.0 * self.gamma * BOLTZMAN * self.temp * self.dt])).to(self.device)
 
         self.diameter_viz = params.diameter_viz
         self.epsilon = params.epsilon
@@ -95,11 +107,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.diffusion_loss_weight = params.diffusion_loss_weight
         self.vacf_loss_weight = params.vacf_loss_weight
 
-        #GPU
-        try:
-            self.device = torch.device(torch.cuda.current_device())
-        except:
-            self.device = "cpu"
+        
 
         self.zeros = torch.zeros((1, 1, 3)).to(self.device)
         
@@ -142,7 +150,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             self.save_dir = os.path.join(results, f"IMPLICIT_{add}_{self.exp_name}_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_dt={self.dt}_ttotal={self.t_total}")
         else: 
             add = "_polylj" if self.poly else ""
-            self.save_dir = os.path.join('ground_truth' + add, f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}")
+            self.save_dir = os.path.join('ground_truth_langevin' + add, f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}")
 
 
         
@@ -407,6 +415,55 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         return radii, velocities, forces, new_rdf, new_velhist # return the new distance matrix 
 
 
+    def forward_langevin(self, radii, velocities, forces, calc_rdf = False, calc_diffusion = False, calc_vacf = False, retain_grad = False):
+    
+        #full step in position
+        radii = radii + self.dt*velocities
+
+        #PBC correction
+        if self.pbc:
+            radii = radii/self.box 
+            radii = self.box*torch.where(radii-torch.round(radii) >= 0, \
+                        (radii-torch.round(radii)), (radii - torch.floor(radii)-1))
+
+        #calculate force at new position
+        energy, forces = self.force_calc(radii.to(self.device), retain_grad=retain_grad)
+        
+        #full step in velocities
+        velocities = velocities + self.dt*(forces - self.gamma * velocities) + self.noise_f * torch.randn_like(self.velocities)
+
+        if calc_rdf:
+            new_dists = radii_to_dists(radii, self.params)
+            if self.poly:
+                #normalize distances by sigma pairs
+                new_dists = new_dists / self.sigma_pairs
+
+        new_velhist = self.diff_vel_hist(torch.linalg.norm(velocities, dim=-1)) if calc_rdf else 0 #calculate velocity histogram from a single frame
+        new_rdf = self.diff_rdf(tuple(new_dists.to(self.device).permute((1, 2, 3, 0)))) if calc_rdf else 0 #calculate the RDF from a single frame
+        #new_rdf = 0
+
+        if calc_diffusion:
+            self.last_h_radii.append(radii.unsqueeze(0))
+        if calc_vacf:
+            self.last_h_velocities.append(velocities.unsqueeze(0))
+
+        # dump frames
+        if self.step%self.n_dump == 0:
+            print(self.step, self.calc_properties(energy), file=self.f)
+            self.t.append(self.create_frame(frame = self.step/self.n_dump))
+            #append dists to running_dists for RDF calculation (remove diagonal entries)
+            if not self.nn:
+                new_dists = radii_to_dists(radii, self.params)
+                if self.poly:
+                    #normalize distances by sigma pairs
+                    new_dists = new_dists / self.sigma_pairs
+                self.running_dists.append(new_dists.cpu().detach())
+                self.running_vels.append(torch.linalg.norm(velocities, dim = -1).cpu().detach())
+
+        return radii, velocities, forces, new_rdf, new_velhist
+    
+    
+
     '''Stationary condition construction for calculating implicit gradient'''
     def optimality(self, enable_grad = True):
         #get current forces - treat as a constant (since it's coming from before the fixed point)
@@ -461,7 +518,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                 #with torch.enable_grad() if (calc_diffusion and self.diffusion_loss_weight!=0) or (calc_vacf and self.diffusion_loss_weight!=0) else nullcontext():
                 with nullcontext():
                     if step < self.n_nvt_steps: #NVT step
-                        radii, velocities, forces, zeta, rdf, velhist = self.forward_nvt(self.radii, self.velocities, forces, zeta, calc_rdf = calc_rdf, calc_diffusion=calc_diffusion, calc_vacf = calc_vacf)
+                        radii, velocities, forces, rdf, velhist = self.forward_langevin(self.radii, self.velocities, forces, calc_rdf = calc_rdf, calc_diffusion=calc_diffusion, calc_vacf = calc_vacf)
                     else: # NVE step
                         if step == self.n_nvt_steps:
                             print("NVT Equilibration Complete, switching to NVE", file=self.f)
@@ -534,6 +591,7 @@ if __name__ == "__main__":
     parser.add_argument('--poly_power', type=float, default = -3.0, help='power of power law')
     parser.add_argument('--min_sigma', type=float, default = 0.5, help='minimum sigma for power law distribution')
     parser.add_argument('--sigma', type=float, default=1.0, help='LJ sigma for non-poly systems')
+    parser.add_argument('--gamma', type=float, default=1.0, help='noise coefficient for Langevin thermostat')
     parser.add_argument('--dt', type=float, default=0.005, help='time step for integration')
     parser.add_argument('--dr', type=float, default=0.01, help='bin size for RDF calculation')
     parser.add_argument('--dv', type=float, default=0.1, help='bin size for velocity histogram calculation')
@@ -606,7 +664,7 @@ if __name__ == "__main__":
     #load ground truth rdf and diffusion coefficient
     if params.nn:
         add = "_polylj" if params.poly else ""
-        gt_dir = os.path.join('ground_truth' + add, f"n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}")
+        gt_dir = os.path.join('ground_truth_langevin' + add, f"n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}")
         gt_rdf = torch.Tensor(np.load(os.path.join(gt_dir, "gt_rdf.npy"))).to(device)
         gt_diff_coeff = torch.Tensor(np.load(os.path.join(gt_dir, "gt_diff_coeff.npy"))).to(device)
         gt_vacf = torch.Tensor(np.load(os.path.join(gt_dir, "gt_vacf.npy"))).to(device)[0:params.vacf_window]
