@@ -46,6 +46,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.pbc = not params.no_pbc
         self.dt = params.dt
         self.t_total = params.t_total
+        self.identity_mask = ~torch.eye(self.n_particle,dtype=bool)
 
         #Nose-Hoover Thermostat stuff
         self.nvt_time = params.nvt_time
@@ -103,7 +104,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.zeros = torch.zeros((1, 1, 3)).to(self.device)
         
         #limit CPU usage
-        torch.set_num_threads(10)
+        torch.set_num_threads(2)
 
         #Register inner parameters
         self.model = model#.to(self.device)
@@ -233,7 +234,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             r = -1*torch.where(r > 0.5*self.box, r-self.box, torch.where(r<-0.5*self.box, r+self.box, r))
 
             #get rid of diagonal 0 entries of r matrix (for gradient stability)
-            r = r[:, ~torch.eye(r.shape[1],dtype=bool)].reshape(r.shape[0], r.shape[1], -1, 3)
+            
+            r = r[:, self.identity_mask].reshape(r.shape[0], r.shape[1], -1, 3)
             
             #compute distance matrix:
             dists = torch.sqrt(torch.sum(r**2, axis=-1)).unsqueeze(-1)
@@ -456,7 +458,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                 calc_diffusion = (step >= self.nsteps - self.diffusion_window) or self.save_intermediate_rdf #calculate diffusion coefficient if within window from the end
                 calc_vacf = (step >= self.nsteps - self.vacf_window) or self.save_intermediate_rdf #calculate VACF if within window from the end
 
-                with torch.enable_grad() if (calc_diffusion and self.diffusion_loss_weight!=0) or (calc_vacf and self.diffusion_loss_weight!=0) else nullcontext():
+                #with torch.enable_grad() if (calc_diffusion and self.diffusion_loss_weight!=0) or (calc_vacf and self.diffusion_loss_weight!=0) else nullcontext():
+                with nullcontext():
                     if step < self.n_nvt_steps: #NVT step
                         radii, velocities, forces, zeta, rdf, velhist = self.forward_nvt(self.radii, self.velocities, forces, zeta, calc_rdf = calc_rdf, calc_diffusion=calc_diffusion, calc_vacf = calc_vacf)
                     else: # NVE step
