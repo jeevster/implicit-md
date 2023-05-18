@@ -34,6 +34,12 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
     def __init__(self, params, model, radii_0, velocities_0, rdf_0):
         super(ImplicitMDSimulator, self).__init__()
 
+        #GPU
+        try:
+            self.device = torch.device(torch.cuda.current_device())
+        except:
+            self.device = "cpu"
+
         #Set random seeds
         np.random.seed(seed=params.seed)
         torch.manual_seed(params.seed)
@@ -46,13 +52,14 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.pbc = not params.no_pbc
         self.dt = params.dt
         self.t_total = params.t_total
+        self.n_replicas = params.n_replicas
 
         #Nose-Hoover Thermostat stuff
         self.nvt_time = params.nvt_time
         self.targeEkin = 0.5 * (3.0 * self.n_particle) * self.temp
         #self.Q = 3.0 * self.n_particle * self.temp * (self.t_total * self.dt)**2
         self.Q = 3.0 * self.n_particle * self.temp * (50 * self.dt)**2 #found that this setting works well
-
+        self.zeta = torch.zeros((self.n_replicas, 1, 1)).to(self.device)
 
         self.diameter_viz = params.diameter_viz
         self.epsilon = params.epsilon
@@ -68,7 +75,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.nsteps = np.rint(self.t_total/self.dt).astype(np.int32)
         self.burn_in_frac = params.burn_in_frac
         self.nn = params.nn
-        self.n_replicas = params.n_replicas
         self.save_intermediate_rdf = params.save_intermediate_rdf
         self.exp_name = params.exp_name
 
@@ -94,12 +100,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.diffusion_loss_weight = params.diffusion_loss_weight
         self.vacf_loss_weight = params.vacf_loss_weight
 
-        #GPU
-        try:
-            self.device = torch.device(torch.cuda.current_device())
-        except:
-            self.device = "cpu"
-
         self.zeros = torch.zeros((1, 1, 3)).to(self.device)
         
         #limit CPU usage
@@ -108,9 +108,9 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #Register inner parameters
         self.model = model#.to(self.device)
         #model.train()
-        self.radii = nn.Parameter(radii_0.detach_(), requires_grad=True).to(self.device)
-        self.velocities = nn.Parameter(velocities_0.detach_(), requires_grad=True).to(self.device)
-        self.rdf = nn.Parameter(rdf_0.detach_(), requires_grad=True).to(self.device)
+        self.radii = nn.Parameter(radii_0.detach_().clone(), requires_grad=True).to(self.device)
+        self.velocities = nn.Parameter(velocities_0.detach_().clone(), requires_grad=True).to(self.device)
+        self.rdf = nn.Parameter(rdf_0.detach_().clone(), requires_grad=True).to(self.device)
         self.diff_coeff = nn.Parameter(torch.zeros((self.n_replicas,)), requires_grad=True).to(self.device)
         self.vacf = nn.Parameter(torch.zeros((self.n_replicas,self.vacf_window)), requires_grad=True).to(self.device)
 
@@ -430,13 +430,12 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
 
     #top level MD simulation code (i.e the "solver") that returns the optimal "parameter" -aka the equilibriated radii
-    def solve(self, zeta_initial=None):
+    def solve(self):
         
         self.running_dists = []
         self.running_vels = []
         self.last_h_radii = []
         self.last_h_velocities = []
-        
         #Initialize forces/potential of starting configuration
         with torch.no_grad():
             
@@ -444,7 +443,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             #Run MD
             print("Start MD trajectory", file=self.f)
             
-            zeta = zeta_initial if zeta_initial is not None else torch.zeros((self.n_replicas, 1, 1)).to(self.device)
+            zeta = self.zeta
             for step in tqdm(range(self.nsteps)):
                 self.step = step
                 
@@ -479,7 +478,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                         np.save(os.path.join(self.save_dir, filename), vacf.mean(dim = 0).cpu().detach().numpy())
             
             
-            self.f.close()
+            
             length = len(self.running_dists)
             self.zeta = zeta
             #compute diffusion coefficient
@@ -628,82 +627,94 @@ if __name__ == "__main__":
     if params.nn:
         writer = SummaryWriter(log_dir = results_dir)
     
-    
     for epoch in range(params.n_epochs):
+        rdf_loss = 0
+        vacf_loss = 0
+        diffusion_loss = 0
         print(f"Epoch {epoch+1}")
         restart = epoch==0 or (torch.rand(size=(1,)) < params.restart_probability).item()
-        #initialize simulator parameterized by a NN model
-        if restart: #start from FCC lattice
-            simulator = ImplicitMDSimulator(params, model, radii_0, velocities_0, rdf_0)
-        else: #continue from where we left off in the last epoch
-            simulator = ImplicitMDSimulator(params, model, equilibriated_simulator.radii, equilibriated_simulator.velocities, equilibriated_simulator.rdf)
+        
 
         optimizer.zero_grad()
 
         #run MD simulation to get equilibriated radii
-        start = time.time()
-        #if continuing simulation, initialize with equilibriated NVT coupling constant 
-        equilibriated_simulator = simulator.solve() if restart else simulator.solve(equilibriated_simulator.zeta)
-        end = time.time()
-        sim_time = end-start
-        print("MD simulation time (s): ", sim_time)
-        
-        #compute loss at the end of the trajectory
-        if params.nn:
-            rdf_loss = (equilibriated_simulator.rdf - gt_rdf).pow(2).mean()
-            diffusion_loss = (equilibriated_simulator.diff_coeff - gt_diff_coeff).pow(2).mean()# if params.diffusion_loss_weight != 0 else torch.Tensor([0.]).to(device)
-            vacf_loss = (equilibriated_simulator.vacf - gt_vacf).pow(2).mean()# if params.vacf_loss_weight != 0 else torch.Tensor([0.]).to(device)
-            outer_loss = params.rdf_loss_weight*rdf_loss + \
-                         params.diffusion_loss_weight*diffusion_loss + \
-                         params.vacf_loss_weight*vacf_loss
-            print(f"Loss: RDF={params.rdf_loss_weight*rdf_loss.item()}+Diffusion={params.diffusion_loss_weight*diffusion_loss.item()}+VACF={params.vacf_loss_weight*vacf_loss.item()}={outer_loss.item()}")
-            #compute (implicit) gradient of outer loss wrt model parameters
+        for i in range(10):
+            #if continuing simulation, initialize with equilibriated NVT coupling constant 
+            restart = i == 0
+            #initialize simulator parameterized by a NN model
+            if restart: #start from FCC lattice
+                simulator = ImplicitMDSimulator(params, model, radii_0, velocities_0, rdf_0)
+            else: #continue from where we left off in the last epoch
+                simulator = ImplicitMDSimulator(params, model, equilibriated_simulator.radii, equilibriated_simulator.velocities, equilibriated_simulator.rdf)
+            simulator.nsteps = np.rint(params.t_total/params.dt).astype(np.int32) if restart else 100
+            if not restart:
+                simulator.zeta = equilibriated_simulator.zeta
             start = time.time()
-            torch.autograd.backward(tensors = outer_loss, inputs = list(NN.parameters()))
+            equilibriated_simulator = simulator.solve()
             end = time.time()
-            grad_time = end-start
-            print("gradient calculation time (s): ",  grad_time)
+            sim_time = end-start
+            print("MD simulation time (s): ", sim_time)
+            
+            #compute loss at the end of the trajectory
+            if params.nn:
+                rdf_loss += (equilibriated_simulator.rdf - gt_rdf).pow(2).mean() / 10
+                diffusion_loss += (equilibriated_simulator.diff_coeff - gt_diff_coeff).pow(2).mean() / 10# if params.diffusion_loss_weight != 0 else torch.Tensor([0.]).to(device)
+                vacf_loss += (equilibriated_simulator.vacf - gt_vacf).pow(2).mean() / 10# if params.vacf_loss_weight != 0 else torch.Tensor([0.]).to(device)
 
-            #detach the radii and velocities after finished computing the gradient - saves some memory
-            equilibriated_simulator.last_h_radii = [radii.detach() for radii in equilibriated_simulator.last_h_radii]
-            equilibriated_simulator.last_h_velocities = [vels.detach() for vels in equilibriated_simulator.last_h_velocities]
-                
-            max_norm = 0
-            for param in model.parameters():
-                if param.grad is not None:
-                    norm = torch.linalg.vector_norm(param.grad, dim=-1).max()
-                    if  norm > max_norm:
-                        max_norm = norm
-            try:
-                print("Max norm: ", max_norm.item())
-            except AttributeError:
-                print("Max norm: ", max_norm)
-
-            optimizer.step()
-            scheduler.step(outer_loss)
-            #log stats
-            losses.append(outer_loss.item())
-            rdf_losses.append(rdf_loss.item())
-            diffusion_losses.append((diffusion_loss.sqrt()/gt_diff_coeff).item())
-            vacf_losses.append(vacf_loss.item())
-            sim_times.append(sim_time)
-            grad_times.append(grad_time)
-            try:
-                grad_norms.append(max_norm.item())
-            except:
-                grad_norms.append(max_norm)
-
-            writer.add_scalar('Loss', losses[-1], global_step=epoch+1)
-            writer.add_scalar('RDF Loss', rdf_losses[-1], global_step=epoch+1)
-            writer.add_scalar('Relative Diffusion Loss', diffusion_losses[-1], global_step=epoch+1)
-            writer.add_scalar('VACF Loss', vacf_losses[-1], global_step=epoch+1)
-            writer.add_scalar('Simulation Time', sim_times[-1], global_step=epoch+1)
-            writer.add_scalar('Gradient Time', grad_times[-1], global_step=epoch+1)
-            writer.add_scalar('Gradient Norm', grad_norms[-1], global_step=epoch+1)
+        simulator.f.close()
         
-        #print_active_torch_tensors()
+        outer_loss = params.rdf_loss_weight*rdf_loss + \
+                    params.diffusion_loss_weight*diffusion_loss + \
+                    params.vacf_loss_weight*vacf_loss
+        print(f"Loss: RDF={params.rdf_loss_weight*rdf_loss.item()}+Diffusion={params.diffusion_loss_weight*diffusion_loss.item()}+VACF={params.vacf_loss_weight*vacf_loss.item()}={outer_loss.item()}")
+        #compute (implicit) gradient of outer loss wrt model parameters
+        start = time.time()
+        torch.autograd.backward(tensors = outer_loss, inputs = list(NN.parameters()))
+        end = time.time()
+        grad_time = end-start
+        print("gradient calculation time (s): ",  grad_time)
+
+        #detach the radii and velocities after finished computing the gradient - saves some memory
+        equilibriated_simulator.last_h_radii = [radii.detach() for radii in equilibriated_simulator.last_h_radii]
+        equilibriated_simulator.last_h_velocities = [vels.detach() for vels in equilibriated_simulator.last_h_velocities]
+        
+        print_active_torch_tensors()
         # torch.cuda.empty_cache()
         # gc.collect()
+        max_norm = 0
+        for param in model.parameters():
+            if param.grad is not None:
+                norm = torch.linalg.vector_norm(param.grad, dim=-1).max()
+                if  norm > max_norm:
+                    max_norm = norm
+        try:
+            print("Max norm: ", max_norm.item())
+        except AttributeError:
+            print("Max norm: ", max_norm)
+
+        optimizer.step()
+        scheduler.step(outer_loss)
+        #log stats
+        losses.append(outer_loss.item())
+        rdf_losses.append(rdf_loss.item())
+        diffusion_losses.append((diffusion_loss.sqrt()/gt_diff_coeff).item())
+        vacf_losses.append(vacf_loss.item())
+        sim_times.append(sim_time)
+        grad_times.append(grad_time)
+        try:
+            grad_norms.append(max_norm.item())
+        except:
+            grad_norms.append(max_norm)
+
+        writer.add_scalar('Loss', losses[-1], global_step=epoch+1)
+        writer.add_scalar('RDF Loss', rdf_losses[-1], global_step=epoch+1)
+        writer.add_scalar('Relative Diffusion Loss', diffusion_losses[-1], global_step=epoch+1)
+        writer.add_scalar('VACF Loss', vacf_losses[-1], global_step=epoch+1)
+        writer.add_scalar('Simulation Time', sim_times[-1], global_step=epoch+1)
+        writer.add_scalar('Gradient Time', grad_times[-1], global_step=epoch+1)
+        writer.add_scalar('Gradient Norm', grad_norms[-1], global_step=epoch+1)
+    
+            
 
     
     if params.nn:
