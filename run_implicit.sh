@@ -16,6 +16,7 @@ python nve_implicit.py \
 --exp_name "TEST_memory" \
 --diffusion_window 1000 \
 --vacf_window 100 \
+--batch_size 1 \
 --lr 0.001 \
 --t_total 15 \
 --nvt_time 15 \

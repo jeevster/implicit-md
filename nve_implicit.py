@@ -560,6 +560,10 @@ if __name__ == "__main__":
     parser.add_argument('--rdf_loss_weight', type=float, default=1, help='coefficient in front of RDF loss term')
     parser.add_argument('--diffusion_loss_weight', type=float, default=100, help='coefficient in front of diffusion coefficient loss term')
     parser.add_argument('--vacf_loss_weight', type=float, default=100, help='coefficient in front of VACF loss term')
+    parser.add_argument('--batch_size', type=int, default=1, help='number of points along trajectory at which to measure loss')
+    parser.add_argument('--loss_measure_freq', type=int, default=100, help='gap with which to measure loss along trajectory')
+
+
 
     parser.add_argument('--lr', type=float, default=0.001, help='learning rate')
     parser.add_argument('--restart_probability', type=float, default=1.0, help='probability of restarting from FCC vs continuing simulation')
@@ -638,7 +642,7 @@ if __name__ == "__main__":
         optimizer.zero_grad()
 
         #run MD simulation to get equilibriated radii
-        for i in range(10):
+        for i in range(params.batch_size):
             #if continuing simulation, initialize with equilibriated NVT coupling constant 
             restart = i == 0
             #initialize simulator parameterized by a NN model
@@ -646,7 +650,7 @@ if __name__ == "__main__":
                 simulator = ImplicitMDSimulator(params, model, radii_0, velocities_0, rdf_0)
             else: #continue from where we left off in the last epoch
                 simulator = ImplicitMDSimulator(params, model, equilibriated_simulator.radii, equilibriated_simulator.velocities, equilibriated_simulator.rdf)
-            simulator.nsteps = np.rint(params.t_total/params.dt).astype(np.int32) if restart else 100
+            simulator.nsteps = np.rint(params.t_total/params.dt).astype(np.int32) if restart else np.max(params.vacf_window, params.loss_measure_freq)
             if not restart:
                 simulator.zeta = equilibriated_simulator.zeta
             start = time.time()
@@ -657,9 +661,9 @@ if __name__ == "__main__":
             
             #compute loss at the end of the trajectory
             if params.nn:
-                rdf_loss += (equilibriated_simulator.rdf - gt_rdf).pow(2).mean() / 10
-                diffusion_loss += (equilibriated_simulator.diff_coeff - gt_diff_coeff).pow(2).mean() / 10# if params.diffusion_loss_weight != 0 else torch.Tensor([0.]).to(device)
-                vacf_loss += (equilibriated_simulator.vacf - gt_vacf).pow(2).mean() / 10# if params.vacf_loss_weight != 0 else torch.Tensor([0.]).to(device)
+                rdf_loss += (equilibriated_simulator.rdf - gt_rdf).pow(2).mean() / params.batch_size
+                diffusion_loss += (equilibriated_simulator.diff_coeff - gt_diff_coeff).pow(2).mean() / params.batch_size# if params.diffusion_loss_weight != 0 else torch.Tensor([0.]).to(device)
+                vacf_loss += (equilibriated_simulator.vacf - gt_vacf).pow(2).mean() / params.batch_size# if params.vacf_loss_weight != 0 else torch.Tensor([0.]).to(device)
 
         simulator.f.close()
         
