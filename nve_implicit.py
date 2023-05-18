@@ -564,9 +564,6 @@ if __name__ == "__main__":
     parser.add_argument('--vacf_loss_weight', type=float, default=100, help='coefficient in front of VACF loss term')
     parser.add_argument('--batch_size', type=int, default=1, help='number of points along trajectory at which to measure loss')
     parser.add_argument('--loss_measure_freq', type=int, default=100, help='gap with which to measure loss along trajectory')
-
-
-
     parser.add_argument('--lr', type=float, default=0.001, help='learning rate')
     parser.add_argument('--restart_probability', type=float, default=1.0, help='probability of restarting from FCC vs continuing simulation')
 
@@ -638,7 +635,7 @@ if __name__ == "__main__":
         vacf_loss = 0
         diffusion_loss = 0
         print(f"Epoch {epoch+1}")
-        restart = epoch==0 or (torch.rand(size=(1,)) < params.restart_probability).item()
+        restart_override = epoch==0 or (torch.rand(size=(1,)) < params.restart_probability).item()
         
 
         optimizer.zero_grad()
@@ -646,11 +643,12 @@ if __name__ == "__main__":
         #run MD simulation to get equilibriated radii
         for i in range(params.batch_size):
             #if continuing simulation, initialize with equilibriated NVT coupling constant 
-            restart = i == 0
+            restart = i == 0 and restart_override
             #initialize simulator parameterized by a NN model
             if restart: #start from FCC lattice
+                print("Initialize from FCC lattice")
                 simulator = ImplicitMDSimulator(params, model, radii_0, velocities_0, rdf_0)
-            else: #continue from where we left off in the last epoch
+            else: #continue from where we left off in the last epoch/batch
                 simulator = ImplicitMDSimulator(params, model, equilibriated_simulator.radii, equilibriated_simulator.velocities, equilibriated_simulator.rdf)
                 
             simulator.nsteps = np.rint(params.t_total/params.dt).astype(np.int32) if restart else max(params.vacf_window, params.loss_measure_freq)
