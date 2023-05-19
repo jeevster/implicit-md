@@ -23,11 +23,8 @@ import shutil
 from torch.utils.tensorboard import SummaryWriter
 from sys import getrefcount
 from functorch import vmap
-
-
 from utils import radii_to_dists, fcc_positions, initialize_velocities, \
                     dump_params_to_yml, powerlaw_inv_cdf, print_active_torch_tensors
-
 
 
 class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.linear_solve.solve_normal_cg(maxiter=5, atol=0)):
@@ -145,9 +142,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             add = "_polylj" if self.poly else ""
             self.save_dir = os.path.join('ground_truth' + add, f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}")
 
-
-        
-
         os.makedirs(self.save_dir, exist_ok = True)
         dump_params_to_yml(self.params, self.save_dir)
 
@@ -168,6 +162,15 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         for param in ['radii', 'velocities', 'rdf', 'diff_coeff', 'vacf']:
                 self.register_parameter(param, None)
         return last_radii, last_velocities, last_rdf
+
+    def reset(self, radii, velocities, rdf):
+        self.radii = nn.Parameter(radii.detach_().clone(), requires_grad=True).to(self.device)
+        self.velocities = nn.Parameter(velocities.detach_().clone(), requires_grad=True).to(self.device)
+        self.rdf = nn.Parameter(rdf.detach_().clone(), requires_grad=True).to(self.device)
+        self.diff_coeff = nn.Parameter(torch.zeros((self.n_replicas,)), requires_grad=True).to(self.device)
+        self.vacf = nn.Parameter(torch.zeros((self.n_replicas,self.vacf_window)), requires_grad=True).to(self.device)
+
+
 
     def check_symmetric(self, a, mode, tol=1e-4):
         if mode == 'opposite':
@@ -218,7 +221,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
     def force_calc(self, radii, retain_grad = False):
         
         #Get rij matrix
-        
         with torch.enable_grad():
             r = radii.unsqueeze(-3) - radii.unsqueeze(-2)
             if not r.requires_grad:
@@ -245,14 +247,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                     # r2i = (1/dists)**2
                     
                     rep_term = parenth ** self.rep_power
-                    # attr_term = parenth ** self.attr_power
-                    # r_multiplier = r2i * (self.rep_power * rep_term - \
-                    #                 self.attr_power * attr_term) - 2*c_2/(self.sigma_pairs**2)
-
-                    # r3_multiplier = 4*c_4 / (self.sigma_pairs**4)
-                    
                     energy = torch.sum(rep_term + self.c_0 + self.c_2*parenth**-2 + self.c_4*parenth**-4)
-                    
                     forces = -compute_grad(inputs=r, output=energy) if retain_grad else -compute_grad(inputs=r, output=energy).detach()
                 
                 else:
@@ -342,8 +337,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                     new_dists = new_dists / self.sigma_pairs
                 self.running_dists.append(new_dists.cpu().detach())
                 self.running_vels.append(torch.linalg.norm(velocities, dim = -1).cpu().detach())
-
-
 
         return radii, velocities, forces, zeta, new_rdf, new_velhist
         
@@ -661,7 +654,7 @@ if __name__ == "__main__":
                 print("Initialize from FCC lattice")
                 simulator = ImplicitMDSimulator(params, model, radii_0, velocities_0, rdf_0)
             else: #continue from where we left off in the last epoch/batch
-                simulator = ImplicitMDSimulator(params, model, last_radii, last_velocities, last_rdf)
+                simulator.reset(last_radii, last_velocities, last_rdf)
                 
             simulator.nsteps = np.rint(params.t_total/params.dt).astype(np.int32) if restart else max(params.vacf_window, params.loss_measure_freq)
             if not restart:
@@ -695,7 +688,7 @@ if __name__ == "__main__":
 
         equilibriated_simulator.cleanup()
 
-        print_active_torch_tensors()
+        #print_active_torch_tensors()
         torch.cuda.empty_cache()
         gc.collect()
         max_norm = 0

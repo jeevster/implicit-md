@@ -16,7 +16,7 @@ python nve_implicit.py \
 --exp_name "TEST_random" \
 --diffusion_window 1000 \
 --vacf_window 100 \
---batch_size 1 \
+--batch_size 10 \
 --lr 0.001 \
 --t_total 1 \
 --nvt_time 1 \
