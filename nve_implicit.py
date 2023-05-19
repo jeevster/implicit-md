@@ -156,6 +156,18 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.t = gsd.hoomd.open(name=f'{self.save_dir}/sim_temp{self.temp}.gsd', mode='wb') 
         self.n_dump = params.n_dump # dump for configuration
 
+    '''memory cleanups'''
+    def cleanup(self):
+        #detach the radii and velocities - saves some memory
+        self.last_h_radii = [radii.detach() for radii in self.last_h_radii]
+        self.last_h_velocities = [vels.detach() for vels in self.last_h_velocities]
+        last_radii = self.radii
+        last_velocities = self.velocities
+        last_rdf = self.rdf
+        #de-register all the parameters to kill the gradients
+        for param in ['radii', 'velocities', 'rdf', 'diff_coeff', 'vacf']:
+                self.register_parameter(param, None)
+        return last_radii, last_velocities, last_rdf
 
     def check_symmetric(self, a, mode, tol=1e-4):
         if mode == 'opposite':
@@ -649,7 +661,7 @@ if __name__ == "__main__":
                 print("Initialize from FCC lattice")
                 simulator = ImplicitMDSimulator(params, model, radii_0, velocities_0, rdf_0)
             else: #continue from where we left off in the last epoch/batch
-                simulator = ImplicitMDSimulator(params, model, equilibriated_simulator.radii, equilibriated_simulator.velocities, equilibriated_simulator.rdf)
+                simulator = ImplicitMDSimulator(params, model, last_radii, last_velocities, last_rdf)
                 
             simulator.nsteps = np.rint(params.t_total/params.dt).astype(np.int32) if restart else max(params.vacf_window, params.loss_measure_freq)
             if not restart:
@@ -666,9 +678,8 @@ if __name__ == "__main__":
                 diffusion_loss += (equilibriated_simulator.diff_coeff - gt_diff_coeff).pow(2).mean() / params.batch_size# if params.diffusion_loss_weight != 0 else torch.Tensor([0.]).to(device)
                 vacf_loss += (equilibriated_simulator.vacf - gt_vacf).pow(2).mean() / params.batch_size# if params.vacf_loss_weight != 0 else torch.Tensor([0.]).to(device)
 
-            #detach the radii and velocities - saves some memory
-            equilibriated_simulator.last_h_radii = [radii.detach() for radii in equilibriated_simulator.last_h_radii]
-            equilibriated_simulator.last_h_velocities = [vels.detach() for vels in equilibriated_simulator.last_h_velocities]
+            #memory cleanup
+            last_radii, last_velocities, last_rdf = equilibriated_simulator.cleanup()
         simulator.f.close()
         
         outer_loss = params.rdf_loss_weight*rdf_loss + \
@@ -682,10 +693,11 @@ if __name__ == "__main__":
         grad_time = end-start
         print("gradient calculation time (s): ",  grad_time)
 
-        
-        #print_active_torch_tensors()
-        # torch.cuda.empty_cache()
-        # gc.collect()
+        equilibriated_simulator.cleanup()
+
+        print_active_torch_tensors()
+        torch.cuda.empty_cache()
+        gc.collect()
         max_norm = 0
         for param in model.parameters():
             if param.grad is not None:
