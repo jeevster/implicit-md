@@ -619,7 +619,7 @@ if __name__ == "__main__":
 
     #initialize outer loop optimizer/scheduler
     optimizer = torch.optim.Adam(list(NN.parameters()), lr=params.lr)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=5)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=10)
 
     if not params.nn:
         params.n_epochs = 1

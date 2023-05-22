@@ -13,13 +13,13 @@ python nve_implicit.py \
 --dt 0.005 \
 --dr 0.01 \
 --dv 0.1 \
---exp_name "TEST_random" \
+--exp_name "TEST_ift_onestepjacobian" \
 --diffusion_window 1000 \
 --vacf_window 100 \
 --batch_size 10 \
 --lr 0.001 \
---t_total 1 \
---nvt_time 1 \
+--t_total 15 \
+--nvt_time 15 \
 --n_replicas 1 \
 --diameter_viz 0.3 \
 --n_dump 20 \
@@ -34,4 +34,3 @@ python nve_implicit.py \
 --n_width 128 \
 --n_layers 3 \
 --nonlinear 'ELU'
-
