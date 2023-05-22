@@ -6,6 +6,7 @@ import math
 import yaml
 import os
 import gc
+import matplotlib.pyplot as plt
 
 
 def radii_to_dists(radii, params):
@@ -83,3 +84,25 @@ def print_active_torch_tensors():
         except:
             pass
     print(f"{count} tensors in memory")
+
+'''Helper function to compare true underlying potential to the learned one'''
+def plot_pair(epoch, path, model, device, end, target_pot): 
+
+    x = torch.linspace(0.1, end, 250)[:, None].to(device)
+    u_fit = torch.Tensor([model(i) for i in x]).detach().cpu().numpy()
+    u_target = torch.Tensor([target_pot(i) for i in x]).detach().cpu().numpy()
+
+    plt.plot( x.detach().cpu().numpy(), 
+              u_fit, 
+              label='fit', linewidth=4, alpha=0.6)
+    
+    plt.plot( x.detach().cpu().numpy(), 
+              u_target,
+               label='truth', 
+               linewidth=2,linestyle='--', c='black')
+    plt.ylim(-2, 6.0)
+    plt.legend()      
+    plt.show()
+    plt.savefig(os.path.join(path, 'potential_{}.jpg'.format(epoch)), bbox_inches='tight')
+    plt.close()
+

@@ -13,7 +13,7 @@ python nve_implicit.py \
 --dt 0.005 \
 --dr 0.01 \
 --dv 0.1 \
---exp_name "TEST_ift_onestepjacobian" \
+--exp_name "TEST_vacf+rdf_aggregategrads_bs10_plotpair" \
 --diffusion_window 1000 \
 --vacf_window 100 \
 --batch_size 10 \

@@ -24,7 +24,7 @@ from torch.utils.tensorboard import SummaryWriter
 from sys import getrefcount
 from functorch import vmap
 from utils import radii_to_dists, fcc_positions, initialize_velocities, \
-                    dump_params_to_yml, powerlaw_inv_cdf, print_active_torch_tensors
+                    dump_params_to_yml, powerlaw_inv_cdf, print_active_torch_tensors, plot_pair
 
 
 class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.linear_solve.solve_normal_cg(maxiter=5, atol=0)):
@@ -120,7 +120,9 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             sigma2 = self.particle_sigmas.unsqueeze(2)
             self.sigma_pairs = 1/2 * (sigma1 + sigma2)*(1 - self.epsilon*torch.abs(sigma1 - sigma2))
             self.sigma_pairs = self.sigma_pairs[:, ~torch.eye(self.sigma_pairs.shape[1],dtype=bool)].reshape(self.n_replicas, self.sigma_pairs.shape[1], -1, 1).to(self.device)
-        
+        else:
+            #TODO: come up with a general function for polydisperse LJ systems
+            self.energy_fn = LJFamily(epsilon=self.epsilon, sigma=self.sigma, rep_pow=self.rep_power, attr_pow=self.attr_power)
 
         #define vectorized differentiable rdf and velhist
         self.diff_rdf = vmap(DifferentiableRDF(params, self.device), -1)
@@ -218,6 +220,14 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
 
     '''CORE MD OPERATIONS'''
+    def poly_potential(self, dists, sigma_pairs = None):
+        s = self.sigma_pairs if sigma_pairs is None else sigma_pairs
+        parenth = (s/dists)
+        rep_term = parenth ** 12
+        energy = torch.sum(rep_term + self.c_0 + self.c_2*parenth**-2 + self.c_4*parenth**-4, dim = -1)
+        energy[(dists > self.cutoff).squeeze(-1)] = 0
+        return energy
+
     def force_calc(self, radii, retain_grad = False):
         
         #Get rij matrix
@@ -243,20 +253,15 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             #LJ potential
             else:
                 if self.poly: #repulsive
-                    parenth = (self.sigma_pairs/dists)
-                    # r2i = (1/dists)**2
-                    
-                    rep_term = parenth ** self.rep_power
-                    energy = torch.sum(rep_term + self.c_0 + self.c_2*parenth**-2 + self.c_4*parenth**-4)
+                    energy = self.poly_potential(dists)
                     forces = -compute_grad(inputs=r, output=energy) if retain_grad else -compute_grad(inputs=r, output=energy).detach()
                 
                 else:
-                    r2i = (self.sigma/dists)**2
-                    r6i = r2i**3
-                    energy = 2*self.epsilon*torch.sum(r6i*(r6i - 1))
-                    #reuse components of potential to calculate virial and forces
-                    internal_virial = -48*self.epsilon*r6i*(r6i - 0.5)/(self.sigma**2)
-                    forces = -internal_virial*r*r2i
+                    energy = self.energy_fn(dists)
+                    # #reuse components of potential to calculate virial and forces
+                    # internal_virial = -48*self.epsilon*r6i*(r6i - 0.5)/(self.sigma**2)
+                    # forces = -internal_virial*r*r2i
+                    forces = -compute_grad(inputs=r, output=energy) if retain_grad else -compute_grad(inputs=r, output=energy).detach()
 
                 #calculate which forces to keep
                 keep = dists/self.sigma_pairs <= self.cutoff if self.poly else dists/self.sigma <= self.cutoff
@@ -264,8 +269,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                 #apply cutoff
                 forces = torch.where(~keep, self.zeros, forces)
 
-                    
-        # #Ensure no NaNs
+        #Ensure no NaNs
         assert(not torch.any(torch.isnan(forces)))
         
         #sum forces across particles
@@ -513,6 +517,10 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
             filename ="gt_velhist.npy" if not self.nn else f"velhist_epoch{epoch+1}.npy"
             np.save(os.path.join(self.save_dir, filename), save_velhist.mean(dim=0).cpu().detach().numpy())
+
+            #plot true and current energy functions
+            plot_pair(epoch, self.save_dir, self.model, self.device, end=2.5, target_pot=lambda dists: self.poly_potential(dists, sigma_pairs = 1) if self.poly else self.energy_fn)
+
         return self
 
         
