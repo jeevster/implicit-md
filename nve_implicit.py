@@ -27,7 +27,7 @@ from utils import radii_to_dists, fcc_positions, initialize_velocities, \
                     dump_params_to_yml, powerlaw_inv_cdf, print_active_torch_tensors, plot_pair
 
 
-class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.linear_solve.solve_normal_cg(maxiter=5, atol=0)):
+class ImplicitMDSimulator():
     def __init__(self, params, model, radii_0, velocities_0, rdf_0):
         super(ImplicitMDSimulator, self).__init__()
 
@@ -225,6 +225,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         parenth = (s/dists)
         rep_term = parenth ** 12
         energy = torch.sum(rep_term + self.c_0 + self.c_2*parenth**-2 + self.c_4*parenth**-4, dim = -1)
+        #TODO: look at this - not quite right
         energy[(dists > self.cutoff).squeeze(-1)] = 0
         return energy
 
@@ -447,6 +448,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.running_vels = []
         self.last_h_radii = []
         self.last_h_velocities = []
+        self.running_radii = []
         #Initialize forces/potential of starting configuration
         with torch.no_grad():
             
@@ -474,6 +476,10 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                 self.radii.copy_(radii)
                 self.velocities.copy_(velocities)
                 self.rdf.copy_(rdf)
+
+                #save equilibriated radiis for backward pass
+                if step > self.eq_steps and step % self.n_dump == 0: 
+                    self.running_radii.append(self.radii.detach())
                 
                 if not self.nn and self.save_intermediate_rdf and step % self.n_dump == 0:
                     filename = f"step{step+1}_rdf.npy"
@@ -488,7 +494,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                         filename = f"step{step+1}_vacf.npy"
                         np.save(os.path.join(self.save_dir, filename), vacf.mean(dim = 0).cpu().detach().numpy())
             
-            
+
+                
             
             length = len(self.running_dists)
             self.zeta = zeta
@@ -523,6 +530,25 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
         return self
 
+class Stochastic_IFT(torch.autograd.Function):
+    def __init__(self, simulator):
+        super(Stochastic_IFT, self).__init__()
+
+    @staticmethod
+    def forward(ctx, *args):
+        with torch.no_grad():
+            simulator.eq_steps = 100
+            simulator.nsteps = 400
+            equilibriated_simulator = simulator.solve()
+            radiis = equilibriated_simulator.running_radii
+            
+        ctx.save_for_backward(radiis)
+        return equilibriated_simulator
+
+    @staticmethod
+    def backward(ctx, *grad_output):
+        import pdb; pdb.set_trace()
+        return None
         
 if __name__ == "__main__":
 
@@ -663,15 +689,17 @@ if __name__ == "__main__":
                 simulator = ImplicitMDSimulator(params, model, radii_0, velocities_0, rdf_0)
             else: #continue from where we left off in the last epoch/batch
                 simulator.reset(last_radii, last_velocities, last_rdf)
-                
-            simulator.nsteps = np.rint(params.t_total/params.dt).astype(np.int32) if restart else max(params.vacf_window, params.loss_measure_freq)
-            if not restart:
-                simulator.zeta = equilibriated_simulator.zeta
-            start = time.time()
-            equilibriated_simulator = simulator.solve()
-            end = time.time()
-            sim_time = end-start
-            print("MD simulation time (s): ", sim_time)
+            
+            top_level = Stochastic_IFT(simulator)
+            equilibriated_simulator = top_level.apply()
+            # simulator.nsteps = np.rint(params.t_total/params.dt).astype(np.int32) if restart else max(params.vacf_window, params.loss_measure_freq)
+            # if not restart:
+            #     simulator.zeta = equilibriated_simulator.zeta
+            # start = time.time()
+            # equilibriated_simulator = simulator.solve()
+            # end = time.time()
+            # sim_time = end-start
+            # print("MD simulation time (s): ", sim_time)
             
             #compute loss at the end of the trajectory
             if params.nn:
@@ -680,7 +708,7 @@ if __name__ == "__main__":
                 vacf_loss += (equilibriated_simulator.vacf - gt_vacf).pow(2).mean() / params.batch_size# if params.vacf_loss_weight != 0 else torch.Tensor([0.]).to(device)
 
             #memory cleanup
-            last_radii, last_velocities, last_rdf = equilibriated_simulator.cleanup()
+            #last_radii, last_velocities, last_rdf = equilibriated_simulator.cleanup()
         simulator.f.close()
         
         outer_loss = params.rdf_loss_weight*rdf_loss + \
@@ -689,12 +717,13 @@ if __name__ == "__main__":
         print(f"Loss: RDF={params.rdf_loss_weight*rdf_loss.item()}+Diffusion={params.diffusion_loss_weight*diffusion_loss.item()}+VACF={params.vacf_loss_weight*vacf_loss.item()}={outer_loss.item()}")
         #compute (implicit) gradient of outer loss wrt model parameters
         start = time.time()
+        import pdb; pdb.set_trace()
         torch.autograd.backward(tensors = outer_loss, inputs = list(NN.parameters()))
         end = time.time()
         grad_time = end-start
         print("gradient calculation time (s): ",  grad_time)
 
-        equilibriated_simulator.cleanup()
+        #equilibriated_simulator.cleanup()
 
         #print_active_torch_tensors()
         torch.cuda.empty_cache()
