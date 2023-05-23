@@ -106,3 +106,32 @@ def plot_pair(epoch, path, model, device, end, target_pot):
     plt.savefig(os.path.join(path, 'potential_{}.jpg'.format(epoch)), bbox_inches='tight')
     plt.close()
 
+
+def mean_across_lists(list_of_lists):
+    num_lists = len(list_of_lists)
+    num_tensors = len(list_of_lists[0])
+
+    means = []
+    for i in range(num_tensors):
+        tensor_sum = None
+        tensor_count = 0
+
+        for j in range(num_lists):
+            tensor = list_of_lists[j][i]
+
+            if tensor_sum is None:
+                tensor_sum = tensor
+            else:
+                tensor_sum += tensor
+
+            tensor_count += 1
+
+        tensor_mean = tensor_sum / tensor_count
+        means.append(tensor_mean)
+
+    return means
+
+
+def subtract_across_lists(list1, list2):
+    return [l1 - l2 for (l1, l2) in zip(list1, list2)]
+    

@@ -24,7 +24,7 @@ from torch.utils.tensorboard import SummaryWriter
 from sys import getrefcount
 from functorch import vmap
 from utils import radii_to_dists, fcc_positions, initialize_velocities, \
-                    dump_params_to_yml, powerlaw_inv_cdf, print_active_torch_tensors, plot_pair
+                    dump_params_to_yml, powerlaw_inv_cdf, print_active_torch_tensors, plot_pair, mean_across_lists, subtract_across_lists
 
 
 class ImplicitMDSimulator():
@@ -531,23 +531,36 @@ class ImplicitMDSimulator():
         return self
 
 class Stochastic_IFT(torch.autograd.Function):
-    def __init__(self, simulator):
+    def __init__(self):
         super(Stochastic_IFT, self).__init__()
+        
 
     @staticmethod
     def forward(ctx, *args):
-        with torch.no_grad():
+        simulator = args[0]
+        with torch.enable_grad():
+            
             simulator.eq_steps = 100
             simulator.nsteps = 400
             equilibriated_simulator = simulator.solve()
-            radiis = equilibriated_simulator.running_radii
-            
-        ctx.save_for_backward(radiis)
+            ctx.save_for_backward(equilibriated_simulator)
+
         return equilibriated_simulator
 
     @staticmethod
     def backward(ctx, *grad_output):
         import pdb; pdb.set_trace()
+        equilibriated_simulator = ctx.saved_tensors
+        #gradient calculation using Fabian's method
+        model = equilibriated_simulator.model
+        radii = equilibriated_simulator.running_radii
+        dists = [radii_to_dists(r, simulator.params) for r in radii]
+        energies = [model((d/simulator.sigma_pairs)) if simulator.poly else model(d) for d in dists]
+        grads = [compute_grad(inputs=model.parameters(), output=energy / simulator.temp) for energy in energies]
+        grads_except = lambda i: grads[:i] + grads[i+1:]
+        gradient_estimator = mean_across_lists([subtract_across_lists(grads[i], mean_across_lists(grads_except(i))) for i in range(len(grads))])
+    
+        
         return None
         
 if __name__ == "__main__":
@@ -690,8 +703,8 @@ if __name__ == "__main__":
             else: #continue from where we left off in the last epoch/batch
                 simulator.reset(last_radii, last_velocities, last_rdf)
             
-            top_level = Stochastic_IFT(simulator)
-            equilibriated_simulator = top_level.apply()
+            top_level = Stochastic_IFT()
+            equilibriated_simulator = top_level.apply(simulator)
             # simulator.nsteps = np.rint(params.t_total/params.dt).astype(np.int32) if restart else max(params.vacf_window, params.loss_measure_freq)
             # if not restart:
             #     simulator.zeta = equilibriated_simulator.zeta

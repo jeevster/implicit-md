@@ -12,18 +12,17 @@ def compute_grad(inputs, output, create_graph=True, retain_graph=True):
     Returns:
         torch.Tensor: gradients with respect to each input component 
     """
-
-    assert inputs.requires_grad
+    try:
+        assert inputs.requires_grad
+    except AttributeError:
+        pass
     
-    #import pdb; pdb.set_trace()
+    
 
     # gradspred, = grad(output, inputs, grad_outputs=output.data.new(output.shape).fill_(1),
     #             create_graph=create_graph, retain_graph=retain_graph)
-    
-    gradspred, = grad(output, inputs,
-                create_graph=create_graph, retain_graph=retain_graph)
-    
-    return gradspred
+    gradspred = grad(output, inputs, create_graph=create_graph, retain_graph=retain_graph)
+    return gradspred[0] if len(gradspred) == 1 else gradspred
 
 
 def gen(src, index, dim=-1, out=None, dim_size=None, fill_value=0):
