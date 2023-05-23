@@ -225,7 +225,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         parenth = (s/dists)
         rep_term = parenth ** 12
         energy = torch.sum(rep_term + self.c_0 + self.c_2*parenth**-2 + self.c_4*parenth**-4, dim = -1)
-        energy[(dists > self.cutoff).squeeze(-1)] = 0
+        energy[(dists/s > self.cutoff).squeeze(-1)] = 0
         return energy
 
     def force_calc(self, radii, retain_grad = False):
@@ -523,6 +523,16 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
         return self
 
+    def save_checkpoint(self, best=False):
+        name = "best_ckpt.pt" if best else "ckpt.pt"
+        checkpoint_path = os.path.join(self.save_dir, name)
+        torch.save({'model_state': self.model.state_dict()}, checkpoint_path)
+
+    def restore_checkpoint(self, best=False):
+        name = "best_ckpt.pt" if best else "ckpt.pt"
+        checkpoint_path = os.path.join(self.save_dir, name)
+        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        self.model.load_state_dict(checkpoint['model_state'])
         
 if __name__ == "__main__":
 
@@ -540,6 +550,10 @@ if __name__ == "__main__":
     parser.add_argument('--epsilon', type=float, default=1.0, help='LJ epsilon')
     parser.add_argument('--rep_power', type=float, default=12, help='LJ repulsive exponent')
     parser.add_argument('--attr_power', type=float, default=0, help='LJ attractive exponent')
+    parser.add_argument('--prior_rep_power', type=float, default=6, help='Prior potential repulsive exponent')
+    parser.add_argument('--prior_attr_power', type=float, default=0, help='Prior potential attractive exponent')
+    parser.add_argument('--prior_epsilon', type=float, default=1.0, help='Prior potential epsilon value')
+    parser.add_argument('--prior_sigma', type=float, default=1.0, help='Prior potential sigma value')
     parser.add_argument('--poly', action='store_true', help='vary sigma (diameter) of each particle according to power law')
     parser.add_argument('--poly_power', type=float, default = -3.0, help='power of power law')
     parser.add_argument('--min_sigma', type=float, default = 0.5, help='minimum sigma for power law distribution')
@@ -607,7 +621,7 @@ if __name__ == "__main__":
     NN = pairMLP(**mlp_params)
 
     #prior potential only contains repulsive term
-    prior = LJFamily(epsilon=params.epsilon, sigma=params.sigma, rep_pow=6, attr_pow=0)
+    prior = LJFamily(epsilon=params.prior_epsilon, sigma=params.prior_sigma, rep_pow=params.prior_rep_power, attr_pow=params.prior_attr_power)
 
     model = Stack({'nn': NN, 'prior': prior}).to(device)
     radii_0 = fcc_positions(params.n_particle, params.box, device).unsqueeze(0).repeat(params.n_replicas, 1, 1)
@@ -640,6 +654,7 @@ if __name__ == "__main__":
     grad_times = []
     sim_times = []
     grad_norms = []
+    best_outer_loss = 100
     if params.nn:
         writer = SummaryWriter(log_dir = results_dir)
     
@@ -647,6 +662,7 @@ if __name__ == "__main__":
         rdf_loss = 0
         vacf_loss = 0
         diffusion_loss = 0
+        best = False
         print(f"Epoch {epoch+1}")
         restart_override = epoch==0 or (torch.rand(size=(1,)) < params.restart_probability).item()
         
@@ -693,6 +709,12 @@ if __name__ == "__main__":
         end = time.time()
         grad_time = end-start
         print("gradient calculation time (s): ",  grad_time)
+
+        #checkpointing
+        if outer_loss < best_outer_loss:
+            best_outer_loss = outer_loss
+            best = True
+        simulator.save_checkpoint(best = best)
 
         equilibriated_simulator.cleanup()
 
