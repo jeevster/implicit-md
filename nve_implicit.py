@@ -519,7 +519,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             np.save(os.path.join(self.save_dir, filename), save_velhist.mean(dim=0).cpu().detach().numpy())
 
             #plot true and current energy functions
-            plot_pair(epoch, self.save_dir, self.model, self.device, end=2.5, target_pot=lambda dists: self.poly_potential(dists, sigma_pairs = 1) if self.poly else self.energy_fn)
+            plot_pair(epoch, self.save_dir, self.model, self.device, end=self.cutoff, target_pot=lambda dists: self.poly_potential(dists, sigma_pairs = 1) if self.poly else self.energy_fn)
 
         return self
 
