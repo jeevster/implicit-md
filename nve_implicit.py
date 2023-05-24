@@ -443,7 +443,6 @@ class ImplicitMDSimulator():
 
     #top level MD simulation code (i.e the "solver") that returns the optimal "parameter" -aka the equilibriated radii
     def solve(self):
-        
         self.running_dists = []
         self.running_vels = []
         self.last_h_radii = []
@@ -457,26 +456,56 @@ class ImplicitMDSimulator():
             print("Start MD trajectory", file=self.f)
             
             zeta = self.zeta
-            for step in tqdm(range(self.nsteps)):
+            radii = self.radii
+            velocities = self.velocities
+            diffusion_grad_start = self.nsteps - self.diffusion_window if self.diffusion_loss_weight !=0 else self.nsteps
+            vacf_grad_start = self.nsteps - self.vacf_window if self.vacf_loss_weight !=0 else self.nsteps
+            no_grad_override = 0 if self.save_intermediate_rdf or not self.nn else self.nsteps
+            num_no_grad_steps = min(self.nsteps, diffusion_grad_start, vacf_grad_start, no_grad_override)
+            #start no grad steps
+            for step in tqdm(range(num_no_grad_steps)):
                 self.step = step
                 
                 calc_rdf = step ==  self.nsteps -1 or self.save_intermediate_rdf or not self.nn
                 calc_diffusion = (step >= self.nsteps - self.diffusion_window) or self.save_intermediate_rdf or not self.nn #calculate diffusion coefficient if within window from the end
                 calc_vacf = (step >= self.nsteps - self.vacf_window) or self.save_intermediate_rdf or not self.nn #calculate VACF if within window from the end
 
-                with torch.enable_grad() if (calc_diffusion and self.diffusion_loss_weight!=0) or (calc_vacf and self.diffusion_loss_weight!=0) else nullcontext():
-                    if step < self.n_nvt_steps: #NVT step
-                        radii, velocities, forces, zeta, rdf, velhist = self.forward_nvt(self.radii, self.velocities, forces, zeta, calc_rdf = calc_rdf, calc_diffusion=calc_diffusion, calc_vacf = calc_vacf)
-                    else: # NVE step
-                        if step == self.n_nvt_steps:
-                            print("NVT Equilibration Complete, switching to NVE", file=self.f)
-                        radii, velocities, forces, rdf, velhist = self.forward(self.radii, self.velocities, forces, calc_rdf = calc_rdf, calc_diffusion=calc_diffusion, calc_vacf = calc_vacf)
+                #MD step
+                radii, velocities, forces, zeta, rdf, velhist = self.forward_nvt(radii, velocities, forces, zeta, calc_rdf = calc_rdf, calc_diffusion=calc_diffusion, calc_vacf = calc_vacf)
+                
+                #save equilibriated radiis for backward pass
+                if step > self.eq_steps and step % self.n_dump == 0: 
+                    self.running_radii.append(self.radii.detach())
+                
+                if not self.nn and self.save_intermediate_rdf and step % self.n_dump == 0:
+                    filename = f"step{step+1}_rdf.npy"
+                    np.save(os.path.join(self.save_dir, filename), rdf.mean(dim = 0).cpu().detach().numpy())
 
-                #update values
-                self.radii.copy_(radii)
-                self.velocities.copy_(velocities)
-                self.rdf.copy_(rdf)
+                    filename = f"step{step+1}_velhist.npy"
+                    np.save(os.path.join(self.save_dir, filename), velhist.mean(dim = 0).cpu().detach().numpy())
 
+                    if step > self.vacf_window:
+                        last_h_vels = torch.cat(self.last_h_velocities[-self.vacf_window:], dim = 0).permute((1,0,2,3))
+                        vacf = self.diff_vacf(last_h_vels)
+                        filename = f"step{step+1}_vacf.npy"
+                        np.save(os.path.join(self.save_dir, filename), vacf.mean(dim = 0).cpu().detach().numpy())
+        #now do grad steps
+        print("Switching over to gradient enabled steps")
+        with torch.enable_grad():
+            self.radii = radii.requires_grad_(True)
+            self.velocities = velocities.requires_grad_(True)
+
+            for step in tqdm(range(num_no_grad_steps, self.nsteps)):
+                self.step = step
+                retain_grad = step >= self.nsteps -2
+                
+                calc_rdf = step ==  self.nsteps -1 or self.save_intermediate_rdf or not self.nn
+                calc_diffusion = (step >= self.nsteps - self.diffusion_window) or self.save_intermediate_rdf or not self.nn #calculate diffusion coefficient if within window from the end
+                calc_vacf = (step >= self.nsteps - self.vacf_window) or self.save_intermediate_rdf or not self.nn #calculate VACF if within window from the end
+
+                #MD step
+                self.radii, self.velocities, forces, zeta, self.rdf, velhist = self.forward_nvt(self.radii, self.velocities, forces, zeta, calc_rdf = calc_rdf, calc_diffusion=calc_diffusion, calc_vacf = calc_vacf, retain_grad = retain_grad)
+                
                 #save equilibriated radiis for backward pass
                 if step > self.eq_steps and step % self.n_dump == 0: 
                     self.running_radii.append(self.radii.detach())
@@ -493,40 +522,38 @@ class ImplicitMDSimulator():
                         vacf = self.diff_vacf(last_h_vels)
                         filename = f"step{step+1}_vacf.npy"
                         np.save(os.path.join(self.save_dir, filename), vacf.mean(dim = 0).cpu().detach().numpy())
-            
 
-                
-            
-            length = len(self.running_dists)
-            self.zeta = zeta
-            #compute diffusion coefficient
-            #if self.diffusion_loss_weight != 0 or not self.nn:
-            msd_data = msd(torch.cat(self.last_h_radii, dim=0), self.box)
-            diffusion_coeff = self.diffusion_coefficient(msd_data)
-            self.diff_coeff.copy_(diffusion_coeff)
-            
-            filename ="gt_diff_coeff.npy" if not self.nn else f"diff_coeff_epoch{epoch+1}.npy"
-            np.save(os.path.join(self.save_dir, filename), diffusion_coeff.mean().cpu().detach().numpy())
+        #postprocessing stuff
+        length = len(self.running_dists)
+        self.zeta = zeta
+        #compute diffusion coefficient
+        #if self.diffusion_loss_weight != 0 or not self.nn:
+        msd_data = msd(torch.cat(self.last_h_radii, dim=0), self.box)
+        diffusion_coeff = self.diffusion_coefficient(msd_data)
+        self.diff_coeff.copy_(diffusion_coeff)
+        
+        filename ="gt_diff_coeff.npy" if not self.nn else f"diff_coeff_epoch{epoch+1}.npy"
+        np.save(os.path.join(self.save_dir, filename), diffusion_coeff.mean().cpu().detach().numpy())
 
-            #compute VACF
-            #if self.vacf_loss_weight != 0 or not self.nn:
-            last_h_vels = torch.cat(self.last_h_velocities, dim = 0).permute((1,0,2,3))
-            vacf = self.diff_vacf(last_h_vels)
-            self.vacf.copy_(vacf)
-            filename ="gt_vacf.npy" if not self.nn else f"vacf_epoch{epoch+1}.npy"
-            np.save(os.path.join(self.save_dir, filename), vacf.mean(dim=0).cpu().detach().numpy())
+        #compute VACF
+        #if self.vacf_loss_weight != 0 or not self.nn:
+        last_h_vels = torch.cat(self.last_h_velocities, dim = 0).permute((1,0,2,3))
+        vacf = self.diff_vacf(last_h_vels)
+        self.vacf.copy_(vacf)
+        filename ="gt_vacf.npy" if not self.nn else f"vacf_epoch{epoch+1}.npy"
+        np.save(os.path.join(self.save_dir, filename), vacf.mean(dim=0).cpu().detach().numpy())
 
-            #compute ground truth rdf over entire trajectory (do it on CPU to avoid memory issues)
-            save_velhist = self.diff_vel_hist_cpu(torch.stack(self.running_vels[int(self.burn_in_frac*length):], dim = 1)) if not self.nn else velhist
-            save_rdf = self.diff_rdf_cpu(self.running_dists[int(self.burn_in_frac*length):]) if not self.nn else self.rdf
-            filename ="gt_rdf.npy" if not self.nn else f"rdf_epoch{epoch+1}.npy"
-            np.save(os.path.join(self.save_dir, filename), save_rdf.mean(dim=0).cpu().detach().numpy())
+        #compute ground truth rdf over entire trajectory (do it on CPU to avoid memory issues)
+        save_velhist = self.diff_vel_hist_cpu(torch.stack(self.running_vels[int(self.burn_in_frac*length):], dim = 1)) if not self.nn else velhist
+        save_rdf = self.diff_rdf_cpu(self.running_dists[int(self.burn_in_frac*length):]) if not self.nn else self.rdf
+        filename ="gt_rdf.npy" if not self.nn else f"rdf_epoch{epoch+1}.npy"
+        np.save(os.path.join(self.save_dir, filename), save_rdf.mean(dim=0).cpu().detach().numpy())
 
-            filename ="gt_velhist.npy" if not self.nn else f"velhist_epoch{epoch+1}.npy"
-            np.save(os.path.join(self.save_dir, filename), save_velhist.mean(dim=0).cpu().detach().numpy())
+        filename ="gt_velhist.npy" if not self.nn else f"velhist_epoch{epoch+1}.npy"
+        np.save(os.path.join(self.save_dir, filename), save_velhist.mean(dim=0).cpu().detach().numpy())
 
-            #plot true and current energy functions
-            plot_pair(epoch, self.save_dir, self.model, self.device, end=2.5, target_pot=lambda dists: self.poly_potential(dists, sigma_pairs = 1) if self.poly else self.energy_fn)
+        #plot true and current energy functions
+        plot_pair(epoch, self.save_dir, self.model, self.device, end=2.5, target_pot=lambda dists: self.poly_potential(dists, sigma_pairs = 1) if self.poly else self.energy_fn)
 
         return self
 
@@ -534,17 +561,13 @@ class Stochastic_IFT(torch.autograd.Function):
     def __init__(self):
         super(Stochastic_IFT, self).__init__()
         
-
     @staticmethod
     def forward(ctx, *args):
-        simulator = args[0]
-        with torch.enable_grad():
-            
-            simulator.eq_steps = 100
-            simulator.nsteps = 400
-            equilibriated_simulator = simulator.solve()
-            ctx.save_for_backward(equilibriated_simulator)
-
+        simulator = args[0]        
+        simulator.eq_steps = 100
+        simulator.nsteps = 400
+        equilibriated_simulator = simulator.solve()
+        ctx.save_for_backward(equilibriated_simulator)
         return equilibriated_simulator
 
     @staticmethod
@@ -731,7 +754,8 @@ if __name__ == "__main__":
         #compute (implicit) gradient of outer loss wrt model parameters
         start = time.time()
         import pdb; pdb.set_trace()
-        torch.autograd.backward(tensors = outer_loss, inputs = list(NN.parameters()))
+        torch.autograd.backward(tensors = outer_loss, inputs = list(simulator.model.parameters()))
+        import pdb; pdb.set_trace()
         end = time.time()
         grad_time = end-start
         print("gradient calculation time (s): ",  grad_time)
