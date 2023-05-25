@@ -24,7 +24,7 @@ from torch.utils.tensorboard import SummaryWriter
 from sys import getrefcount
 from functorch import vmap
 from utils import radii_to_dists, fcc_positions, initialize_velocities, \
-                    dump_params_to_yml, powerlaw_inv_cdf, print_active_torch_tensors, plot_pair, mean_across_lists, subtract_across_lists
+                    dump_params_to_yml, powerlaw_inv_cdf, print_active_torch_tensors, plot_pair, mean_across_lists, subtract_across_lists, multiply_across_lists
 
 
 class ImplicitMDSimulator():
@@ -475,7 +475,7 @@ class ImplicitMDSimulator():
                 
                 #save equilibriated radiis for backward pass
                 if step > self.eq_steps and step % self.n_dump == 0: 
-                    self.running_radii.append(self.radii.detach())
+                    self.running_radii.append(radii.detach())
                 
                 if not self.nn and self.save_intermediate_rdf and step % self.n_dump == 0:
                     filename = f"step{step+1}_rdf.npy"
@@ -563,11 +563,34 @@ class Stochastic_IFT(torch.autograd.Function):
         
     @staticmethod
     def forward(ctx, *args):
-        simulator = args[0]        
-        simulator.eq_steps = 100
-        simulator.nsteps = 400
+        simulator = args[0]
+        gt_rdf = args[1] 
+        params = args[2]
+        def outer_loss(rdf):
+            rdf_loss = (rdf - gt_rdf).pow(2).mean()
+            return params.rdf_loss_weight*rdf_loss
+        
+        simulator.eq_steps = 1000
+        simulator.nsteps = 3000
         equilibriated_simulator = simulator.solve()
         ctx.save_for_backward(equilibriated_simulator)
+        model = equilibriated_simulator.model
+        radii = equilibriated_simulator.running_radii
+        with torch.enable_grad():
+            radii = [r.requires_grad_(True) for r in radii]
+            dists = [radii_to_dists(r, simulator.params) for r in radii]
+            rdfs = [equilibriated_simulator.diff_rdf(tuple(d.permute((1, 2, 3, 0)))) for d in dists]
+            losses = [outer_loss(rdf) for rdf in rdfs]
+            import pdb; pdb.set_trace()
+            energies = [model((d/simulator.sigma_pairs)) if simulator.poly else model(d) for d in dists]
+            grads = [compute_grad(inputs=model.parameters(), output=energy / simulator.temp) for energy in energies]
+            grads_except = lambda i: grads[:i] + grads[i+1:]
+            #not done yet - need to multiple each element by the radiis themselves
+            sub_terms = [subtract_across_lists(grad, mean_across_lists(grads_except(i))) for i, grad in enumerate(grads)]
+            mean_terms = multiply_across_lists(losses, sub_terms)
+            gradient_estimator = mean_across_lists(mean_terms)
+            print([torch.linalg.norm(g, dim =-1).max().item() for g in gradient_estimator])
+
         return equilibriated_simulator
 
     @staticmethod
@@ -577,13 +600,16 @@ class Stochastic_IFT(torch.autograd.Function):
         #gradient calculation using Fabian's method
         model = equilibriated_simulator.model
         radii = equilibriated_simulator.running_radii
-        dists = [radii_to_dists(r, simulator.params) for r in radii]
-        energies = [model((d/simulator.sigma_pairs)) if simulator.poly else model(d) for d in dists]
-        grads = [compute_grad(inputs=model.parameters(), output=energy / simulator.temp) for energy in energies]
-        grads_except = lambda i: grads[:i] + grads[i+1:]
-        gradient_estimator = mean_across_lists([subtract_across_lists(grads[i], mean_across_lists(grads_except(i))) for i in range(len(grads))])
-    
-        
+        with torch.enable_grad():
+            radii = [r.requires_grad_(True) for r in radii]
+            dists = [radii_to_dists(r.requires_grad_(True), simulator.params) for r in radii]
+            energies = [model((d/simulator.sigma_pairs)) if simulator.poly else model(d) for d in dists]
+            grads = [compute_grad(inputs=model.parameters(), output=energy / simulator.temp) for energy in energies]
+            forces = [-compute_grad(inputs=r, output=energy) for r, energy in zip(radii, energies)]
+            grads_except = lambda i: grads[:i] + grads[i+1:]
+            #not done yet - need to multiple each element by the radiis themselves
+            gradient_estimator = mean_across_lists([subtract_across_lists(grad, mean_across_lists(grads_except(i))) for i, grad in enumerate(grads)])
+
         return None
         
 if __name__ == "__main__":
@@ -727,7 +753,7 @@ if __name__ == "__main__":
                 simulator.reset(last_radii, last_velocities, last_rdf)
             
             top_level = Stochastic_IFT()
-            equilibriated_simulator = top_level.apply(simulator)
+            equilibriated_simulator = top_level.apply(simulator, gt_rdf, params)
             # simulator.nsteps = np.rint(params.t_total/params.dt).astype(np.int32) if restart else max(params.vacf_window, params.loss_measure_freq)
             # if not restart:
             #     simulator.zeta = equilibriated_simulator.zeta
@@ -754,7 +780,7 @@ if __name__ == "__main__":
         #compute (implicit) gradient of outer loss wrt model parameters
         start = time.time()
         import pdb; pdb.set_trace()
-        torch.autograd.backward(tensors = outer_loss, inputs = list(simulator.model.parameters()))
+        torch.autograd.backward(tensors = outer_loss, inputs = list(model.parameters()))
         import pdb; pdb.set_trace()
         end = time.time()
         grad_time = end-start
