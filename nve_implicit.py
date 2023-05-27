@@ -570,27 +570,34 @@ class Stochastic_IFT(torch.autograd.Function):
             rdf_loss = (rdf - gt_rdf).pow(2).mean()
             return params.rdf_loss_weight*rdf_loss
         
-        simulator.eq_steps = 1000
-        simulator.nsteps = 3000
+        simulator.eq_steps = 100
+        simulator.nsteps = 400
         equilibriated_simulator = simulator.solve()
         ctx.save_for_backward(equilibriated_simulator)
         model = equilibriated_simulator.model
         radii = equilibriated_simulator.running_radii
+        dists = [radii_to_dists(r, simulator.params) for r in radii]
+        rdfs = [equilibriated_simulator.diff_rdf(tuple(d.permute((1, 2, 3, 0)))) for d in dists]
+        losses = [outer_loss(rdf) for rdf in rdfs]
+        
         with torch.enable_grad():
-            radii = [r.requires_grad_(True) for r in radii]
-            dists = [radii_to_dists(r, simulator.params) for r in radii]
-            rdfs = [equilibriated_simulator.diff_rdf(tuple(d.permute((1, 2, 3, 0)))) for d in dists]
-            losses = [outer_loss(rdf) for rdf in rdfs]
-            import pdb; pdb.set_trace()
             energies = [model((d/simulator.sigma_pairs)) if simulator.poly else model(d) for d in dists]
-            grads = [compute_grad(inputs=model.parameters(), output=energy / simulator.temp) for energy in energies]
-            grads_except = lambda i: grads[:i] + grads[i+1:]
-            #not done yet - need to multiple each element by the radiis themselves
-            sub_terms = [subtract_across_lists(grad, mean_across_lists(grads_except(i))) for i, grad in enumerate(grads)]
-            mean_terms = multiply_across_lists(losses, sub_terms)
-            gradient_estimator = mean_across_lists(mean_terms)
-            print([torch.linalg.norm(g, dim =-1).max().item() for g in gradient_estimator])
+            grads = [compute_grad(inputs=model.parameters(), output=energy) for energy in energies]
+        grad_norms = torch.Tensor([[torch.linalg.norm(g, dim =-1).max().item() for g in grad] for grad in grads]).mean(dim=0)
+        grads_except = lambda i: grads[:i] + grads[i+1:]
+        mean_except_terms = [mean_across_lists(grads_except(i)) for i in range(len(grads))]
+        mean_except_term_norms = torch.Tensor([[torch.linalg.norm(g, dim =-1).max().item() for g in grad] for grad in mean_except_terms]).mean(dim=0)
 
+        #not done yet - need to multiple each element by the radiis themselves
+        sub_terms = [subtract_across_lists(grad, mean) for grad, mean in zip(grads, mean_except_terms)]
+        sub_term_norms = torch.Tensor([[torch.linalg.norm(g, dim =-1).max().item() for g in grad] for grad in sub_terms]).mean(dim=0)
+        mean_terms = multiply_across_lists(losses, sub_terms)
+        mean_term_norms = torch.Tensor([[torch.linalg.norm(g, dim =-1).max().item() for g in grad] for grad in mean_terms]).mean(dim=0)
+        gradient_estimator = mean_across_lists(mean_terms)
+        grad_log_ratios = [(g / energies[0]).abs().log10().max().item() for g in grads[0]]
+        final_grad_log_ratios = [(g / energies[0]).abs().log10().max().item() for g in gradient_estimator]
+        final_grad_norms = [torch.linalg.norm(g, dim =-1).max().item() for g in gradient_estimator]
+        import pdb; pdb.set_trace()
         return equilibriated_simulator
 
     @staticmethod
