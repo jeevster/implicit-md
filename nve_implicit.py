@@ -570,8 +570,8 @@ class Stochastic_IFT(torch.autograd.Function):
             rdf_loss = (rdf - gt_rdf).pow(2).mean()
             return params.rdf_loss_weight*rdf_loss
         
-        simulator.eq_steps = 100
-        simulator.nsteps = 400
+        simulator.eq_steps = 1000
+        simulator.nsteps = 2500
         equilibriated_simulator = simulator.solve()
         ctx.save_for_backward(equilibriated_simulator)
         model = equilibriated_simulator.model
@@ -579,7 +579,7 @@ class Stochastic_IFT(torch.autograd.Function):
         dists = [radii_to_dists(r, simulator.params) for r in radii]
         rdfs = [equilibriated_simulator.diff_rdf(tuple(d.permute((1, 2, 3, 0)))) for d in dists]
         losses = [outer_loss(rdf) for rdf in rdfs]
-        
+        #compute energies at each of the positions and then compute gradients wrt model parameters
         with torch.enable_grad():
             energies = [model((d/simulator.sigma_pairs)) if simulator.poly else model(d) for d in dists]
             grads = [compute_grad(inputs=model.parameters(), output=energy) for energy in energies]
@@ -588,7 +588,7 @@ class Stochastic_IFT(torch.autograd.Function):
         mean_except_terms = [mean_across_lists(grads_except(i)) for i in range(len(grads))]
         mean_except_term_norms = torch.Tensor([[torch.linalg.norm(g, dim =-1).max().item() for g in grad] for grad in mean_except_terms]).mean(dim=0)
 
-        #not done yet - need to multiple each element by the radiis themselves
+        #not done yet - need to multiply each element by the radiis themselves
         sub_terms = [subtract_across_lists(grad, mean) for grad, mean in zip(grads, mean_except_terms)]
         sub_term_norms = torch.Tensor([[torch.linalg.norm(g, dim =-1).max().item() for g in grad] for grad in sub_terms]).mean(dim=0)
         mean_terms = multiply_across_lists(losses, sub_terms)
@@ -597,8 +597,8 @@ class Stochastic_IFT(torch.autograd.Function):
         grad_log_ratios = [(g / energies[0]).abs().log10().max().item() for g in grads[0]]
         final_grad_log_ratios = [(g / energies[0]).abs().log10().max().item() for g in gradient_estimator]
         final_grad_norms = [torch.linalg.norm(g, dim =-1).max().item() for g in gradient_estimator]
-        import pdb; pdb.set_trace()
-        return equilibriated_simulator
+        #import pdb; pdb.set_trace()
+        return equilibriated_simulator, gradient_estimator
 
     @staticmethod
     def backward(ctx, *grad_output):
@@ -760,15 +760,21 @@ if __name__ == "__main__":
                 simulator.reset(last_radii, last_velocities, last_rdf)
             
             top_level = Stochastic_IFT()
-            equilibriated_simulator = top_level.apply(simulator, gt_rdf, params)
+            start = time.time()
+            equilibriated_simulator, grads = top_level.apply(simulator, gt_rdf, params)
+            end = time.time()
+            #import pdb; pdb.set_trace()
+            #manual gradient update
+            for param, grad in zip(model.parameters(), grads):
+                param.data -= params.lr*grad
             # simulator.nsteps = np.rint(params.t_total/params.dt).astype(np.int32) if restart else max(params.vacf_window, params.loss_measure_freq)
             # if not restart:
             #     simulator.zeta = equilibriated_simulator.zeta
             # start = time.time()
             # equilibriated_simulator = simulator.solve()
             # end = time.time()
-            # sim_time = end-start
-            # print("MD simulation time (s): ", sim_time)
+            sim_time = end-start
+            print("MD simulation time (s): ", sim_time)
             
             #compute loss at the end of the trajectory
             if params.nn:
@@ -786,9 +792,7 @@ if __name__ == "__main__":
         print(f"Loss: RDF={params.rdf_loss_weight*rdf_loss.item()}+Diffusion={params.diffusion_loss_weight*diffusion_loss.item()}+VACF={params.vacf_loss_weight*vacf_loss.item()}={outer_loss.item()}")
         #compute (implicit) gradient of outer loss wrt model parameters
         start = time.time()
-        import pdb; pdb.set_trace()
-        torch.autograd.backward(tensors = outer_loss, inputs = list(model.parameters()))
-        import pdb; pdb.set_trace()
+        #torch.autograd.backward(tensors = outer_loss, inputs = list(model.parameters()))
         end = time.time()
         grad_time = end-start
         print("gradient calculation time (s): ",  grad_time)
@@ -809,7 +813,7 @@ if __name__ == "__main__":
         except AttributeError:
             print("Max norm: ", max_norm)
 
-        optimizer.step()
+        #optimizer.step()
         scheduler.step(outer_loss)
         #log stats
         losses.append(outer_loss.item())
