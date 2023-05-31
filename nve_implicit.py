@@ -285,6 +285,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
         #PBC correction
         if self.pbc:
+            import pdb; pdb.set_trace()
             radii = radii/self.box 
             radii = self.box*torch.where(radii-torch.round(radii) >= 0, \
                         (radii-torch.round(radii)), (radii - torch.floor(radii)-1))
