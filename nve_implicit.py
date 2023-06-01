@@ -122,8 +122,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             self.sigma_pairs = self.sigma_pairs[:, ~torch.eye(self.sigma_pairs.shape[1],dtype=bool)].reshape(self.n_replicas, self.sigma_pairs.shape[1], -1, 1).to(self.device)
         else:
             #TODO: come up with a general function for polydisperse LJ systems
-            self.energy_fn = LJFamily(epsilon=self.epsilon, sigma=self.sigma, rep_pow=self.rep_power, attr_pow=self.attr_power)
-
+            #self.energy_fn = LJFamily(epsilon=self.epsilon, sigma=self.sigma, rep_pow=self.rep_power, attr_pow=self.attr_power).to(self.device)
+            pass
         #define vectorized differentiable rdf and velhist
         self.diff_rdf = vmap(DifferentiableRDF(params, self.device), -1)
         self.diff_rdf_cpu = vmap(DifferentiableRDF(params, "cpu"), -1)
@@ -226,6 +226,15 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         rep_term = parenth ** 12
         energy = torch.sum(rep_term + self.c_0 + self.c_2*parenth**-2 + self.c_4*parenth**-4, dim = -1)
         energy[(dists/s > self.cutoff).squeeze(-1)] = 0
+        return energy.sum()
+
+    def lj_potential(self, dists):
+        r2i = (self.sigma/dists)**2
+        r6i = r2i**3
+        energy = 4*self.epsilon*torch.sum(r6i*(r6i - 1))
+        #reuse components of potential to calculate virial and forces
+        # internal_virial = -48*self.epsilon*r6i*(r6i - 0.5)/(self.sigma**2)
+        # forces = -internal_virial*r*r2i
         return energy
 
     def force_calc(self, radii, retain_grad = False):
@@ -257,12 +266,10 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                     forces = -compute_grad(inputs=r, output=energy) if retain_grad else -compute_grad(inputs=r, output=energy).detach()
                 
                 else:
-                    energy = self.energy_fn(dists)
-                    # #reuse components of potential to calculate virial and forces
-                    # internal_virial = -48*self.epsilon*r6i*(r6i - 0.5)/(self.sigma**2)
-                    # forces = -internal_virial*r*r2i
+                    # energy = self.energy_fn(dists).sum()
+                    energy = self.lj_potential(dists)
                     forces = -compute_grad(inputs=r, output=energy) if retain_grad else -compute_grad(inputs=r, output=energy).detach()
-
+                    
                 #calculate which forces to keep
                 keep = dists/self.sigma_pairs <= self.cutoff if self.poly else dists/self.sigma <= self.cutoff
 
@@ -285,7 +292,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
         #PBC correction
         if self.pbc:
-            import pdb; pdb.set_trace()
             radii = radii/self.box 
             radii = self.box*torch.where(radii-torch.round(radii) >= 0, \
                         (radii-torch.round(radii)), (radii - torch.floor(radii)-1))
@@ -520,7 +526,11 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             np.save(os.path.join(self.save_dir, filename), save_velhist.mean(dim=0).cpu().detach().numpy())
 
             #plot true and current energy functions
-            plot_pair(epoch, self.save_dir, self.model, self.device, end=self.cutoff, target_pot=lambda dists: self.poly_potential(dists, sigma_pairs = 1) if self.poly else self.energy_fn)
+            if self.poly:
+                energy_fn = lambda dists: self.poly_potential(dists, sigma_pairs = 1)
+            else:
+                energy_fn = lambda dists: self.lj_potential(dists)
+            plot_pair(epoch, self.save_dir, self.model, self.device, end=self.cutoff, target_pot=energy_fn)
 
         return self
 
@@ -623,6 +633,7 @@ if __name__ == "__main__":
 
     #prior potential only contains repulsive term
     prior = LJFamily(epsilon=params.prior_epsilon, sigma=params.prior_sigma, rep_pow=params.prior_rep_power, attr_pow=params.prior_attr_power)
+    
 
     model = Stack({'nn': NN, 'prior': prior}).to(device)
     radii_0 = fcc_positions(params.n_particle, params.box, device).unsqueeze(0).repeat(params.n_replicas, 1, 1)
@@ -646,6 +657,7 @@ if __name__ == "__main__":
 
     if not params.nn:
         params.n_epochs = 1
+        params.batch_size = 1
 
     #outer training loop
     losses = []
@@ -700,61 +712,62 @@ if __name__ == "__main__":
             last_radii, last_velocities, last_rdf = equilibriated_simulator.cleanup()
         simulator.f.close()
         
-        outer_loss = params.rdf_loss_weight*rdf_loss + \
-                    params.diffusion_loss_weight*diffusion_loss + \
-                    params.vacf_loss_weight*vacf_loss
-        print(f"Loss: RDF={params.rdf_loss_weight*rdf_loss.item()}+Diffusion={params.diffusion_loss_weight*diffusion_loss.item()}+VACF={params.vacf_loss_weight*vacf_loss.item()}={outer_loss.item()}")
-        #compute (implicit) gradient of outer loss wrt model parameters
-        start = time.time()
-        torch.autograd.backward(tensors = outer_loss, inputs = list(NN.parameters()))
-        end = time.time()
-        grad_time = end-start
-        print("gradient calculation time (s): ",  grad_time)
+        if params.nn:
+            outer_loss = params.rdf_loss_weight*rdf_loss + \
+                        params.diffusion_loss_weight*diffusion_loss + \
+                        params.vacf_loss_weight*vacf_loss
+            print(f"Loss: RDF={params.rdf_loss_weight*rdf_loss.item()}+Diffusion={params.diffusion_loss_weight*diffusion_loss.item()}+VACF={params.vacf_loss_weight*vacf_loss.item()}={outer_loss.item()}")
+            #compute (implicit) gradient of outer loss wrt model parameters
+            start = time.time()
+            torch.autograd.backward(tensors = outer_loss, inputs = list(NN.parameters()))
+            end = time.time()
+            grad_time = end-start
+            print("gradient calculation time (s): ",  grad_time)
 
-        #checkpointing
-        if outer_loss < best_outer_loss:
-            best_outer_loss = outer_loss
-            best = True
-        simulator.save_checkpoint(best = best)
+            #checkpointing
+            if outer_loss < best_outer_loss:
+                best_outer_loss = outer_loss
+                best = True
+            simulator.save_checkpoint(best = best)
 
-        equilibriated_simulator.cleanup()
+            equilibriated_simulator.cleanup()
 
-        #print_active_torch_tensors()
-        torch.cuda.empty_cache()
-        gc.collect()
-        max_norm = 0
-        for param in model.parameters():
-            if param.grad is not None:
-                norm = torch.linalg.vector_norm(param.grad, dim=-1).max()
-                if  norm > max_norm:
-                    max_norm = norm
-        try:
-            print("Max norm: ", max_norm.item())
-        except AttributeError:
-            print("Max norm: ", max_norm)
+            #print_active_torch_tensors()
+            torch.cuda.empty_cache()
+            gc.collect()
+            max_norm = 0
+            for param in model.parameters():
+                if param.grad is not None:
+                    norm = torch.linalg.vector_norm(param.grad, dim=-1).max()
+                    if  norm > max_norm:
+                        max_norm = norm
+            try:
+                print("Max norm: ", max_norm.item())
+            except AttributeError:
+                print("Max norm: ", max_norm)
 
-        optimizer.step()
-        scheduler.step(outer_loss)
-        #log stats
-        losses.append(outer_loss.item())
-        rdf_losses.append(rdf_loss.item())
-        diffusion_losses.append((diffusion_loss.sqrt()/gt_diff_coeff).item())
-        vacf_losses.append(vacf_loss.item())
-        sim_times.append(sim_time)
-        grad_times.append(grad_time)
-        try:
-            grad_norms.append(max_norm.item())
-        except:
-            grad_norms.append(max_norm)
+            optimizer.step()
+            scheduler.step(outer_loss)
+            #log stats
+            losses.append(outer_loss.item())
+            rdf_losses.append(rdf_loss.item())
+            diffusion_losses.append((diffusion_loss.sqrt()/gt_diff_coeff).item())
+            vacf_losses.append(vacf_loss.item())
+            sim_times.append(sim_time)
+            grad_times.append(grad_time)
+            try:
+                grad_norms.append(max_norm.item())
+            except:
+                grad_norms.append(max_norm)
 
-        writer.add_scalar('Loss', losses[-1], global_step=epoch+1)
-        writer.add_scalar('RDF Loss', rdf_losses[-1], global_step=epoch+1)
-        writer.add_scalar('Relative Diffusion Loss', diffusion_losses[-1], global_step=epoch+1)
-        writer.add_scalar('VACF Loss', vacf_losses[-1], global_step=epoch+1)
-        writer.add_scalar('Simulation Time', sim_times[-1], global_step=epoch+1)
-        writer.add_scalar('Gradient Time', grad_times[-1], global_step=epoch+1)
-        writer.add_scalar('Gradient Norm', grad_norms[-1], global_step=epoch+1)
-    
+            writer.add_scalar('Loss', losses[-1], global_step=epoch+1)
+            writer.add_scalar('RDF Loss', rdf_losses[-1], global_step=epoch+1)
+            writer.add_scalar('Relative Diffusion Loss', diffusion_losses[-1], global_step=epoch+1)
+            writer.add_scalar('VACF Loss', vacf_losses[-1], global_step=epoch+1)
+            writer.add_scalar('Simulation Time', sim_times[-1], global_step=epoch+1)
+            writer.add_scalar('Gradient Time', grad_times[-1], global_step=epoch+1)
+            writer.add_scalar('Gradient Norm', grad_norms[-1], global_step=epoch+1)
+        
             
 
     

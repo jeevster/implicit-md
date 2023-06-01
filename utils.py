@@ -90,6 +90,7 @@ def plot_pair(epoch, path, model, device, end, target_pot):
 
     x = torch.linspace(0.1, end, 250)[:, None].to(device)
     u_fit = torch.Tensor([model(i) for i in x]).detach().cpu().numpy()
+    u_fit = u_fit - u_fit[-1] #shift the prior so that it has a value of zero at the cutoff point
     u_target = torch.Tensor([target_pot(i) for i in x]).detach().cpu().numpy()
 
     plt.plot( x.detach().cpu().numpy(), 
@@ -100,7 +101,7 @@ def plot_pair(epoch, path, model, device, end, target_pot):
               u_target,
                label='truth', 
                linewidth=2,linestyle='--', c='black')
-    plt.ylim(-6.0, 6.0)
+    plt.ylim(-6.0, 2.0)
     plt.legend()      
     plt.show()
     plt.savefig(os.path.join(path, 'potential_{}.jpg'.format(epoch)), bbox_inches='tight')

@@ -25,13 +25,15 @@ class DifferentiableRDF(torch.nn.Module):
     def __init__(self, params, device):
         super(DifferentiableRDF, self).__init__()
         start = 0
-        range =  params.box #torch.max(self.running_dists)
-        nbins = int(range/params.dr)
+        end =  params.box #torch.max(self.running_dists)
+        nbins = int(end/params.dr)
+        self.cutoff_boundary = end + 5e-1
+        self.index_tuple = None
 
         #GPU
         self.device = device
 
-        V, vol_bins, bins = generate_vol_bins(start, range, nbins, dim=3)
+        V, vol_bins, bins = generate_vol_bins(start, end, nbins, dim=3)
 
         self.V = V
         self.vol_bins = vol_bins.to(self.device)
@@ -47,7 +49,13 @@ class DifferentiableRDF(torch.nn.Module):
         ).to(self.device)
 
     def forward(self, running_dists):
+        # nbr_list, pair_dis, _ = generate_nbr_list(xyz, 
+        #                                        self.cutoff_boundary, 
+        #                                        self.cell, 
+        #                                        index_tuple=self.index_tuple, 
+        #                                        get_dis=True)
         running_dists = torch.cat(running_dists)
+        
         count = self.smear(running_dists.reshape(-1).squeeze()[..., None]).sum(0) 
         norm = count.sum()   # normalization factor for histogram 
         count = count / norm   # normalize 
