@@ -5,21 +5,26 @@ python nve_implicit.py \
 --seed 123 \
 --kbt0 1.8 \
 --box 7 \
---epsilon 0.2 \
---poly \
+--epsilon 1 \
+--sigma 1 \
+--prior_epsilon 2 \
+--prior_sigma 0.9 \
+--prior_rep_power 3 \
+--prior_attr_power 0 \
+--attr_power 12 \
+--rep_power 6 \
 --poly_power 3.0 \
 --min_sigma 0.73 \
---sigma 1.0 \
 --dt 0.005 \
 --dr 0.01 \
 --dv 0.1 \
---exp_name "TEST_rdf+vacf_bs1_newvacfweight" \
+--exp_name "TEST_vacf+rdf_aggregategrads_bs10_12_6_potential_prior3_0_exactpairpotconditions" \
 --diffusion_window 1000 \
 --vacf_window 100 \
---batch_size 1 \
+--batch_size 10 \
 --lr 0.001 \
---t_total 15 \
---nvt_time 15 \
+--t_total 1 \
+--nvt_time 1 \
 --n_replicas 1 \
 --diameter_viz 0.3 \
 --n_dump 20 \
@@ -29,7 +34,7 @@ python nve_implicit.py \
 --vacf_loss_weight 1 \
 --rdf_loss_weight 1 \
 --nn \
---cutoff 1.25 \
+--cutoff 2.5 \
 --gaussian_width 0.1 \
 --n_width 128 \
 --n_layers 3 \
@@ -41,21 +46,26 @@ python nve_implicit.py \
 --seed 123 \
 --kbt0 1.8 \
 --box 7 \
---epsilon 0.2 \
---poly \
+--epsilon 1 \
+--sigma 1 \
+--prior_epsilon 2 \
+--prior_sigma 0.9 \
+--prior_rep_power 6 \
+--prior_attr_power 0 \
+--attr_power 12 \
+--rep_power 6 \
 --poly_power 3.0 \
 --min_sigma 0.73 \
---sigma 1.0 \
 --dt 0.005 \
 --dr 0.01 \
 --dv 0.1 \
---exp_name "TEST_vacf_only_bs1__newvacfweight" \
+--exp_name "TEST_vacf+rdf_aggregategrads_bs10_12_6_potential_prior6_0_exactpairpotconditions" \
 --diffusion_window 1000 \
 --vacf_window 100 \
---batch_size 1 \
+--batch_size 10 \
 --lr 0.001 \
---t_total 15 \
---nvt_time 15 \
+--t_total 1 \
+--nvt_time 1 \
 --n_replicas 1 \
 --diameter_viz 0.3 \
 --n_dump 20 \
@@ -63,10 +73,11 @@ python nve_implicit.py \
 --n_epochs 100 \
 --diffusion_loss_weight 0 \
 --vacf_loss_weight 1 \
---rdf_loss_weight 0 \
+--rdf_loss_weight 1 \
 --nn \
---cutoff 1.25 \
+--cutoff 2.5 \
 --gaussian_width 0.1 \
 --n_width 128 \
 --n_layers 3 \
 --nonlinear 'ELU'
+

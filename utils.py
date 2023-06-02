@@ -101,7 +101,7 @@ def plot_pair(epoch, path, model, device, end, target_pot):
               u_target,
                label='truth', 
                linewidth=2,linestyle='--', c='black')
-    plt.ylim(-6.0, 2.0)
+    plt.ylim(-2.0, 6.0)
     plt.legend()      
     plt.show()
     plt.savefig(os.path.join(path, 'potential_{}.jpg'.format(epoch)), bbox_inches='tight')
