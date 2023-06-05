@@ -3,6 +3,7 @@ import gsd.hoomd
 import torch
 import torch.nn as nn
 from nff.utils.scatter import compute_grad
+from itertools import product
 from nff.nn.layers import GaussianSmearing
 from YParams import YParams
 import argparse
@@ -322,6 +323,7 @@ class ImplicitMDSimulator():
                 new_dists = new_dists / self.sigma_pairs
 
         new_velhist = self.diff_vel_hist(torch.linalg.norm(velocities, dim=-1).permute((1,0))) if calc_rdf else 0 #calculate velocity histogram from a single frame
+        
         new_rdf = self.diff_rdf(tuple(new_dists.to(self.device).permute((1, 2, 3, 0)))) if calc_rdf else 0 #calculate the RDF from a single frame
         #new_rdf = 0
 
@@ -571,33 +573,27 @@ class Stochastic_IFT(torch.autograd.Function):
             return params.rdf_loss_weight*rdf_loss
         
         simulator.eq_steps = 1000
-        simulator.nsteps = 2500
+        simulator.nsteps = 3000
         equilibriated_simulator = simulator.solve()
         ctx.save_for_backward(equilibriated_simulator)
         model = equilibriated_simulator.model
         radii = equilibriated_simulator.running_radii
         dists = [radii_to_dists(r, simulator.params) for r in radii]
+        if equilibriated_simulator.poly:
+            #normalize distances by sigma pairs
+            dists = [d / equilibriated_simulator.sigma_pairs for d in dists]
         rdfs = [equilibriated_simulator.diff_rdf(tuple(d.permute((1, 2, 3, 0)))) for d in dists]
         losses = [outer_loss(rdf) for rdf in rdfs]
         #compute energies at each of the positions and then compute gradients wrt model parameters
         with torch.enable_grad():
             energies = [model((d/simulator.sigma_pairs)) if simulator.poly else model(d) for d in dists]
             grads = [compute_grad(inputs=model.parameters(), output=energy) for energy in energies]
-        grad_norms = torch.Tensor([[torch.linalg.norm(g, dim =-1).max().item() for g in grad] for grad in grads]).mean(dim=0)
-        grads_except = lambda i: grads[:i] + grads[i+1:]
-        mean_except_terms = [mean_across_lists(grads_except(i)) for i in range(len(grads))]
-        mean_except_term_norms = torch.Tensor([[torch.linalg.norm(g, dim =-1).max().item() for g in grad] for grad in mean_except_terms]).mean(dim=0)
-
-        #not done yet - need to multiply each element by the radiis themselves
-        sub_terms = [subtract_across_lists(grad, mean) for grad, mean in zip(grads, mean_except_terms)]
-        sub_term_norms = torch.Tensor([[torch.linalg.norm(g, dim =-1).max().item() for g in grad] for grad in sub_terms]).mean(dim=0)
-        mean_terms = multiply_across_lists(losses, sub_terms)
-        mean_term_norms = torch.Tensor([[torch.linalg.norm(g, dim =-1).max().item() for g in grad] for grad in mean_terms]).mean(dim=0)
-        gradient_estimator = mean_across_lists(mean_terms)
-        grad_log_ratios = [(g / energies[0]).abs().log10().max().item() for g in grads[0]]
-        final_grad_log_ratios = [(g / energies[0]).abs().log10().max().item() for g in gradient_estimator]
+        
+        #compute the estimator on every pair of positions
+        gradients = [multiply_across_lists(losses[j], subtract_across_lists(grads[i], grads[j])) for i,j in product(list(range(len(grads))),repeat=2) if i!=j]
+        gradient_estimator = mean_across_lists(gradients)
         final_grad_norms = [torch.linalg.norm(g, dim =-1).max().item() for g in gradient_estimator]
-        #import pdb; pdb.set_trace()
+        
         return equilibriated_simulator, gradient_estimator
 
     @staticmethod

@@ -131,7 +131,7 @@ def mean_across_lists(list_of_lists):
 def subtract_across_lists(list1, list2):
     return [l1 - l2 for (l1, l2) in zip(list1, list2)]
 
-def multiply_across_lists(list1, list2):
-    return [[l1*l2 for l2 in grad] for l1, grad in zip(list1, list2)]
+def multiply_across_lists(scalar, list1):
+    return [scalar*l for l in list1]
 
     

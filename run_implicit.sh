@@ -22,7 +22,7 @@ python nve_implicit.py \
 --nvt_time 3 \
 --n_replicas 1 \
 --diameter_viz 0.3 \
---n_dump 500 \
+--n_dump 200 \
 --burn_in_frac 0.8 \
 --n_epochs 100 \
 --diffusion_loss_weight 0 \
