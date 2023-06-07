@@ -11,8 +11,8 @@ python nve_implicit.py \
 --prior_sigma 0.9 \
 --prior_rep_power 3 \
 --prior_attr_power 0 \
---attr_power 12 \
---rep_power 6 \
+--attr_power 6 \
+--rep_power 12 \
 --poly_power 3.0 \
 --min_sigma 0.73 \
 --dt 0.005 \
@@ -23,8 +23,8 @@ python nve_implicit.py \
 --vacf_window 100 \
 --batch_size 10 \
 --lr 0.001 \
---t_total 1 \
---nvt_time 1 \
+--t_total 15 \
+--nvt_time 15 \
 --n_replicas 1 \
 --diameter_viz 0.3 \
 --n_dump 20 \
@@ -52,8 +52,8 @@ python nve_implicit.py \
 --prior_sigma 0.9 \
 --prior_rep_power 6 \
 --prior_attr_power 0 \
---attr_power 12 \
---rep_power 6 \
+--attr_power 6 \
+--rep_power 12 \
 --poly_power 3.0 \
 --min_sigma 0.73 \
 --dt 0.005 \
@@ -64,8 +64,8 @@ python nve_implicit.py \
 --vacf_window 100 \
 --batch_size 10 \
 --lr 0.001 \
---t_total 1 \
---nvt_time 1 \
+--t_total 15 \
+--nvt_time 15 \
 --n_replicas 1 \
 --diameter_viz 0.3 \
 --n_dump 20 \

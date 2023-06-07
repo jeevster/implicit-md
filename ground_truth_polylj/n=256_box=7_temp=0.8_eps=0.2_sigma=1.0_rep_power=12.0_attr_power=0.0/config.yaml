@@ -27,7 +27,7 @@ n_width: 128
 nn: false
 no_pbc: false
 nonlinear: ELU
-nvt_time: 15.0
+nvt_time: 100.0
 poly: true
 poly_power: 3.0
 prior_attr_power: 3.0
@@ -41,7 +41,7 @@ restart_probability: 1.0
 save_intermediate_rdf: false
 seed: 123
 sigma: 1.0
-t_total: 15.0
+t_total: 100.0
 temp: 0.8
 vacf_loss_weight: 1.0
 vacf_window: 100

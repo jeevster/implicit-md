@@ -107,3 +107,20 @@ def plot_pair(epoch, path, model, device, end, target_pot):
     plt.savefig(os.path.join(path, 'potential_{}.jpg'.format(epoch)), bbox_inches='tight')
     plt.close()
 
+
+def solve_continuity_system(device, x_c, n, m, epsilon):
+    A = torch.Tensor([[1, x_c**2, x_c**4],
+                  [0, 2*x_c, 4*x_c**3],
+                  [0, 2, 12*x_c**2]]).to(device)
+    if m ==0:
+        B = epsilon * torch.Tensor([[- x_c**-n],
+                            [n*x_c**-(n+1)],
+                            [ - n*(n+1)*x_c**-(n+2)]]).to(device)
+    else:
+        B = epsilon * torch.Tensor([[x_c**-m - x_c**-n],
+                                [n*x_c**-(n+1) - m*x_c**-(m+1)],
+                                [m*(m+1)*x_c**-(m+2) - n*(n+1)*x_c**-(n+2)]]).to(device)
+    c = torch.linalg.solve(A, B)
+
+    return c[0], c[1], c[2]
+

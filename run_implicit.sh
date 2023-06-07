@@ -11,8 +11,8 @@ python nve_implicit.py \
 --prior_sigma 0.9 \
 --prior_rep_power 6 \
 --prior_attr_power 3 \
---attr_power 12 \
---rep_power 6 \
+--attr_power 6 \
+--rep_power 12 \
 --poly_power 3.0 \
 --min_sigma 0.73 \
 --dt 0.005 \
@@ -53,8 +53,8 @@ python nve_implicit.py \
 --prior_sigma 0.9 \
 --prior_rep_power 9 \
 --prior_attr_power 3 \
---attr_power 12 \
---rep_power 6 \
+--attr_power 6 \
+--rep_power 12 \
 --poly_power 3.0 \
 --min_sigma 0.73 \
 --dt 0.005 \
@@ -81,5 +81,3 @@ python nve_implicit.py \
 --n_width 128 \
 --n_layers 3 \
 --nonlinear 'ELU'
-
-

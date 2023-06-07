@@ -24,7 +24,7 @@ from torch.utils.tensorboard import SummaryWriter
 from sys import getrefcount
 from functorch import vmap
 from utils import radii_to_dists, fcc_positions, initialize_velocities, \
-                    dump_params_to_yml, powerlaw_inv_cdf, print_active_torch_tensors, plot_pair
+                    dump_params_to_yml, powerlaw_inv_cdf, print_active_torch_tensors, plot_pair, solve_continuity_system
 
 
 class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.linear_solve.solve_normal_cg(maxiter=5, atol=0)):
@@ -84,9 +84,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.n_layers = params.n_layers
         self.nonlinear = params.nonlinear
 
-        self.c_0 = -28*self.epsilon / (self.cutoff**12)
-        self.c_2 = 48*self.epsilon / (self.cutoff**14)
-        self.c_4 = -21*self.epsilon / (self.cutoff**16)
+        #solve for correct c values to ensure continuity of potential at cutoff
+        self.c_0, self.c_2, self.c_4 = solve_continuity_system(self.device, self.cutoff, self.rep_power, self.attr_power, epsilon = 1)
 
 
         # Constant box properties
@@ -139,10 +138,10 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         if self.nn:
             add = "polylj_" if self.poly else ""
             results = 'results_polylj' if self.poly else 'results'
-            self.save_dir = os.path.join(results, f"IMPLICIT_{add}_{self.exp_name}_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_dt={self.dt}_ttotal={self.t_total}")
+            self.save_dir = os.path.join(results, f"IMPLICIT_{add}_{self.exp_name}_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_rep_power={self.rep_power}_attr_power={self.attr_power}_self.dt={self.dt}_ttotal={self.t_total}")
         else: 
             add = "_polylj" if self.poly else ""
-            self.save_dir = os.path.join('ground_truth' + add, f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}")
+            self.save_dir = os.path.join('ground_truth' + add, f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_rep_power={self.rep_power}_attr_power={self.attr_power}")
 
         os.makedirs(self.save_dir, exist_ok = True)
         dump_params_to_yml(self.params, self.save_dir)
@@ -223,19 +222,22 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
     def poly_potential(self, dists, sigma_pairs = None):
         s = self.sigma_pairs if sigma_pairs is None else sigma_pairs
         parenth = (s/dists)
-        rep_term = parenth ** 12
-        energy = torch.sum(rep_term + self.c_0 + self.c_2*parenth**-2 + self.c_4*parenth**-4, dim = -1)
+        rep_term = parenth ** self.rep_power
+        attr_term = parenth ** self.attr_power if self.attr_power !=0 else 0
+        energy = torch.sum(rep_term - attr_term + self.c_0 + self.c_2*parenth**-2 + self.c_4*parenth**-4, dim = -1)
         energy[(dists/s > self.cutoff).squeeze(-1)] = 0
         return energy.sum()
 
     def lj_potential(self, dists):
-        r2i = (self.sigma/dists)**2
-        r6i = r2i**3
-        energy = 4*self.epsilon*torch.sum(r6i*(r6i - 1))
+        parenth = (self.sigma/dists)
+        rep_term = parenth ** self.rep_power
+        attr_term = parenth ** self.attr_power if self.attr_power !=0 else 0
+        energy = (4*self.epsilon*(rep_term - attr_term))
+        energy[(dists/self.sigma > self.cutoff).squeeze(-1)] = 0
         #reuse components of potential to calculate virial and forces
         # internal_virial = -48*self.epsilon*r6i*(r6i - 0.5)/(self.sigma**2)
         # forces = -internal_virial*r*r2i
-        return energy
+        return energy.sum()
 
     def force_calc(self, radii, retain_grad = False):
         
@@ -270,17 +272,17 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                     energy = self.lj_potential(dists)
                     forces = -compute_grad(inputs=r, output=energy) if retain_grad else -compute_grad(inputs=r, output=energy).detach()
                     
-                #calculate which forces to keep
-                keep = dists/self.sigma_pairs <= self.cutoff if self.poly else dists/self.sigma <= self.cutoff
+            #calculate which forces to keep
+            keep = dists/self.sigma_pairs <= self.cutoff if self.poly else dists/self.sigma <= self.cutoff
 
-                #apply cutoff
-                forces = torch.where(~keep, self.zeros, forces)
+            #apply cutoff
+            forces = torch.where(~keep, self.zeros, forces)
 
-        #Ensure no NaNs
-        assert(not torch.any(torch.isnan(forces)))
-        
-        #sum forces across particles
-        return energy, torch.sum(forces, axis = -2)#.to(self.device)
+            #Ensure no NaNs
+            assert(not torch.any(torch.isnan(forces)))
+            
+            #sum forces across particles
+            return energy, torch.sum(forces, axis = -2)#.to(self.device)
         
     def forward_nvt(self, radii, velocities, forces, zeta, calc_rdf = False, calc_diffusion = False, calc_vacf = False, retain_grad = False):
         # get current accelerations (assume unit mass)
