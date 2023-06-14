@@ -85,7 +85,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.nonlinear = params.nonlinear
 
         #solve for correct c values to ensure continuity of potential at cutoff
-        self.c_0, self.c_2, self.c_4 = solve_continuity_system(self.device, self.cutoff, self.rep_power, self.attr_power, epsilon = 1)
+        self.c_0, self.c_2, self.c_4 = solve_continuity_system(self.device, self.cutoff, self.rep_power, self.attr_power, epsilon = 4)
 
 
         # Constant box properties
@@ -224,7 +224,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         parenth = (s/dists)
         rep_term = parenth ** self.rep_power
         attr_term = parenth ** self.attr_power if self.attr_power !=0 else 0
-        energy = torch.sum(rep_term - attr_term + self.c_0 + self.c_2*parenth**-2 + self.c_4*parenth**-4, dim = -1)
+        energy = torch.sum(4*(rep_term - attr_term) + self.c_0 + self.c_2*parenth**-2 + self.c_4*parenth**-4, dim = -1)
         energy[(dists/s > self.cutoff).squeeze(-1)] = 0
         return energy.sum()
 
