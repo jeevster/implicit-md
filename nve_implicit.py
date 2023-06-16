@@ -128,7 +128,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.diff_rdf_cpu = vmap(DifferentiableRDF(params, "cpu"), -1)
         self.diff_vel_hist = vmap(DifferentiableVelHist(params, self.device), 0)
         self.diff_vel_hist_cpu = vmap(DifferentiableVelHist(params, "cpu"), 0)
-
+        self.force_tracker = torch.zeros_like(self.radii).to(self.device)
         #define vectorized differentiable vacf and diffusion coefficients
         self.diff_vacf = vmap(DifferentiableVACF(params), 0)
         #vectorize over dim 1 (the input will be of shape [diffusion_window , n_replicas])
@@ -138,7 +138,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         if self.nn:
             add = "polylj_" if self.poly else ""
             results = 'results_polylj' if self.poly else 'results'
-            self.save_dir = os.path.join(results, f"IMPLICIT_{add}_{self.exp_name}_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_rep_power={self.rep_power}_attr_power={self.attr_power}_self.dt={self.dt}_ttotal={self.t_total}")
+            self.save_dir = os.path.join(results, f"IMPLICIT_{add}_{self.exp_name}_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_rep_power={self.rep_power}_attr_power={self.attr_power}_dt={self.dt}_ttotal={self.t_total}")
         else: 
             add = "_polylj" if self.poly else ""
             self.save_dir = os.path.join('ground_truth' + add, f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_rep_power={self.rep_power}_attr_power={self.attr_power}")
@@ -277,9 +277,9 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
             #apply cutoff
             forces = torch.where(~keep, self.zeros, forces)
-
             #Ensure no NaNs
             assert(not torch.any(torch.isnan(forces)))
+            #self.force_tracker += torch.sum(forces, axis = -2) / self.nsteps
             
             #sum forces across particles
             return energy, torch.sum(forces, axis = -2)#.to(self.device)
@@ -533,8 +533,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             else:
                 energy_fn = lambda dists: self.lj_potential(dists)
             plot_pair(epoch, self.save_dir, self.model, self.device, end=self.cutoff, target_pot=energy_fn)
-
-        return self
+        return self 
 
     def save_checkpoint(self, best=False):
         name = "best_ckpt.pt" if best else "ckpt.pt"
@@ -651,7 +650,7 @@ if __name__ == "__main__":
         gt_vacf = torch.Tensor(np.load(os.path.join(gt_dir, "gt_vacf.npy"))).to(device)[0:params.vacf_window]
         add = "polylj_" if params.poly else ""
         results = 'results_polylj' if params.poly else 'results'
-        results_dir = os.path.join(results, f"IMPLICIT_{add}_{params.exp_name}_n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}_dt={params.dt}_ttotal={params.t_total}")
+        results_dir = os.path.join(results, f"IMPLICIT_{add}_{params.exp_name}_n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}_rep_power={params.rep_power}_attr_power={params.attr_power}_dt={params.dt}_ttotal={params.t_total}")
 
     #initialize outer loop optimizer/scheduler
     optimizer = torch.optim.Adam(list(NN.parameters()), lr=params.lr)
