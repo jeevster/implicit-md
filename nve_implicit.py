@@ -142,7 +142,9 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.atoms = data_to_atoms(init_data)
 
         #Initialize model (passed in as an argument to make it a meta parameter)
+        import pdb; pdb.set_trace()
         self.model = model
+        
         mlp_params = {'n_gauss': int(params.cutoff//params.gaussian_width), 
                 'r_start': 0.0,
                 'r_end': params.cutoff, 
@@ -213,9 +215,9 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         # self.diffusion_window = params.diffusion_window
         # self.vacf_window = params.vacf_window
 
-        # self.rdf_loss_weight = params.rdf_loss_weight
-        # self.diffusion_loss_weight = params.diffusion_loss_weight
-        # self.vacf_loss_weight = params.vacf_loss_weight
+        self.rdf_loss_weight = params.rdf_loss_weight
+        self.diffusion_loss_weight = params.diffusion_loss_weight
+        self.vacf_loss_weight = params.vacf_loss_weight
         
         #limit CPU usage
         torch.set_num_threads(10)
@@ -276,7 +278,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         return energy, forces
 
 
-    def forward_nvt(self, radii, velocities, forces, zeta, calc_rdf = False):
+    def forward_nvt(self, radii, velocities, forces, zeta, calc_rdf = False, retain_grad=False):
         # get current accelerations
         accel = forces / self.masses
 
@@ -292,7 +294,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         velocities = velocities + 0.5 * self.dt * (accel - zeta * velocities)
 
         # make a full step in accelerations
-        energy, forces = self.force_calc(radii.to(self.device), retain_grad=False)
+        energy, forces = self.force_calc(radii.to(self.device), retain_grad=retain_grad)
         accel = forces / self.masses
 
         # make a half step in self.zeta
@@ -347,13 +349,11 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         if type(enable_grad) != bool:
             enable_grad = False
 
-        import pdb; pdb.set_trace()
+        
         with torch.enable_grad() if enable_grad else nullcontext():
-            if self.vacf_loss_weight != 0:
-                old_vacf = self.vacf
-
+            import pdb; pdb.set_trace()
             #make an MD step - retain grads
-            new_radii, new_velocities, new_forces, new_zeta, new_rdf, _ = self.forward_nvt(self.radii, self.velocities, forces, self.zeta, calc_rdf = True, calc_diffusion = self.diffusion_loss_weight!=0, calc_vacf = self.vacf_loss_weight!=0, retain_grad = True)
+            new_radii, new_velocities, forces, new_rdf, zeta = self.forward_nvt(self.radii, self.velocities, forces, self.zeta, calc_rdf = True, retain_grad = True)
             
             #compute residuals
             radii_residual  = self.radii - new_radii
@@ -435,7 +435,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             
             
             # length = len(self.running_dists)
-            # self.zeta = zeta
+            self.zeta = zeta
             # #compute diffusion coefficient
             # #if self.diffusion_loss_weight != 0 or not self.nn:
             # msd_data = msd(torch.cat(self.last_h_radii, dim=0), self.box)
@@ -509,7 +509,7 @@ if __name__ == "__main__":
                         device =  torch.device(device))
     elif model_type == "schnet":
         model, model_config = load_schnet_model(path = pretrained_model_path, device = torch.device(device))
-        
+
     
     # #initialize RDF calculator
     diff_rdf = DifferentiableRDF(params, device)#, sample_frac = params.rdf_sample_frac)
@@ -614,7 +614,7 @@ if __name__ == "__main__":
             print(f"Loss: RDF={params.rdf_loss_weight*rdf_loss.item()}+Diffusion={params.diffusion_loss_weight*diffusion_loss.item()}+VACF={params.vacf_loss_weight*vacf_loss.item()}={outer_loss.item()}")
             #compute (implicit) gradient of outer loss wrt model parameters
             start = time.time()
-            torch.autograd.backward(tensors = outer_loss, inputs = list(model.parameters()))
+            torch.autograd.backward(tensors = outer_loss, inputs = list(equilibriated_simulator.model.parameters()))
             end = time.time()
             grad_time = end-start
             print("gradient calculation time (s): ",  grad_time)

@@ -71,7 +71,7 @@ ift:
   burn_in_frac: 0.8
   n_epochs: 100
   diffusion_loss_weight: 0
-  vacf_loss_weight: 1
+  vacf_loss_weight: 0
   rdf_loss_weight: 1
   nn: True
   cutoff: 2.5

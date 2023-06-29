@@ -94,6 +94,7 @@ def load_schnet_model(path = None, num_interactions = None, device = "cpu", mode
             model.load_state_dict(new_dict)
         except:
             model.load_state_dict(checkpoint)
+
         
     return model, schnet_config["model_attributes"] 
 
