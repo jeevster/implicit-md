@@ -339,14 +339,15 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
     '''Stationary condition construction for calculating implicit gradient'''
     def optimality(self, enable_grad = True):
-        import pdb; pdb.set_trace()
+        
         #get current forces - treat as a constant (since it's coming from before the fixed point)
-        forces = self.force_calc(self.radii.detach().cpu().cuda(), retain_grad=False)[1]
+        forces = self.force_calc(self.radii, retain_grad=False)[1]
         
         #hacky fix for non-square matrix stuff
         if type(enable_grad) != bool:
             enable_grad = False
 
+        import pdb; pdb.set_trace()
         with torch.enable_grad() if enable_grad else nullcontext():
             if self.vacf_loss_weight != 0:
                 old_vacf = self.vacf
