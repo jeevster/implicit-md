@@ -148,7 +148,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
         #File dump stuff
         self.f = open(f"{self.save_dir}/log.txt", "a+")
-        self.t = gsd.hoomd.open(name=f'{self.save_dir}/sim_temp{self.temp}.gsd', mode='wb') 
+        self.t = gsd.hoomd.open(name=f'{self.save_dir}/sim_temp{self.temp}.gsd', mode='w') 
         self.n_dump = params.n_dump # dump for configuration
 
     '''memory cleanups'''
@@ -409,6 +409,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
     '''Stationary condition construction for calculating implicit gradient'''
     def optimality(self, enable_grad = True):
         #get current forces - treat as a constant (since it's coming from before the fixed point)
+        import pdb; pdb.set_trace()
         forces = self.force_calc(self.radii, retain_grad=False)[1]
         
         #hacky fix for non-square matrix stuff
@@ -644,7 +645,7 @@ if __name__ == "__main__":
     #load ground truth rdf and diffusion coefficient
     if params.nn:
         add = "_polylj" if params.poly else ""
-        gt_dir = os.path.join('ground_truth' + add, f"n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}")
+        gt_dir = os.path.join('ground_truth' + add, f"n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}_rep_power={params.rep_power}_attr_power={params.attr_power}")
         gt_rdf = torch.Tensor(np.load(os.path.join(gt_dir, "gt_rdf.npy"))).to(device)
         gt_diff_coeff = torch.Tensor(np.load(os.path.join(gt_dir, "gt_diff_coeff.npy"))).to(device)
         gt_vacf = torch.Tensor(np.load(os.path.join(gt_dir, "gt_vacf.npy"))).to(device)[0:params.vacf_window]
