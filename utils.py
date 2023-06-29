@@ -17,7 +17,7 @@ def radii_to_dists(radii, params):
     r = -1*torch.where(r > 0.5*params.box, r-params.box, torch.where(r<-0.5*params.box, r+params.box, r))
 
     #get rid of diagonal 0 entries of r matrix (for gradient stability)
-    r = r[:, ~torch.eye(r.shape[1],dtype=bool)].reshape(r.shape[0], r.shape[1], -1, 3)
+    r = r[~torch.eye(r.shape[1],dtype=bool)].reshape(r.shape[0], -1, 3)
     try:
         r.requires_grad = True
     except RuntimeError:
@@ -124,3 +124,25 @@ def solve_continuity_system(device, x_c, n, m, epsilon):
 
     return c[0], c[1], c[2]
 
+#MD17 utils
+def get_hr(traj, bins):
+    '''
+    compute h(r) (the RDF) for MD17 simulations.
+    traj: T x N_atoms x 3
+    '''
+    pdist = torch.cdist(traj, traj).flatten()
+    hist, _ = np.histogram(pdist[:].flatten().numpy(), bins, density=True)
+    return hist
+    
+def find_hr_from_file(base_path: str, molecule: str, size: str, params):
+    #RDF plotting parameters
+    xlim = params.max_rdf_dist
+    n_bins = int(xlim/params.dr)
+    bins = np.linspace(1e-6, xlim, n_bins + 1) # for computing h(r)
+    # load ground truth data
+    DATAPATH = f'{base_path}/md17/{molecule}/{size}/test/nequip_npz.npz'
+    gt_data = np.load(DATAPATH)
+    gt_traj = torch.FloatTensor(gt_data.f.R)
+    gt_atomicnums = torch.FloatTensor(gt_data.f.z)
+    hist_gt = get_hr(gt_traj, bins)
+    return hist_gt

@@ -25,7 +25,7 @@ class DifferentiableRDF(torch.nn.Module):
     def __init__(self, params, device):
         super(DifferentiableRDF, self).__init__()
         start = 0
-        end =  params.box #torch.max(self.running_dists)
+        end =  params.max_rdf_dist #torch.max(self.running_dists)
         nbins = int(end/params.dr)
         self.cutoff_boundary = end + 5e-1
         self.index_tuple = None

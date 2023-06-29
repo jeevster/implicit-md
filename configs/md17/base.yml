@@ -7,8 +7,7 @@ dataset:
   molecule: benzene
   normalize_labels: False
   model: schnet
-  model_dir: '/home/sanjeevr/nnip-rl/pretrained_models/'
-  schnet_model_dir: '/home/sanjeevr/nnip-rl/pretrained_models/'
+  model_dir: '/home/sanjeevr/nnip-rl/pretrained_models/' #'/data/ishan-amin/MODELPATH'
   save_name: 'nnip-rl'
   
 
@@ -56,17 +55,19 @@ ift:
   min_sigma: 0.73
   dt: 0.005
   dr: 0.01
+  max_rdf_dist: 6
   dv: 0.1
   exp_name: "TEST_vacf+rdf_aggregategrads_bs10_9_3_potential_prior3_0"
   diffusion_window: 1000
   vacf_window: 100
-  batch_size: 10
+  batch_size: 1
   lr: 0.001
   t_total: 15
   nvt_time: 15
   n_replicas: 1
   diameter_viz: 0.3
   n_dump: 20
+  save_intermediate_rdf: False
   burn_in_frac: 0.8
   n_epochs: 100
   diffusion_loss_weight: 0
