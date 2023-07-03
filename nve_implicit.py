@@ -142,9 +142,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.atoms = data_to_atoms(init_data)
 
         #Initialize model (passed in as an argument to make it a meta parameter)
-        import pdb; pdb.set_trace()
         self.model = model
-        
         mlp_params = {'n_gauss': int(params.cutoff//params.gaussian_width), 
                 'r_start': 0.0,
                 'r_end': params.cutoff, 
@@ -152,8 +150,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                 'n_layers': params.n_layers,
                 'nonlinear': params.nonlinear}
 
-
         self.mlp_model = pairMLP(**mlp_params)
+        
         self.model_config = model_config
 
         #Set up simulator and integrator
@@ -270,11 +268,11 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.vacf = nn.Parameter(torch.zeros((self.n_replicas,self.vacf_window)), requires_grad=True).to(self.device)
 
     def force_calc(self, radii, retain_grad = False):
-        if not radii.requires_grad:
-                radii.requires_grad = True
         with torch.enable_grad():
+            if not radii.requires_grad:
+                    radii.requires_grad = True
             energy = self.model(pos = radii, z = self.atomic_numbers)
-        forces = -compute_grad(inputs = radii, output = energy) if retain_grad else -compute_grad(inputs = radii, output = energy).detach()
+            forces = -compute_grad(inputs = radii, output = energy) if retain_grad else -compute_grad(inputs = radii, output = energy).detach()
         return energy, forces
 
 
@@ -285,7 +283,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         # make full step in position 
         radii = radii + velocities * self.dt + \
             (accel - zeta * velocities) * (0.5 * self.dt ** 2)
-
 
         # record current velocities
         KE_0 = torch.sum(torch.square(velocities)) / 2
@@ -343,7 +340,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
     def optimality(self, enable_grad = True):
         
         #get current forces - treat as a constant (since it's coming from before the fixed point)
-        forces = self.force_calc(self.radii, retain_grad=False)[1]
+        # forces = self.force_calc(self.radii, retain_grad=False)[1]
         
         #hacky fix for non-square matrix stuff
         if type(enable_grad) != bool:
@@ -351,9 +348,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
         
         with torch.enable_grad() if enable_grad else nullcontext():
-            import pdb; pdb.set_trace()
             #make an MD step - retain grads
-            new_radii, new_velocities, forces, new_rdf, zeta = self.forward_nvt(self.radii, self.velocities, forces, self.zeta, calc_rdf = True, retain_grad = True)
+            new_radii, new_velocities, forces, new_rdf, zeta = self.forward_nvt(self.radii, self.velocities, self.forces, self.zeta, calc_rdf = True, retain_grad = True)
             
             #compute residuals
             radii_residual  = self.radii - new_radii
@@ -418,7 +414,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                 self.velocities.copy_(velocities)
                 self.rdf.copy_(rdf)
                 
-                
                 # if not self.nn and self.save_intermediate_rdf and step % self.n_dump == 0:
                 #     filename = f"step{step+1}_rdf.npy"
                 #     np.save(os.path.join(self.save_dir, filename), self.rdf.mean(dim = 0).cpu().detach().numpy())
@@ -436,6 +431,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             
             # length = len(self.running_dists)
             self.zeta = zeta
+            self.forces = forces
             # #compute diffusion coefficient
             # #if self.diffusion_loss_weight != 0 or not self.nn:
             # msd_data = msd(torch.cat(self.last_h_radii, dim=0), self.box)
@@ -537,15 +533,17 @@ if __name__ == "__main__":
 
     # #load ground truth rdf and diffusion coefficient
     gt_rdf = torch.Tensor(find_hr_from_file(data_path, molecule, size, params)).to(device)
-    # if params.nn:
+    if params.nn:
     #     add = "_polylj" if params.poly else ""
     #     gt_dir = os.path.join('ground_truth' + add, f"n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}")
     #     gt_rdf = torch.Tensor(np.load(os.path.join(gt_dir, "gt_rdf.npy"))).to(device)
     #     gt_diff_coeff = torch.Tensor(np.load(os.path.join(gt_dir, "gt_diff_coeff.npy"))).to(device)
     #     gt_vacf = torch.Tensor(np.load(os.path.join(gt_dir, "gt_vacf.npy"))).to(device)[0:params.vacf_window]
     #     add = "polylj_" if params.poly else ""
-    #     results = 'results_polylj' if params.poly else 'results'
-    #     results_dir = os.path.join(results, f"IMPLICIT_{add}_{params.exp_name}_n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}_rep_power={params.rep_power}_attr_power={params.attr_power}_dt={params.dt}_ttotal={params.t_total}")
+        results = 'results_nnip'
+        timestep = config['ift']["integrator_config"]["timestep"]
+        ttime = config['ift']["integrator_config"]["ttime"]
+        results_dir = os.path.join(results, f"IMPLICIT_{molecule}_{params.exp_name}_dt={timestep}_ttotal={ttime}")
 
     #initialize outer loop optimizer/scheduler
     optimizer = torch.optim.Adam(list(model.parameters()), lr=params.lr)
@@ -564,8 +562,8 @@ if __name__ == "__main__":
     sim_times = []
     grad_norms = []
     best_outer_loss = 100
-    # if params.nn:
-    #     writer = SummaryWriter(log_dir = results_dir)
+    if params.nn:
+        writer = SummaryWriter(log_dir = results_dir)
     
     for epoch in range(params.n_epochs):
         rdf_loss = torch.Tensor([0]).to(device)
@@ -614,7 +612,7 @@ if __name__ == "__main__":
             print(f"Loss: RDF={params.rdf_loss_weight*rdf_loss.item()}+Diffusion={params.diffusion_loss_weight*diffusion_loss.item()}+VACF={params.vacf_loss_weight*vacf_loss.item()}={outer_loss.item()}")
             #compute (implicit) gradient of outer loss wrt model parameters
             start = time.time()
-            torch.autograd.backward(tensors = outer_loss, inputs = list(equilibriated_simulator.model.parameters()))
+            torch.autograd.backward(tensors = outer_loss, inputs = list(model.parameters()))
             end = time.time()
             grad_time = end-start
             print("gradient calculation time (s): ",  grad_time)
@@ -623,7 +621,7 @@ if __name__ == "__main__":
             if outer_loss < best_outer_loss:
                 best_outer_loss = outer_loss
                 best = True
-            simulator.save_checkpoint(best = best)
+            #simulator.save_checkpoint(best = best)
 
             equilibriated_simulator.cleanup()
 
@@ -646,7 +644,7 @@ if __name__ == "__main__":
             #log stats
             losses.append(outer_loss.item())
             rdf_losses.append(rdf_loss.item())
-            diffusion_losses.append((diffusion_loss.sqrt()/gt_diff_coeff).item())
+            #diffusion_losses.append((diffusion_loss.sqrt()/gt_diff_coeff).item())
             vacf_losses.append(vacf_loss.item())
             sim_times.append(sim_time)
             grad_times.append(grad_time)
@@ -657,7 +655,7 @@ if __name__ == "__main__":
 
             writer.add_scalar('Loss', losses[-1], global_step=epoch+1)
             writer.add_scalar('RDF Loss', rdf_losses[-1], global_step=epoch+1)
-            writer.add_scalar('Relative Diffusion Loss', diffusion_losses[-1], global_step=epoch+1)
+            #writer.add_scalar('Relative Diffusion Loss', diffusion_losses[-1], global_step=epoch+1)
             writer.add_scalar('VACF Loss', vacf_losses[-1], global_step=epoch+1)
             writer.add_scalar('Simulation Time', sim_times[-1], global_step=epoch+1)
             writer.add_scalar('Gradient Time', grad_times[-1], global_step=epoch+1)
