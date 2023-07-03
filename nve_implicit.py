@@ -191,14 +191,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         # self.dt = params.dt
         # self.t_total = params.t_total
 
-        #Nose-Hoover Thermostat stuff
-        self.dt = config["ift"]['integrator_config']["timestep"]
-        self.temp = config["ift"]['integrator_config']["temperature"]
-        self.targeEkin = 0.5 * (3.0 * self.n_atoms) * self.temp
-        self.ttime = config["ift"]["integrator_config"]["ttime"]  # * units.fs
-        self.Q = 3.0 * self.n_atoms * self.temp * (self.ttime * self.dt)**2
-        self.zeta = torch.Tensor([0.0]).to(self.device)
-
         self.diameter_viz = params.diameter_viz
         # self.epsilon = params.epsilon
         # self.rep_power = params.rep_power
@@ -239,7 +231,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
         if self.nn:
             results = 'results_nnip'
-            self.save_dir = os.path.join(results, f"IMPLICIT_{self.molecule}_{params.exp_name}_dt={self.dt}_ttotal={self.ttime}")
+            self.save_dir = os.path.join(results, f"IMPLICIT_{self.molecule}_{params.exp_name}")
         # else: 
         #     add = "_polylj" if self.poly else ""
         #     self.save_dir = os.path.join('ground_truth' + add, f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_rep_power={self.rep_power}_attr_power={self.attr_power}")
@@ -329,7 +321,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
         # # dump frames
         if self.step%self.n_dump == 0:
-            #print(self.step, self.calc_properties(energy), file=self.f)
+            print(self.step, self.calc_properties(energy), file=self.f)
             self.t.append(self.create_frame(frame = self.step/self.n_dump))
         #     #append dists to running_dists for RDF calculation (remove diagonal entries)
         #     if not self.nn:
@@ -436,7 +428,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             
             
             # length = len(self.running_dists)
-            import pdb; pdb.set_trace()
             self.zeta = zeta
             self.forces = forces
             # #compute diffusion coefficient
@@ -499,9 +490,25 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         s.particles.velocity = velocities
         s.particles.diameter = diameter
         diag = torch.Tensor(self.atoms.cell).diag()
+        import pdb; pdb.set_trace()
         s.configuration.box=[200, 200, 200,0,0,0]
-
         return s
+    
+    def calc_properties(self, pe):
+        #TODO
+        # Calculate properties of interest in this function
+        p_dof = 3*self.n_atoms-3
+        vel_squared = torch.sum(torch.square(self.velocities))
+        ke = vel_squared/2
+        temp = 2*ke/p_dof
+        #w = -1/6*torch.sum(self.internal_virial)
+        #pressure = w/self.vol + self.rho*self.kbt0
+        pressure = torch.Tensor(0)
+        return {"Temperature": temp.item(),
+                #"Pressure": pressure,
+                "Potential Energy": pe.item(),
+                "Total Energy": (ke+pe).item(),
+                "Momentum Magnitude": torch.norm(torch.sum(self.velocities, axis =-2)).item()}
         
 if __name__ == "__main__":
     setup_logging() 
@@ -569,7 +576,7 @@ if __name__ == "__main__":
         results = 'results_nnip'
         timestep = config['ift']["integrator_config"]["timestep"]
         ttime = config['ift']["integrator_config"]["ttime"]
-        results_dir = os.path.join(results, f"IMPLICIT_{molecule}_{params.exp_name}_dt={timestep}_ttotal={ttime}")
+        results_dir = os.path.join(results, f"IMPLICIT_{molecule}_{params.exp_name}")
 
     #initialize outer loop optimizer/scheduler
     optimizer = torch.optim.Adam(list(model.parameters()), lr=params.lr)
