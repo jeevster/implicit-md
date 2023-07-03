@@ -119,18 +119,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.config = config
         self.model_dir = os.path.join(config['dataset']["model_dir"], self.model_type, f"{self.name}-{self.molecule}_{self.size}_{self.model_type}")
         self.save_name = config['dataset']["save_name"]
-
-        
         self.train = config['mode'] == 'train'
-        # adjust units.
-        self.config['ift']["integrator_config"]["timestep"] *= units.fs
-        if self.config['ift']["integrator"] in ['NoseHoover', 'NoseHooverChain']:
-            self.config['ift']["integrator_config"]["temperature"] *= units.kB
-
-        self.nsteps = np.rint(config['ift']["integrator_config"]["ttime"]/config['ift']["integrator_config"]["timestep"]).astype(np.int32)
-
-        #create model save path
-        (Path(self.model_dir) / self.save_name).mkdir(parents=True, exist_ok=True)
 
         #initialize datasets
         self.train_dataset = LmdbDataset({'src': os.path.join(config['dataset']['src'], self.name, self.molecule, self.size, 'train')})
@@ -141,6 +130,23 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.n_atoms = init_data['pos'].shape[0]
         self.atoms = data_to_atoms(init_data)
 
+        #Nose-Hoover Thermostat stuff
+        self.dt = config["ift"]['integrator_config']["timestep"] * units.fs
+        self.temp = config["ift"]['integrator_config']["temperature"]
+        # adjust units.
+        if self.config['ift']["integrator"] in ['NoseHoover', 'NoseHooverChain']:
+            self.temp *= units.kB
+        self.targeEkin = 0.5 * (3.0 * self.n_atoms) * self.temp
+        self.ttime = config["ift"]["integrator_config"]["ttime"]
+        self.Q = 3.0 * self.n_atoms * self.temp * (self.ttime * self.dt)**2
+        self.zeta = torch.Tensor([0.0]).to(self.device)
+
+        self.nsteps = np.rint(self.ttime/self.dt).astype(np.int32)
+
+        #create model save path
+        (Path(self.model_dir) / self.save_name).mkdir(parents=True, exist_ok=True)
+
+    
         #Initialize model (passed in as an argument to make it a meta parameter)
         self.model = model
         mlp_params = {'n_gauss': int(params.cutoff//params.gaussian_width), 
@@ -193,7 +199,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.Q = 3.0 * self.n_atoms * self.temp * (self.ttime * self.dt)**2
         self.zeta = torch.Tensor([0.0]).to(self.device)
 
-        # self.diameter_viz = params.diameter_viz
+        self.diameter_viz = params.diameter_viz
         # self.epsilon = params.epsilon
         # self.rep_power = params.rep_power
         # self.attr_power = params.attr_power
@@ -231,10 +237,9 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         # self.diffusion_coefficient = vmap(DiffusionCoefficient(params, self.device) , 1)
         
 
-        # if self.nn:
-        #     add = "polylj_" if self.poly else ""
-        #     results = 'results_polylj' if self.poly else 'results'
-        #     self.save_dir = os.path.join(results, f"IMPLICIT_{add}_{self.exp_name}_n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_rep_power={self.rep_power}_attr_power={self.attr_power}_dt={self.dt}_ttotal={self.t_total}")
+        if self.nn:
+            results = 'results_nnip'
+            self.save_dir = os.path.join(results, f"IMPLICIT_{self.molecule}_{params.exp_name}_dt={self.dt}_ttotal={self.ttime}")
         # else: 
         #     add = "_polylj" if self.poly else ""
         #     self.save_dir = os.path.join('ground_truth' + add, f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_rep_power={self.rep_power}_attr_power={self.attr_power}")
@@ -243,9 +248,9 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         # dump_params_to_yml(self.params, self.save_dir)
 
         # #File dump stuff
-        # self.f = open(f"{self.save_dir}/log.txt", "a+")
-        # self.t = gsd.hoomd.open(name=f'{self.save_dir}/sim_temp{self.temp}.gsd', mode='wb') 
-        # self.n_dump = params.n_dump # dump for configuration
+        self.f = open(f"{self.save_dir}/log.txt", "a+")
+        self.t = gsd.hoomd.open(name=f'{self.save_dir}/sim_temp{self.temp}.gsd', mode='w') 
+        self.n_dump = params.n_dump # dump for configuration
 
     '''memory cleanups'''
     def cleanup(self):
@@ -273,6 +278,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                     radii.requires_grad = True
             energy = self.model(pos = radii, z = self.atomic_numbers)
             forces = -compute_grad(inputs = radii, output = energy) if retain_grad else -compute_grad(inputs = radii, output = energy).detach()
+            assert(not torch.any(torch.isnan(forces)))
         return energy, forces
 
 
@@ -322,9 +328,9 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #     self.last_h_velocities.append(velocities.unsqueeze(0))
 
         # # dump frames
-        # if self.step%self.n_dump == 0:
-        #     print(self.step, self.calc_properties(energy), file=self.f)
-        #     self.t.append(self.create_frame(frame = self.step/self.n_dump))
+        if self.step%self.n_dump == 0:
+            #print(self.step, self.calc_properties(energy), file=self.f)
+            self.t.append(self.create_frame(frame = self.step/self.n_dump))
         #     #append dists to running_dists for RDF calculation (remove diagonal entries)
         #     if not self.nn:
         #         new_dists = radii_to_dists(radii, self.params)
@@ -394,7 +400,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             print("Start MD trajectory")#, file=self.f)
 
             for step in tqdm(range(self.nsteps)):
-                # self.step = step
+                self.step = step
                 
                 calc_rdf = step ==  self.nsteps -1 or self.save_intermediate_rdf or not self.nn
                 # calc_diffusion = (step >= self.nsteps - self.diffusion_window) or self.save_intermediate_rdf or not self.nn #calculate diffusion coefficient if within window from the end
@@ -430,6 +436,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             
             
             # length = len(self.running_dists)
+            import pdb; pdb.set_trace()
             self.zeta = zeta
             self.forces = forces
             # #compute diffusion coefficient
@@ -476,6 +483,25 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         checkpoint_path = os.path.join(self.save_dir, name)
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
         self.model.load_state_dict(checkpoint['model_state'])
+
+    def create_frame(self, frame):
+        # Particle positions, velocities, diameter
+        radii = self.radii.detach()
+        partpos = radii.tolist()
+        velocities = self.velocities.detach().tolist()
+        diameter = self.diameter_viz*np.ones((self.n_atoms,))
+        diameter = diameter.tolist()
+        # Now make gsd file
+        s = gsd.hoomd.Frame()
+        s.configuration.step = frame
+        s.particles.N=self.n_atoms
+        s.particles.position = partpos
+        s.particles.velocity = velocities
+        s.particles.diameter = diameter
+        diag = torch.Tensor(self.atoms.cell).diag()
+        s.configuration.box=[200, 200, 200,0,0,0]
+
+        return s
         
 if __name__ == "__main__":
     setup_logging() 
@@ -603,7 +629,7 @@ if __name__ == "__main__":
 
             #memory cleanup
             last_radii, last_velocities, last_rdf = equilibriated_simulator.cleanup()
-        #simulator.f.close()
+        simulator.f.close()
         
         if params.nn:
             outer_loss = params.rdf_loss_weight*rdf_loss + \

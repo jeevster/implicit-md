@@ -66,10 +66,10 @@ ift:
   nvt_time: 15
   n_replicas: 1
   diameter_viz: 0.3
-  n_dump: 20
+  n_dump: 10
   save_intermediate_rdf: False
   burn_in_frac: 0.8
-  n_epochs: 100
+  n_epochs: 1
   diffusion_loss_weight: 0
   vacf_loss_weight: 0
   rdf_loss_weight: 1
