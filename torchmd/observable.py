@@ -24,9 +24,9 @@ def generate_vol_bins(start, end, nbins, dim):
 class DifferentiableRDF(torch.nn.Module):
     def __init__(self, params, device):
         super(DifferentiableRDF, self).__init__()
-        start = 0
+        start = 1e-6
         end =  params.max_rdf_dist #torch.max(self.running_dists)
-        nbins = int(end/params.dr)
+        nbins = int((end-start)/params.dr) + 1
         self.cutoff_boundary = end + 5e-1
         self.index_tuple = None
 

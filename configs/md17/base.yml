@@ -4,7 +4,7 @@ dataset:
   src: /home/sanjeevr/nnip-rl/data
   name: md17
   size: 10k
-  molecule: benzene
+  molecule: aspirin
   normalize_labels: False
   model: schnet
   model_dir: '/home/sanjeevr/nnip-rl/pretrained_models/' #'/data/ishan-amin/MODELPATH'
@@ -65,11 +65,11 @@ ift:
   t_total: 15
   nvt_time: 15
   n_replicas: 1
-  diameter_viz: 0.3
+  diameter_viz: 0.1
   n_dump: 10
   save_intermediate_rdf: False
   burn_in_frac: 0.8
-  n_epochs: 1
+  n_epochs: 10
   diffusion_loss_weight: 0
   vacf_loss_weight: 0
   rdf_loss_weight: 1
@@ -82,7 +82,7 @@ ift:
   kcal: False
   T_init: 500.
   integrator: NoseHoover
-  integrator_config: {"timestep": 0.5, "temperature": 500., "ttime": 20.}
+  integrator_config: {"timestep": 0.5, "temperature": 500., "ttime": 50.}
   name: md_500ps_discriminatordata_123
 
   

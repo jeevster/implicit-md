@@ -241,7 +241,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
         # #File dump stuff
         self.f = open(f"{self.save_dir}/log.txt", "a+")
-        self.t = gsd.hoomd.open(name=f'{self.save_dir}/sim_temp{self.temp}.gsd', mode='w') 
+        self.t = gsd.hoomd.open(name=f'{self.save_dir}/sim_temp.gsd', mode='w') 
         self.n_dump = params.n_dump # dump for configuration
 
     '''memory cleanups'''
@@ -306,7 +306,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         velocities = (velocities + 0.5 * self.dt * accel) / \
             (1 + 0.5 * self.dt * zeta)
 
-        
         if calc_rdf:
             new_dists = radii_to_dists(radii, self.params)
             
@@ -480,7 +479,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         radii = self.radii.detach()
         partpos = radii.tolist()
         velocities = self.velocities.detach().tolist()
-        diameter = self.diameter_viz*np.ones((self.n_atoms,))
+        diameter = 10*self.diameter_viz*np.ones((self.n_atoms,))
         diameter = diameter.tolist()
         # Now make gsd file
         s = gsd.hoomd.Frame()
@@ -489,9 +488,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         s.particles.position = partpos
         s.particles.velocity = velocities
         s.particles.diameter = diameter
-        diag = torch.Tensor(self.atoms.cell).diag()
-        import pdb; pdb.set_trace()
-        s.configuration.box=[200, 200, 200,0,0,0]
+        s.configuration.box=[10.0, 10.0, 10.0,0,0,0]
+        s.configuration.step = self.dt
         return s
     
     def calc_properties(self, pe):
@@ -637,6 +635,7 @@ if __name__ == "__main__":
             #memory cleanup
             last_radii, last_velocities, last_rdf = equilibriated_simulator.cleanup()
         simulator.f.close()
+        simulator.t.close()
         
         if params.nn:
             outer_loss = params.rdf_loss_weight*rdf_loss + \
