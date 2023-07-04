@@ -1,0 +1,4 @@
+Losses: [52.934814453125]
+Simulation times: [12.652439594268799]
+Gradient calculation times: [0.2548367977142334]
+Max gradient norms: [2.704388180063688e-06]

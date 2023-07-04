@@ -197,6 +197,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         s.particles.position = partpos
         s.particles.velocity = velocities
         s.particles.diameter = diameter
+        import pdb; pdb.set_trace()
         s.configuration.box=[self.box,self.box,self.box,0,0,0]
 
         return s
@@ -409,7 +410,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
     '''Stationary condition construction for calculating implicit gradient'''
     def optimality(self, enable_grad = True):
         #get current forces - treat as a constant (since it's coming from before the fixed point)
-        import pdb; pdb.set_trace()
         forces = self.force_calc(self.radii, retain_grad=False)[1]
         
         #hacky fix for non-square matrix stuff
@@ -713,6 +713,7 @@ if __name__ == "__main__":
             #memory cleanup
             last_radii, last_velocities, last_rdf = equilibriated_simulator.cleanup()
         simulator.f.close()
+        simulator.t.close()
         
         if params.nn:
             outer_loss = params.rdf_loss_weight*rdf_loss + \
