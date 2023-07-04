@@ -59,8 +59,9 @@ class DifferentiableRDF(torch.nn.Module):
         count = self.smear(running_dists.reshape(-1).squeeze()[..., None]).sum(0) 
         norm = count.sum()   # normalization factor for histogram 
         count = count / norm   # normalize 
-        gr =  count / (self.vol_bins / self.V )  
-        return gr
+        # gr =  count / (self.vol_bins / self.V)  
+        # return gr #to match with MD17 RDF computation
+        return 100*count
 
 '''Sanjeev's differentiable velocity histogram implementation - doesn't use system stuff'''
 class DifferentiableVelHist(torch.nn.Module):

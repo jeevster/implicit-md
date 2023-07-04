@@ -60,40 +60,6 @@ from mdsim.common.utils import (
 )
 from mdsim.common.flags import flags
 
-class Simulator:
-    def __init__(self, 
-                 atoms, 
-                 integrator,
-                 T_init,
-                 start_time=0,
-                 save_dir='./log',
-                 restart=False,
-                 save_frequency=100,
-                 min_temp=0.1,
-                 max_temp=100000):
-        self.atoms = atoms
-        self.integrator = integrator
-        self.save_dir = Path(save_dir)
-        self.min_temp = min_temp
-        self.max_temp = max_temp
-        self.natoms = self.atoms.get_number_of_atoms()
-        
-
-        # intialize system momentum 
-        if not restart:
-            assert (self.atoms.get_momenta() == 0).all()
-            MaxwellBoltzmannDistribution(self.atoms, T_init * units.kB)
-        
-        # attach trajectory dump 
-        self.traj = Trajectory(self.save_dir / 'atoms.traj', 'a', self.atoms)
-        self.integrator.attach(self.traj.write, interval=save_frequency)
-        
-        # attach log file
-        # self.integrator.attach(NeuralMDLogger(self.integrator, self.atoms, 
-        #                                 self.save_dir / 'thermo.log', 
-        #                                 start_time=start_time, mode='a'), 
-        #   
-
 
 class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.linear_solve.solve_normal_cg(maxiter=5, atol=0)):
     def __init__(self, config, params, model, model_config):
@@ -236,10 +202,10 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #     add = "_polylj" if self.poly else ""
         #     self.save_dir = os.path.join('ground_truth' + add, f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_rep_power={self.rep_power}_attr_power={self.attr_power}")
 
-        # os.makedirs(self.save_dir, exist_ok = True)
-        # dump_params_to_yml(self.params, self.save_dir)
+        os.makedirs(self.save_dir, exist_ok = True)
+        dump_params_to_yml(self.params, self.save_dir)
 
-        # #File dump stuff
+        #File dump stuff
         self.f = open(f"{self.save_dir}/log.txt", "a+")
         self.t = gsd.hoomd.open(name=f'{self.save_dir}/sim_temp.gsd', mode='w') 
         self.n_dump = params.n_dump # dump for configuration
@@ -261,8 +227,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.radii = nn.Parameter(radii.detach_().clone(), requires_grad=True).to(self.device)
         self.velocities = nn.Parameter(velocities.detach_().clone(), requires_grad=True).to(self.device)
         self.rdf = nn.Parameter(rdf.detach_().clone(), requires_grad=True).to(self.device)
-        self.diff_coeff = nn.Parameter(torch.zeros((self.n_replicas,)), requires_grad=True).to(self.device)
-        self.vacf = nn.Parameter(torch.zeros((self.n_replicas,self.vacf_window)), requires_grad=True).to(self.device)
+        # self.diff_coeff = nn.Parameter(torch.zeros((self.n_replicas,)), requires_grad=True).to(self.device)
+        # self.vacf = nn.Parameter(torch.zeros((self.n_replicas,self.vacf_window)), requires_grad=True).to(self.device)
 
     def force_calc(self, radii, retain_grad = False):
         with torch.enable_grad():
@@ -448,9 +414,9 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
             # #compute ground truth rdf over entire trajectory (do it on CPU to avoid memory issues)
             # save_velhist = self.diff_vel_hist_cpu(torch.stack(self.running_vels[int(self.burn_in_frac*length):], dim = 1)) if not self.nn else velhist
-            # save_rdf = self.diff_rdf_cpu(self.running_dists[int(self.burn_in_frac*length):]) if not self.nn else self.rdf
-            # filename ="gt_rdf.npy" if not self.nn else f"rdf_epoch{epoch+1}.npy"
-            # np.save(os.path.join(self.save_dir, filename), save_rdf.mean(dim=0).cpu().detach().numpy())
+            save_rdf = self.rdf
+            filename = f"rdf_epoch{epoch+1}.npy"
+            np.save(os.path.join(self.save_dir, filename), save_rdf.mean(dim=0).cpu().detach().numpy())
 
             # filename ="gt_velhist.npy" if not self.nn else f"velhist_epoch{epoch+1}.npy"
             # np.save(os.path.join(self.save_dir, filename), save_velhist.mean(dim=0).cpu().detach().numpy())
@@ -536,8 +502,11 @@ if __name__ == "__main__":
                         device =  torch.device(device))
     elif model_type == "schnet":
         model, model_config = load_schnet_model(path = pretrained_model_path, device = torch.device(device))
+    #count number of trainable params
+    model_parameters = filter(lambda p: p.requires_grad, model.parameters())
+    num_params = sum([np.prod(p.size()) for p in model_parameters])
+    print(f"{num_params} trainable parameters in {model_type} model")
 
-    
     # #initialize RDF calculator
     diff_rdf = DifferentiableRDF(params, device)#, sample_frac = params.rdf_sample_frac)
 
@@ -602,7 +571,7 @@ if __name__ == "__main__":
         diffusion_loss = torch.Tensor([0]).to(device)
         best = False
         print(f"Epoch {epoch+1}")
-        # restart_override = epoch==0 or (torch.rand(size=(1,)) < params.restart_probability).item()
+        restart_override = epoch==0 or (torch.rand(size=(1,)) <= params.restart_probability).item()
         
 
         optimizer.zero_grad()
@@ -610,16 +579,18 @@ if __name__ == "__main__":
         #run MD simulation to get equilibriated radii
         for i in range(params.batch_size):
             #if continuing simulation, initialize with equilibriated NVT coupling constant 
-            restart = True #i == 0 and restart_override
+            restart = i == 0 and restart_override
             #initialize simulator parameterized by a NN model
             if restart: #start from FCC lattice
                 print("Initialize from FCC lattice")
                 simulator = ImplicitMDSimulator(config, params, model, model_config)
             else: #continue from where we left off in the last epoch/batch
                 simulator.reset(last_radii, last_velocities, last_rdf)
-                
-            if not restart:
                 simulator.zeta = equilibriated_simulator.zeta
+                if i !=0:
+                    simulator.nsteps = max(params.vacf_window, params.loss_measure_freq)
+                
+            
             start = time.time()
             equilibriated_simulator = simulator.solve()
             end = time.time()
@@ -634,8 +605,7 @@ if __name__ == "__main__":
 
             #memory cleanup
             last_radii, last_velocities, last_rdf = equilibriated_simulator.cleanup()
-        simulator.f.close()
-        simulator.t.close()
+        
         
         if params.nn:
             outer_loss = params.rdf_loss_weight*rdf_loss + \
@@ -653,7 +623,7 @@ if __name__ == "__main__":
             if outer_loss < best_outer_loss:
                 best_outer_loss = outer_loss
                 best = True
-            #simulator.save_checkpoint(best = best)
+            simulator.save_checkpoint(best = best)
 
             equilibriated_simulator.cleanup()
 
@@ -693,9 +663,9 @@ if __name__ == "__main__":
             writer.add_scalar('Gradient Time', grad_times[-1], global_step=epoch+1)
             writer.add_scalar('Gradient Norm', grad_norms[-1], global_step=epoch+1)
         
-            
+    simulator.f.close()
+    simulator.t.close()
 
-    
     if params.nn:
         stats_write_file = os.path.join(simulator.save_dir, 'stats.txt')
         with open(stats_write_file, "w") as output:
