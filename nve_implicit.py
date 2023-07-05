@@ -40,7 +40,8 @@ from nequip.ase.nequip_calculator import nequip_calculator
 from ase.calculators.singlepoint import SinglePointCalculator as sp
 from ase.md import MDLogger
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
-from ase.io import Trajectory
+from ase.io import read, Trajectory
+from ase.neighborlist import natural_cutoffs, NeighborList
 
 import mdsim.md.integrator as md_integrator
 from mdsim.common.registry import registry
@@ -96,6 +97,17 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         init_data = self.train_dataset.__getitem__(10)
         self.n_atoms = init_data['pos'].shape[0]
         self.atoms = data_to_atoms(init_data)
+
+        #extract bond and atom type information
+        NL = NeighborList(natural_cutoffs(self.atoms), self_interaction=False)
+        NL.update(self.atoms)
+        self.bonds = torch.tensor(NL.get_connectivity_matrix().todense().nonzero()).to(self.device).T
+        self.atom_types_list = list(set(self.atoms.get_chemical_symbols()))
+        self.atom_types = self.atoms.get_chemical_symbols()
+        type_to_index = {value: index for index, value in enumerate(self.atom_types_list)}
+        self.typeid = np.zeros(self.n_atoms, dtype=int)
+        for i, _type in enumerate(self.atom_types):
+            self.typeid[i] = type_to_index[_type]    
 
         #Nose-Hoover Thermostat stuff
         self.dt = config["ift"]['integrator_config']["timestep"] * units.fs
@@ -454,6 +466,11 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         s.particles.diameter = diameter
         s.configuration.box=[10.0, 10.0, 10.0,0,0,0]
         s.configuration.step = self.dt
+
+        s.bonds.N = self.bonds.shape[0]
+        s.bonds.types = self.atom_types_list
+        s.bonds.typeid = self.typeid
+        s.bonds.group = self.bonds.cpu().numpy()
         return s
     
     def calc_properties(self, pe):
@@ -591,14 +608,13 @@ if __name__ == "__main__":
                 if i !=0:
                     simulator.nsteps = max(params.vacf_window, params.loss_measure_freq)
                 
-            
             start = time.time()
             equilibriated_simulator = simulator.solve()
             end = time.time()
             sim_time = end-start
             print("MD simulation time (s): ", sim_time)
             
-            #aggregate rdf across the samples
+            #aggregate rdf across timesteps to reduce noise
             if params.nn:
                 rdf += equilibriated_simulator.rdf / params.batch_size
                 # diffusion_loss += (equilibriated_simulator.diff_coeff - gt_diff_coeff).pow(2).mean() / params.batch_size# if params.diffusion_loss_weight != 0 else torch.Tensor([0.]).to(device)

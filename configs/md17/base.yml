@@ -50,7 +50,7 @@ ift:
   exp_name: "TEST_mymodel"
   diffusion_window: 1000
   vacf_window: 10
-  batch_size: 100
+  batch_size: 1
   lr: 0.001
   t_total: 100
   nvt_time: 100
@@ -74,7 +74,7 @@ ift:
   kcal: False
   T_init: 500.
   integrator: NoseHoover
-  steps: 10
+  steps: 1000
   integrator_config: {"timestep": 0.5, "temperature": 500., "ttime": 20.} ##ttime is only used for NVT setup - it's not the total time
   name: md_500ps_discriminatordata_123
 
