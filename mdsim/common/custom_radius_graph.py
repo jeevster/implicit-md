@@ -125,9 +125,9 @@ def radius_graph(x,
     return torch.stack([row, col], dim=0)
 
 
-# def detach_numpy(tensor):
-#     tensor = tensor.detach().cpu()
-#     if torch._C._functorch.is_gradtrackingtensor(tensor):
-#         tensor = torch._C._functorch.get_unwrapped(tensor)
-#         return np.array(tensor.storage().tolist()).reshape(tensor.shape)
-#     return tensor.numpy()
+def detach_numpy(tensor):
+    tensor = tensor.detach().cpu()
+    if torch._C._functorch.is_gradtrackingtensor(tensor):
+        tensor = torch._C._functorch.get_unwrapped(tensor)
+        return np.array(tensor.storage().tolist()).reshape(tensor.shape)
+    return tensor.numpy()

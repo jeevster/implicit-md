@@ -7,7 +7,7 @@ dataset:
   molecule: aspirin
   normalize_labels: False
   model: schnet
-  model_dir: '/home/sanjeevr/nnip-rl/pretrained_models/' #'/data/ishan-amin/MODELPATH'
+  model_dir: '/home/sanjeevr/nnip-rl/pretrained_models/' #'/home/sanjeevr/MDsim/MODELPATH'  #'/data/ishan-amin/MODELPATH'
   save_name: 'nnip-rl'
   
 
@@ -15,13 +15,6 @@ logger:
   log_to_wandb: False
   wandb_api_key: f7892f37dd96b5f1da5c85a410300bb661f3c4de
   project: nnip-rl-gail
-
-task:
-  r_max_reward: 1.25 #this is for fitting the GMM (Nequip will still use the r_max from the original model config)
-  variance_mode: "diag" #fixed, diag, or full
-  training_iterations: 100
-  reward_mode: 'gail'
-  discriminator_name: 'train_discriminator_lrdecay'
 
 
 #   dataset: lmdb
@@ -33,10 +26,7 @@ task:
 #   grad_input: atomic forces
 #   train_on_free_atoms: True
 #   eval_on_free_atoms: True
-    
-eval:
-  evaluation_duration_unit: "episodes"
-  env_config: {"mode": "eval"}
+  
 
 ift:
   seed: 123
@@ -57,25 +47,25 @@ ift:
   dr: 0.01
   max_rdf_dist: 6
   dv: 0.1
-  exp_name: "TEST_bs1_norestart"
+  exp_name: "TEST_mymodel"
   diffusion_window: 1000
   vacf_window: 100
   batch_size: 1
   lr: 0.001
-  t_total: 15
-  nvt_time: 15
+  t_total: 100
+  nvt_time: 100
   n_replicas: 1
-  diameter_viz: 0.1
+  diameter_viz: 0.08
   n_dump: 10
   save_intermediate_rdf: False
   burn_in_frac: 0.8
-  n_epochs: 50
+  n_epochs: 1
   diffusion_loss_weight: 0
   vacf_loss_weight: 0
   rdf_loss_weight: 1
   nn: True
   cutoff: 2.5
-  restart_probability: 0.0
+  restart_probability: 1.0
   loss_measure_freq: 100
   gaussian_width: 0.1
   n_width: 128
@@ -84,26 +74,7 @@ ift:
   kcal: False
   T_init: 500.
   integrator: NoseHoover
-  integrator_config: {"timestep": 0.5, "temperature": 500., "ttime": 50.}
+  steps: 10000
+  integrator_config: {"timestep": 0.5, "temperature": 500., "ttime": 20.} ##ttime is only used for NVT setup - it's not the total time
   name: md_500ps_discriminatordata_123
-
-  
-optim:
-  early_stopping_time: 604800
-  early_stopping_lr: 0.000001 
-  seed: 123
-  n_replicas: 1
-  vacf_window: 100
-
-simulate:
-  
-
-
-# nequip_data_config: configs/simulate/nequip_data_cfg/aspirin.yml
-# identifier: 300ps
-# sim_type: ocp
-# seed: 123
-
-# steps: 100000
-# max_test_points: 1000
 

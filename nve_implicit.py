@@ -45,6 +45,7 @@ from ase.io import Trajectory
 import mdsim.md.integrator as md_integrator
 from mdsim.common.registry import registry
 from mdsim.common.utils import setup_imports, setup_logging, compute_bond_lengths, load_schnet_model, data_to_atoms, atoms_to_batch, atoms_to_state_dict
+from mdsim.common.custom_radius_graph import detach_numpy
 from mdsim.datasets import data_list_collater
 from mdsim.datasets.lmdb_dataset import LmdbDataset, data_list_collater
 
@@ -72,9 +73,9 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             self.device = "cpu"
 
         #Set random seeds
-        np.random.seed(seed=config['optim']['seed'])
-        torch.manual_seed(config['optim']['seed'])
-        random.seed(config['optim']['seed'])
+        np.random.seed(seed=params.seed)
+        torch.manual_seed(params.seed)
+        random.seed(params.seed)
 
         self.name = config['dataset']['name']
         self.molecule = config['dataset']['molecule']
@@ -92,7 +93,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.valid_dataset = LmdbDataset({'src': os.path.join(config['dataset']['src'], self.name, self.molecule, self.size, 'val')})
 
         #get first configuration from dataset
-        init_data = self.train_dataset.__getitem__(0)
+        init_data = self.train_dataset.__getitem__(10)
         self.n_atoms = init_data['pos'].shape[0]
         self.atoms = data_to_atoms(init_data)
 
@@ -107,7 +108,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.Q = 3.0 * self.n_atoms * self.temp * (self.ttime * self.dt)**2
         self.zeta = torch.Tensor([0.0]).to(self.device)
 
-        self.nsteps = np.rint(self.ttime/self.dt).astype(np.int32)
+        self.nsteps = params.steps
 
         #create model save path
         (Path(self.model_dir) / self.save_name).mkdir(parents=True, exist_ok=True)
@@ -248,8 +249,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         radii = radii + velocities * self.dt + \
             (accel - zeta * velocities) * (0.5 * self.dt ** 2)
 
-        # record current velocities
-        KE_0 = torch.sum(torch.square(velocities)) / 2
+        # record current KE
+        KE_0 = torch.sum(self.masses*(torch.square(velocities))) / 2
         
         # make half a step in velocity
         velocities = velocities + 0.5 * self.dt * (accel - zeta * velocities)
@@ -262,7 +263,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         zeta = zeta + 0.5 * self.dt * (1/self.Q) * (KE_0 - self.targeEkin)
 
         #get updated KE
-        ke = torch.sum(torch.square(velocities))/ 2
+        ke = torch.sum(self.masses*(torch.square(velocities))) / 2
 
         # make another halfstep in self.zeta
         zeta = zeta + 0.5 * self.dt * \
@@ -354,7 +355,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             _, forces = self.force_calc(self.radii)
             zeta = self.zeta
             #Run MD
-            print("Start MD trajectory")#, file=self.f)
+            print("Start MD trajectory", file=self.f)
 
             for step in tqdm(range(self.nsteps)):
                 self.step = step
@@ -416,7 +417,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             # save_velhist = self.diff_vel_hist_cpu(torch.stack(self.running_vels[int(self.burn_in_frac*length):], dim = 1)) if not self.nn else velhist
             save_rdf = self.rdf
             filename = f"rdf_epoch{epoch+1}.npy"
-            np.save(os.path.join(self.save_dir, filename), save_rdf.mean(dim=0).cpu().detach().numpy())
+            np.save(os.path.join(self.save_dir, filename), save_rdf.cpu().detach().numpy())
 
             # filename ="gt_velhist.npy" if not self.nn else f"velhist_epoch{epoch+1}.npy"
             # np.save(os.path.join(self.save_dir, filename), save_velhist.mean(dim=0).cpu().detach().numpy())
@@ -442,9 +443,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
     def create_frame(self, frame):
         # Particle positions, velocities, diameter
-        radii = self.radii.detach()
-        partpos = radii.tolist()
-        velocities = self.velocities.detach().tolist()
+        partpos = detach_numpy(self.radii).tolist()
+        velocities = detach_numpy(self.velocities).tolist()
         diameter = 10*self.diameter_viz*np.ones((self.n_atoms,))
         diameter = diameter.tolist()
         # Now make gsd file
@@ -459,12 +459,10 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         return s
     
     def calc_properties(self, pe):
-        #TODO
         # Calculate properties of interest in this function
-        p_dof = 3*self.n_atoms-3
-        vel_squared = torch.sum(torch.square(self.velocities))
-        ke = vel_squared/2
-        temp = 2*ke/p_dof
+        p_dof = 3*self.n_atoms
+        ke = torch.sum(self.masses*torch.square(self.velocities)) / 2
+        temp = (2*ke/p_dof) / units.kB
         #w = -1/6*torch.sum(self.internal_virial)
         #pressure = w/self.vol + self.rho*self.kbt0
         pressure = torch.Tensor(0)
@@ -472,7 +470,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                 #"Pressure": pressure,
                 "Potential Energy": pe.item(),
                 "Total Energy": (ke+pe).item(),
-                "Momentum Magnitude": torch.norm(torch.sum(self.velocities, axis =-2)).item()}
+                "Momentum Magnitude": torch.norm(torch.sum(self.masses*self.velocities, axis =-2)).item()}
         
 if __name__ == "__main__":
     setup_logging() 
@@ -496,6 +494,8 @@ if __name__ == "__main__":
     
     logging.info(f"Loading pretrained {model_type} model")
     pretrained_model_path = os.path.join(config["dataset"]['model_dir'], model_type, f"{name}-{molecule}_{size}_{model_type}") 
+    #pretrained_model_path = os.path.join(config["dataset"]['model_dir'], f"{name}-{molecule}_{size}_{model_type}") 
+
 
     if model_type == "nequip":
         model, model_config = Trainer.load_model_from_training_session(pretrained_model_path, \
@@ -531,8 +531,7 @@ if __name__ == "__main__":
     # velocities_0  = initialize_velocities(params.n_particle, params.temp, n_replicas = params.n_replicas)
     # rdf_0  = diff_rdf(tuple(radii_to_dists(radii_0[0].unsqueeze(0).to(device), params))).unsqueeze(0).repeat(params.n_replicas, 1)
 
-    # #load ground truth rdf and diffusion coefficient
-    gt_rdf = torch.Tensor(find_hr_from_file(data_path, molecule, size, params)).to(device)
+    
     if params.nn:
     #     add = "_polylj" if params.poly else ""
     #     gt_dir = os.path.join('ground_truth' + add, f"n={params.n_particle}_box={params.box}_temp={params.temp}_eps={params.epsilon}_sigma={params.sigma}")
@@ -545,6 +544,9 @@ if __name__ == "__main__":
         ttime = config['ift']["integrator_config"]["ttime"]
         results_dir = os.path.join(results, f"IMPLICIT_{molecule}_{params.exp_name}")
 
+    # #load ground truth rdf and diffusion coefficient
+    gt_rdf = torch.Tensor(find_hr_from_file(data_path, molecule, size, params)).to(device)
+    
     #initialize outer loop optimizer/scheduler
     optimizer = torch.optim.Adam(list(model.parameters()), lr=params.lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=10)
@@ -665,6 +667,8 @@ if __name__ == "__main__":
         
     simulator.f.close()
     simulator.t.close()
+    np.save(os.path.join(results_dir, 'gt_rdf.npy'), gt_rdf.cpu())
+
 
     if params.nn:
         stats_write_file = os.path.join(simulator.save_dir, 'stats.txt')
