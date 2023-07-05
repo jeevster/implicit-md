@@ -50,18 +50,19 @@ def fcc_positions(n_particle, box, device):
 
    
 # Procedure to initialize velocities
-def initialize_velocities(n_particle, temp, n_replicas):
-    
+def initialize_velocities(n_particle, masses, temp):
+    masses = masses.cpu().numpy()
     vel_dist = maxwell()
-    velocities = vel_dist.rvs(size = (n_replicas, n_particle, 3))
+    momenta = masses * vel_dist.rvs(size = (n_particle, 3))
     #shift so that initial momentum is zero
-    velocities -= np.mean(velocities, axis = 1, keepdims=True)
+    momenta -= np.mean(momenta, axis = 0, keepdims=True)
 
     #scale velocities to match desired temperature
-    sum_vsq = np.sum(np.square(velocities), axis = (1,2), keepdims=True)
-    p_dof = 3*(n_particle-1)
-    correction_factor = np.sqrt(p_dof*temp/sum_vsq)
-    velocities *= correction_factor
+    ke = (momenta**2 / (2*masses)).sum()
+    targeEkin = 0.5 * (3.0 * n_particle) * temp
+    correction_factor = np.sqrt(targeEkin / ke)
+    momenta *= correction_factor
+    velocities = momenta/masses
     return torch.Tensor(velocities)
 
 #inverse cdf for power law with exponent 'power' and min value y_min

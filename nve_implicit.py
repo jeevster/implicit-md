@@ -157,7 +157,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
         #Register inner parameters
         self.radii = nn.Parameter(torch.Tensor(self.atoms.get_positions()).clone(), requires_grad=True).to(self.device)
-        self.velocities = nn.Parameter(torch.Tensor(self.atoms.get_velocities()).clone(), requires_grad=True).to(self.device)
+        self.velocities = nn.Parameter(torch.Tensor(initialize_velocities(self.n_atoms, self.masses, self.temp)).clone(), requires_grad=True).to(self.device)
+        
         self.rdf = nn.Parameter(torch.zeros((int(self.params.max_rdf_dist/self.params.dr),)), requires_grad=True).to(self.device)
         # self.diff_coeff = nn.Parameter(torch.zeros((self.n_replicas,)), requires_grad=True).to(self.device)
         # self.vacf = nn.Parameter(torch.zeros((self.n_replicas,self.vacf_window)), requires_grad=True).to(self.device)
