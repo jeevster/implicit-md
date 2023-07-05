@@ -7,6 +7,7 @@ import yaml
 import os
 import gc
 import matplotlib.pyplot as plt
+from torchmd.observable import DifferentiableRDF
 
 
 def radii_to_dists(radii, params):
@@ -134,15 +135,16 @@ def get_hr(traj, bins):
     hist, _ = np.histogram(pdist[:].flatten().numpy(), bins, density=True)
     return hist
     
-def find_hr_from_file(base_path: str, molecule: str, size: str, params):
+def find_hr_from_file(base_path: str, molecule: str, size: str, params, device):
     #RDF plotting parameters
     xlim = params.max_rdf_dist
+    diff_rdf = DifferentiableRDF(params, device)
     n_bins = int(xlim/params.dr)
     bins = np.linspace(1e-6, xlim, n_bins + 1) # for computing h(r)
     # load ground truth data
     DATAPATH = f'{base_path}/md17/{molecule}/{size}/test/nequip_npz.npz'
     gt_data = np.load(DATAPATH)
     gt_traj = torch.FloatTensor(gt_data.f.R)
-    gt_atomicnums = torch.FloatTensor(gt_data.f.z)
     hist_gt = get_hr(gt_traj, bins)
+    hist_gt = 100*hist_gt/ hist_gt.sum()
     return hist_gt

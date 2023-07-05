@@ -55,7 +55,8 @@ class DifferentiableRDF(torch.nn.Module):
         #                                        index_tuple=self.index_tuple, 
         #                                        get_dis=True)
         running_dists = torch.cat(running_dists)
-        
+        mask = running_dists !=0
+        running_dists = running_dists[mask]
         count = self.smear(running_dists.reshape(-1).squeeze()[..., None]).sum(0) 
         norm = count.sum()   # normalization factor for histogram 
         count = count / norm   # normalize 

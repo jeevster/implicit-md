@@ -415,9 +415,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
             # #compute ground truth rdf over entire trajectory (do it on CPU to avoid memory issues)
             # save_velhist = self.diff_vel_hist_cpu(torch.stack(self.running_vels[int(self.burn_in_frac*length):], dim = 1)) if not self.nn else velhist
-            save_rdf = self.rdf
-            filename = f"rdf_epoch{epoch+1}.npy"
-            np.save(os.path.join(self.save_dir, filename), save_rdf.cpu().detach().numpy())
+            
 
             # filename ="gt_velhist.npy" if not self.nn else f"velhist_epoch{epoch+1}.npy"
             # np.save(os.path.join(self.save_dir, filename), save_velhist.mean(dim=0).cpu().detach().numpy())
@@ -545,8 +543,8 @@ if __name__ == "__main__":
         results_dir = os.path.join(results, f"IMPLICIT_{molecule}_{params.exp_name}")
 
     # #load ground truth rdf and diffusion coefficient
-    gt_rdf = torch.Tensor(find_hr_from_file(data_path, molecule, size, params)).to(device)
-    
+    gt_rdf = torch.Tensor(find_hr_from_file(data_path, molecule, size, params, device)).to(device)
+    np.save(os.path.join(results_dir, 'gt_rdf.npy'), gt_rdf.cpu())
     #initialize outer loop optimizer/scheduler
     optimizer = torch.optim.Adam(list(model.parameters()), lr=params.lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=10)
@@ -568,6 +566,7 @@ if __name__ == "__main__":
         writer = SummaryWriter(log_dir = results_dir)
     
     for epoch in range(params.n_epochs):
+        rdf = torch.zeros_like(gt_rdf).to(device)
         rdf_loss = torch.Tensor([0]).to(device)
         vacf_loss = torch.Tensor([0]).to(device)
         diffusion_loss = torch.Tensor([0]).to(device)
@@ -599,15 +598,19 @@ if __name__ == "__main__":
             sim_time = end-start
             print("MD simulation time (s): ", sim_time)
             
-            #compute loss at the end of the trajectory
+            #aggregate rdf across the samples
             if params.nn:
-                rdf_loss += (equilibriated_simulator.rdf - gt_rdf).pow(2).mean() / params.batch_size
+                rdf += equilibriated_simulator.rdf / params.batch_size
                 # diffusion_loss += (equilibriated_simulator.diff_coeff - gt_diff_coeff).pow(2).mean() / params.batch_size# if params.diffusion_loss_weight != 0 else torch.Tensor([0.]).to(device)
                 # vacf_loss += (equilibriated_simulator.vacf - gt_vacf).pow(2).mean() / params.batch_size# if params.vacf_loss_weight != 0 else torch.Tensor([0.]).to(device)
 
             #memory cleanup
             last_radii, last_velocities, last_rdf = equilibriated_simulator.cleanup()
         
+        #save rdf and compute loss at the end of the trajectory
+        filename = f"rdf_epoch{epoch+1}.npy"
+        np.save(os.path.join(results_dir, filename), rdf.cpu().detach().numpy())
+        rdf_loss = (rdf - gt_rdf).pow(2).mean()
         
         if params.nn:
             outer_loss = params.rdf_loss_weight*rdf_loss + \
