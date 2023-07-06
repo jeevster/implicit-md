@@ -85,8 +85,8 @@ def load_schnet_model(path = None, ckpt_epoch = -1, num_interactions = None, dev
 
     if from_pretrained:
         #get checkpoint
-        ckpt_path = os.path.join(path, "checkpoints", "best_checkpoint.pt")
-        checkpoint = {k: v.to(device) for k,v in torch.load(ckpt_path, map_location = torch.device("cpu"))['state_dict'].items()}
+        print(f'Loading model weights from {ckpt_and_config_path}')
+        checkpoint = {k: v.to(device) for k,v in torch.load(ckpt_and_config_path, map_location = torch.device("cpu"))['state_dict'].items()}
         #checkpoint =  torch.load(ckpt_path, map_location = device)["state_dict"]
         try:
             new_dict = {k[7:]: v for k, v in checkpoint.items()}

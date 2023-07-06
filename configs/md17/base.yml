@@ -34,11 +34,11 @@ ift:
   dr: 0.02
   max_rdf_dist: 10
   dv: 0.1
-  exp_name: "TEST_bs100_norestart"
+  exp_name: "TEST_bs200_norestart_epoch0"
   diffusion_window: 1000
   vacf_window: 1
-  batch_size: 100
-  loss_measure_freq: 20
+  batch_size: 200
+  loss_measure_freq: 10
   steps: 1
   restart_probability: 0.0
   lr: 0.001
