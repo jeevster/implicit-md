@@ -80,7 +80,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
         self.name = config['dataset']['name']
         self.molecule = config['dataset']['molecule']
-        self.size = config['dataset']['size']
+        self.size = '10k' #override for now #config['dataset']['size']
         self.model_type = config['dataset']['model']
 
         logging.info("Initializing MD simulation environment")
@@ -123,19 +123,19 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.nsteps = params.steps
 
         #create model save path
-        (Path(self.model_dir) / self.save_name).mkdir(parents=True, exist_ok=True)
+        #(Path(self.model_dir) / self.save_name).mkdir(parents=True, exist_ok=True)
 
     
         #Initialize model (passed in as an argument to make it a meta parameter)
         self.model = model
-        mlp_params = {'n_gauss': int(params.cutoff//params.gaussian_width), 
-                'r_start': 0.0,
-                'r_end': params.cutoff, 
-                'n_width': params.n_width,
-                'n_layers': params.n_layers,
-                'nonlinear': params.nonlinear}
+        # mlp_params = {'n_gauss': int(params.cutoff//params.gaussian_width), 
+        #         'r_start': 0.0,
+        #         'r_end': params.cutoff, 
+        #         'n_width': params.n_width,
+        #         'n_layers': params.n_layers,
+        #         'nonlinear': params.nonlinear}
 
-        self.mlp_model = pairMLP(**mlp_params)
+        # self.mlp_model = pairMLP(**mlp_params)
         
         self.model_config = model_config
 
@@ -517,7 +517,7 @@ if __name__ == "__main__":
         model, model_config = Trainer.load_model_from_training_session(pretrained_model_path, \
                         device =  torch.device(device))
     elif model_type == "schnet":
-        model, model_config = load_schnet_model(path = pretrained_model_path, device = torch.device(device))
+        model, model_config = load_schnet_model(path = pretrained_model_path, ckpt_epoch = config["dataset"]['checkpoint_epoch'], device = torch.device(device))
     #count number of trainable params
     model_parameters = filter(lambda p: p.requires_grad, model.parameters())
     num_params = sum([np.prod(p.size()) for p in model_parameters])
@@ -561,7 +561,7 @@ if __name__ == "__main__":
         results_dir = os.path.join(results, f"IMPLICIT_{molecule}_{params.exp_name}")
         os.makedirs(results_dir, exist_ok = True)
     # #load ground truth rdf and diffusion coefficient
-    gt_rdf = torch.Tensor(find_hr_from_file(data_path, molecule, size, params, device)).to(device)
+    gt_rdf = torch.Tensor(find_hr_from_file(data_path, molecule, '10k', params, device)).to(device)
     np.save(os.path.join(results_dir, 'gt_rdf.npy'), gt_rdf.cpu())
     #initialize outer loop optimizer/scheduler
     optimizer = torch.optim.Adam(list(model.parameters()), lr=params.lr)

@@ -72,9 +72,10 @@ OFFSET_LIST = [
     [1, 1, 1],
 ]
 
-def load_schnet_model(path = None, num_interactions = None, device = "cpu", mode="policy", from_pretrained=True):
+def load_schnet_model(path = None, ckpt_epoch = -1, num_interactions = None, device = "cpu", from_pretrained=True):
     
-    ckpt_and_config_path = os.path.join(path, "checkpoints", "best_checkpoint.pt")
+    cname = 'best_checkpoint.pt' if ckpt_epoch == -1 else f"checkpoint{ckpt_epoch}.pt"
+    ckpt_and_config_path = os.path.join(path, "checkpoints", cname)
     schnet_config = torch.load(ckpt_and_config_path, map_location=torch.device("cpu"))["config"]
     if num_interactions: #manual override
         schnet_config["model_attributes"]["num_interactions"] = num_interactions
