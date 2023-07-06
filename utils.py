@@ -14,8 +14,8 @@ def radii_to_dists(radii, params):
     #Get rij matrix
     r = radii.unsqueeze(-3) - radii.unsqueeze(-2)
     
-    #Enforce minimum image convention
-    r = -1*torch.where(r > 0.5*params.box, r-params.box, torch.where(r<-0.5*params.box, r+params.box, r))
+    # #Enforce minimum image convention
+    # r = -1*torch.where(r > 0.5*params.box, r-params.box, torch.where(r<-0.5*params.box, r+params.box, r))
 
     #get rid of diagonal 0 entries of r matrix (for gradient stability)
     r = r[~torch.eye(r.shape[1],dtype=bool)].reshape(r.shape[0], -1, 3)

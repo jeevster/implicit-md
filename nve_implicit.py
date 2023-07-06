@@ -471,7 +471,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         s.bonds.N = self.bonds.shape[0]
         s.bonds.types = self.atom_types_list
         s.bonds.typeid = self.typeid
-        s.bonds.group = self.bonds.cpu().numpy()
+        s.bonds.group = detach_numpy(self.bonds)
         return s
     
     def calc_properties(self, pe):
@@ -559,7 +559,7 @@ if __name__ == "__main__":
         timestep = config['ift']["integrator_config"]["timestep"]
         ttime = config['ift']["integrator_config"]["ttime"]
         results_dir = os.path.join(results, f"IMPLICIT_{molecule}_{params.exp_name}")
-
+        os.makedirs(results_dir, exist_ok = True)
     # #load ground truth rdf and diffusion coefficient
     gt_rdf = torch.Tensor(find_hr_from_file(data_path, molecule, size, params, device)).to(device)
     np.save(os.path.join(results_dir, 'gt_rdf.npy'), gt_rdf.cpu())

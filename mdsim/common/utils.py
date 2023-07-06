@@ -72,8 +72,6 @@ OFFSET_LIST = [
     [1, 1, 1],
 ]
 
-
-
 def load_schnet_model(path = None, num_interactions = None, device = "cpu", mode="policy", from_pretrained=True):
     
     ckpt_and_config_path = os.path.join(path, "checkpoints", "best_checkpoint.pt")
