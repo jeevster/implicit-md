@@ -150,7 +150,7 @@ class ImplicitMDSimulator():
 
         #File dump stuff
         self.f = open(f"{self.save_dir}/log.txt", "a+")
-        self.t = gsd.hoomd.open(name=f'{self.save_dir}/sim_temp{self.temp}.gsd', mode='wb') 
+        self.t = gsd.hoomd.open(name=f'{self.save_dir}/sim_temp{self.temp}.gsd', mode='w') 
         self.n_dump = params.n_dump # dump for configuration
 
     '''memory cleanups'''
@@ -593,8 +593,7 @@ class Stochastic_IFT(torch.autograd.Function):
         gradients = [multiply_across_lists(losses[j], subtract_across_lists(grads[i], grads[j])) for i,j in product(list(range(len(grads))),repeat=2) if i!=j]
         gradient_estimator = mean_across_lists(gradients)
         final_grad_norms = [torch.linalg.norm(g, dim =-1).max().item() for g in gradient_estimator]
-        
-        return equilibriated_simulator, gradient_estimator
+        return equilibriated_simulator, gradient_estimator, outer_loss(torch.cat(rdfs).mean(dim=0)).cuda()
 
     @staticmethod
     def backward(ctx, *grad_output):
@@ -735,9 +734,9 @@ if __name__ == "__main__":
         writer = SummaryWriter(log_dir = results_dir)
     
     for epoch in range(params.n_epochs):
-        rdf_loss = 0
-        vacf_loss = 0
-        diffusion_loss = 0
+        rdf_loss = torch.Tensor([0.]).to(device)
+        vacf_loss = torch.Tensor([0.]).to(device)
+        diffusion_loss = torch.Tensor([0.]).to(device)
         print(f"Epoch {epoch+1}")
         restart_override = epoch==0 or (torch.rand(size=(1,)) < params.restart_probability).item()
         
@@ -757,7 +756,7 @@ if __name__ == "__main__":
             
             top_level = Stochastic_IFT()
             start = time.time()
-            equilibriated_simulator, grads = top_level.apply(simulator, gt_rdf, params)
+            equilibriated_simulator, grads, rdf_loss = top_level.apply(simulator, gt_rdf, params)
             end = time.time()
             #import pdb; pdb.set_trace()
             #manual gradient update
@@ -773,10 +772,10 @@ if __name__ == "__main__":
             print("MD simulation time (s): ", sim_time)
             
             #compute loss at the end of the trajectory
-            if params.nn:
-                rdf_loss += (equilibriated_simulator.rdf - gt_rdf).pow(2).mean() / params.batch_size
-                diffusion_loss += (equilibriated_simulator.diff_coeff - gt_diff_coeff).pow(2).mean() / params.batch_size# if params.diffusion_loss_weight != 0 else torch.Tensor([0.]).to(device)
-                vacf_loss += (equilibriated_simulator.vacf - gt_vacf).pow(2).mean() / params.batch_size# if params.vacf_loss_weight != 0 else torch.Tensor([0.]).to(device)
+            # if params.nn:
+            #     rdf_loss += (equilibriated_simulator.rdf - gt_rdf).pow(2).mean() / params.batch_size
+            #     diffusion_loss += (equilibriated_simulator.diff_coeff - gt_diff_coeff).pow(2).mean() / params.batch_size# if params.diffusion_loss_weight != 0 else torch.Tensor([0.]).to(device)
+            #     vacf_loss += (equilibriated_simulator.vacf - gt_vacf).pow(2).mean() / params.batch_size# if params.vacf_loss_weight != 0 else torch.Tensor([0.]).to(device)
 
             #memory cleanup
             #last_radii, last_velocities, last_rdf = equilibriated_simulator.cleanup()
