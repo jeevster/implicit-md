@@ -1,12 +1,12 @@
 trainer: trainer
 
 dataset:
-  src: /home/sanjeevr/nnip-rl/data
+  src: /data/sanjeevr
   name: md17
   size: 1k
-  molecule: aspirin
+  molecule: benzene
   normalize_labels: False
-  checkpoint_epoch: 0 #which model to start from
+  checkpoint_epoch: 20 #which model to start from
   model: schnet
   model_dir: '/data/ishan-amin/MODELPATH/' #'/home/sanjeevr/MDsim/MODELPATH'
   save_name: 'nnip-rl'
@@ -34,13 +34,13 @@ ift:
   dr: 0.02
   max_rdf_dist: 10
   dv: 0.1
-  exp_name: "TEST_bs200_norestart_epoch0"
+  exp_name: "TEST_bs200_restart_epoch20"
   diffusion_window: 1000
   vacf_window: 1
   batch_size: 200
   loss_measure_freq: 10
   steps: 1
-  restart_probability: 0.0
+  restart_probability: 1.0
   lr: 0.001
   n_replicas: 1
   diameter_viz: 0.08
