@@ -4,4 +4,5 @@ results_polylj/
 log.txt
 test.gsd
 ground_truth/
+results_nnip/
 *.gsd

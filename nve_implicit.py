@@ -197,7 +197,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         s.particles.position = partpos
         s.particles.velocity = velocities
         s.particles.diameter = diameter
-        import pdb; pdb.set_trace()
         s.configuration.box=[self.box,self.box,self.box,0,0,0]
 
         return s
