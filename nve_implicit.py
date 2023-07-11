@@ -11,6 +11,7 @@ import types
 
 import argparse
 import logging
+from itertools import product
 import os
 from tqdm import tqdm
 import pstats
@@ -29,7 +30,8 @@ from torch.utils.tensorboard import SummaryWriter
 from sys import getrefcount
 from functorch import vmap
 from utils import radii_to_dists, fcc_positions, initialize_velocities, \
-                    dump_params_to_yml, powerlaw_inv_cdf, print_active_torch_tensors, plot_pair, solve_continuity_system, find_hr_from_file
+                    dump_params_to_yml, powerlaw_inv_cdf, print_active_torch_tensors, plot_pair, solve_continuity_system, find_hr_from_file, mean_across_lists, subtract_across_lists, multiply_across_lists
+
 
 
 #NNIP stuff:
@@ -362,6 +364,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.running_vels = []
         self.last_h_radii = []
         self.last_h_velocities = []
+        self.running_radii = []
         #Initialize forces/potential of starting configuration
         with torch.no_grad():
             
@@ -390,6 +393,9 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                 self.radii.copy_(radii)
                 self.velocities.copy_(velocities)
                 self.rdf.copy_(rdf)
+                #save equilibriated radiis for backward pass
+                if step > self.eq_steps and step % self.n_dump == 0: 
+                    self.running_radii.append(radii.detach())
                 
                 # if not self.nn and self.save_intermediate_rdf and step % self.n_dump == 0:
                 #     filename = f"step{step+1}_rdf.npy"
@@ -487,7 +493,63 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                 "Potential Energy": pe.item(),
                 "Total Energy": (ke+pe).item(),
                 "Momentum Magnitude": torch.norm(torch.sum(self.masses*self.velocities, axis =-2)).item()}
+
+class Stochastic_IFT(torch.autograd.Function):
+    def __init__(self):
+        super(Stochastic_IFT, self).__init__()
         
+    @staticmethod
+    def forward(ctx, *args):
+        simulator = args[0]
+        gt_rdf = args[1] 
+        params = args[2]
+        def outer_loss(rdf):
+            rdf_loss = (rdf - gt_rdf).pow(2).mean()
+            return params.rdf_loss_weight*rdf_loss
+        
+        simulator.eq_steps = 1000
+        simulator.nsteps = 3000
+        equilibriated_simulator = simulator.solve()
+        ctx.save_for_backward(equilibriated_simulator)
+        model = equilibriated_simulator.model
+        radii = equilibriated_simulator.running_radii
+        dists = [radii_to_dists(r, simulator.params) for r in radii]
+        rdfs = [equilibriated_simulator.diff_rdf(tuple(d)) for d in dists]
+        losses = [outer_loss(rdf) for rdf in rdfs]
+        #compute energies at each of the positions and then compute gradients wrt model parameters
+        grads = []
+        #TODO: vectorize this code
+        for r in radii:
+            with torch.enable_grad():
+                energy = model(pos = r, z = equilibriated_simulator.atomic_numbers)
+                grads.append([g.detach() for g in compute_grad(inputs=list(model.parameters()), output=energy)])
+        #compute the estimator on every pair of positions
+        #TODO: scale the estimator by the temperature
+        gradients = [multiply_across_lists(losses[j], subtract_across_lists(grads[i], grads[j])) for i,j in product(list(range(len(grads))),repeat=2) if i!=j]
+        gradient_estimator = mean_across_lists(gradients)
+        #final_grad_norms = [torch.linalg.norm(g, dim =-1).max().item() for g in gradient_estimator]
+        mean_rdf = torch.stack(rdfs).mean(dim=0)
+        return equilibriated_simulator, gradient_estimator, mean_rdf, outer_loss(mean_rdf).cuda()
+
+    @staticmethod
+    def backward(ctx, *grad_output):
+        import pdb; pdb.set_trace()
+        equilibriated_simulator = ctx.saved_tensors
+        #gradient calculation using Fabian's method
+        model = equilibriated_simulator.model
+        radii = equilibriated_simulator.running_radii
+        with torch.enable_grad():
+            radii = [r.requires_grad_(True) for r in radii]
+            dists = [radii_to_dists(r.requires_grad_(True), simulator.params) for r in radii]
+            energies = [model((d/simulator.sigma_pairs)) if simulator.poly else model(d) for d in dists]
+            grads = [compute_grad(inputs=model.parameters(), output=energy / simulator.temp) for energy in energies]
+            forces = [-compute_grad(inputs=r, output=energy) for r, energy in zip(radii, energies)]
+            grads_except = lambda i: grads[:i] + grads[i+1:]
+            #not done yet - need to multiple each element by the radiis themselves
+            gradient_estimator = mean_across_lists([subtract_across_lists(grad, mean_across_lists(grads_except(i))) for i, grad in enumerate(grads)])
+        return None
+
+
 if __name__ == "__main__":
     setup_logging() 
     parser = flags.get_parser()
@@ -608,26 +670,36 @@ if __name__ == "__main__":
                 simulator.zeta = equilibriated_simulator.zeta
                 if i !=0:
                     simulator.nsteps = max(params.vacf_window, params.loss_measure_freq)
-                
+            
+            top_level = Stochastic_IFT()
             start = time.time()
-            equilibriated_simulator = simulator.solve()
+            equilibriated_simulator, grads, mean_rdf, rdf_loss = top_level.apply(simulator, gt_rdf, params)
             end = time.time()
-            sim_time = end-start
-            print("MD simulation time (s): ", sim_time)
+            sim_time = end - start
+            #import pdb; pdb.set_trace()
+            #manual gradient update
+            for param, grad in zip(model.parameters(), grads):
+                param.data -= params.lr*grad
+            
+            # start = time.time()
+            # equilibriated_simulator = simulator.solve()
+            # end = time.time()
+            # sim_time = end-start
+            # print("MD simulation time (s): ", sim_time)
             
             #aggregate rdf across timesteps to reduce noise
-            if params.nn:
-                rdf += equilibriated_simulator.rdf / params.batch_size
+            # if params.nn:
+            #     rdf += equilibriated_simulator.rdf / params.batch_size
                 # diffusion_loss += (equilibriated_simulator.diff_coeff - gt_diff_coeff).pow(2).mean() / params.batch_size# if params.diffusion_loss_weight != 0 else torch.Tensor([0.]).to(device)
                 # vacf_loss += (equilibriated_simulator.vacf - gt_vacf).pow(2).mean() / params.batch_size# if params.vacf_loss_weight != 0 else torch.Tensor([0.]).to(device)
 
             #memory cleanup
-            last_radii, last_velocities, last_rdf = equilibriated_simulator.cleanup()
+            #last_radii, last_velocities, last_rdf = equilibriated_simulator.cleanup()
         
-        #save rdf and compute loss at the end of the trajectory
+        #save rdf at the end of the trajectory
         filename = f"rdf_epoch{epoch+1}.npy"
-        np.save(os.path.join(results_dir, filename), rdf.cpu().detach().numpy())
-        rdf_loss = (rdf - gt_rdf).pow(2).mean()
+        np.save(os.path.join(results_dir, filename), mean_rdf.cpu().detach().numpy())
+        #rdf_loss = (rdf - gt_rdf).pow(2).mean()
         
         if params.nn:
             outer_loss = params.rdf_loss_weight*rdf_loss + \
@@ -635,11 +707,11 @@ if __name__ == "__main__":
                         params.vacf_loss_weight*vacf_loss
             print(f"Loss: RDF={params.rdf_loss_weight*rdf_loss.item()}+Diffusion={params.diffusion_loss_weight*diffusion_loss.item()}+VACF={params.vacf_loss_weight*vacf_loss.item()}={outer_loss.item()}")
             #compute (implicit) gradient of outer loss wrt model parameters
-            start = time.time()
-            torch.autograd.backward(tensors = outer_loss, inputs = list(model.parameters()))
-            end = time.time()
-            grad_time = end-start
-            print("gradient calculation time (s): ",  grad_time)
+            # start = time.time()
+            # torch.autograd.backward(tensors = outer_loss, inputs = list(model.parameters()))
+            # end = time.time()
+            # grad_time = end-start
+            # print("gradient calculation time (s): ",  grad_time)
 
             #checkpointing
             if outer_loss < best_outer_loss:
@@ -671,7 +743,7 @@ if __name__ == "__main__":
             #diffusion_losses.append((diffusion_loss.sqrt()/gt_diff_coeff).item())
             vacf_losses.append(vacf_loss.item())
             sim_times.append(sim_time)
-            grad_times.append(grad_time)
+            #grad_times.append(grad_time)
             try:
                 grad_norms.append(max_norm.item())
             except:
@@ -682,7 +754,7 @@ if __name__ == "__main__":
             #writer.add_scalar('Relative Diffusion Loss', diffusion_losses[-1], global_step=epoch+1)
             writer.add_scalar('VACF Loss', vacf_losses[-1], global_step=epoch+1)
             writer.add_scalar('Simulation Time', sim_times[-1], global_step=epoch+1)
-            writer.add_scalar('Gradient Time', grad_times[-1], global_step=epoch+1)
+            #writer.add_scalar('Gradient Time', grad_times[-1], global_step=epoch+1)
             writer.add_scalar('Gradient Norm', grad_norms[-1], global_step=epoch+1)
         
     simulator.f.close()

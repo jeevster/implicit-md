@@ -149,3 +149,30 @@ def find_hr_from_file(base_path: str, molecule: str, size: str, params, device):
     hist_gt = get_hr(gt_traj, bins)
     hist_gt = 100*hist_gt/ hist_gt.sum()
     return hist_gt
+
+def mean_across_lists(list_of_lists):
+    num_lists = len(list_of_lists)
+    num_tensors = len(list_of_lists[0])
+
+    means = []
+    for i in range(num_tensors):
+        tensor_sum = None
+
+        for j in range(num_lists):
+            tensor = list_of_lists[j][i]
+            if tensor_sum is None:
+                tensor_sum = tensor
+            else:
+                tensor_sum += tensor
+
+        tensor_mean = tensor_sum / num_lists
+        means.append(tensor_mean)
+
+    return means
+
+
+def subtract_across_lists(list1, list2):
+    return [l1 - l2 for (l1, l2) in zip(list1, list2)]
+
+def multiply_across_lists(scalar, list1):
+    return [scalar*l for l in list1]
