@@ -585,15 +585,20 @@ class Stochastic_IFT(torch.autograd.Function):
         rdfs = [equilibriated_simulator.diff_rdf(tuple(d.permute((1, 2, 3, 0)))) for d in dists]
         losses = [outer_loss(rdf) for rdf in rdfs]
         #compute energies at each of the positions and then compute gradients wrt model parameters
-        with torch.enable_grad():
-            energies = [model((d/simulator.sigma_pairs)) if simulator.poly else model(d) for d in dists]
-            grads = [compute_grad(inputs=model.parameters(), output=energy) for energy in energies]
+        grads = []
+        
+        for d in dists:
+            with torch.enable_grad():
+                energy = model((d/simulator.sigma_pairs)) if simulator.poly else model(d)
+                grads.append([g.detach() for g in compute_grad(inputs=model.parameters(), output=energy)])
+
         
         #compute the estimator on every pair of positions
         gradients = [multiply_across_lists(losses[j], subtract_across_lists(grads[i], grads[j])) for i,j in product(list(range(len(grads))),repeat=2) if i!=j]
         gradient_estimator = mean_across_lists(gradients)
-        final_grad_norms = [torch.linalg.norm(g, dim =-1).max().item() for g in gradient_estimator]
-        return equilibriated_simulator, gradient_estimator, outer_loss(torch.cat(rdfs).mean(dim=0)).cuda()
+        #final_grad_norms = [torch.linalg.norm(g, dim =-1).max().item() for g in gradient_estimator]
+        mean_rdf = torch.cat(rdfs).mean(dim=0)
+        return equilibriated_simulator, gradient_estimator, mean_rdf, outer_loss(mean_rdf).cuda()
 
     @staticmethod
     def backward(ctx, *grad_output):
@@ -629,7 +634,7 @@ if __name__ == "__main__":
 
     parser.add_argument('--epsilon', type=float, default=1.0, help='LJ epsilon')
     parser.add_argument('--rep_power', type=float, default=12, help='LJ repulsive exponent')
-    parser.add_argument('--attr_power', type=float, default=0, help='LJ attractive exponent')
+    parser.add_argument('--attr_power', type=float, default=6, help='LJ attractive exponent')
     parser.add_argument('--poly', action='store_true', help='vary sigma (diameter) of each particle according to power law')
     parser.add_argument('--poly_power', type=float, default = -3.0, help='power of power law')
     parser.add_argument('--min_sigma', type=float, default = 0.5, help='minimum sigma for power law distribution')
@@ -756,7 +761,7 @@ if __name__ == "__main__":
             
             top_level = Stochastic_IFT()
             start = time.time()
-            equilibriated_simulator, grads, rdf_loss = top_level.apply(simulator, gt_rdf, params)
+            equilibriated_simulator, grads, mean_rdf, rdf_loss = top_level.apply(simulator, gt_rdf, params)
             end = time.time()
             #import pdb; pdb.set_trace()
             #manual gradient update
@@ -780,7 +785,8 @@ if __name__ == "__main__":
             #memory cleanup
             #last_radii, last_velocities, last_rdf = equilibriated_simulator.cleanup()
         simulator.f.close()
-        
+        #log rdf and losses
+        np.save(os.path.join(results_dir, f'rdf_epoch{epoch+1}'), mean_rdf.cpu())
         outer_loss = params.rdf_loss_weight*rdf_loss + \
                     params.diffusion_loss_weight*diffusion_loss + \
                     params.vacf_loss_weight*vacf_loss

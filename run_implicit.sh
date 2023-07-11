@@ -13,7 +13,7 @@ python nve_implicit.py \
 --dt 0.005 \
 --dr 0.01 \
 --dv 0.1 \
---exp_name "TEST_fabianmethod_longer_eqtime" \
+--exp_name "TEST_fabianmethod_smallsystem_moresamples" \
 --diffusion_window 1000 \
 --vacf_window 100 \
 --batch_size 1 \
@@ -22,7 +22,7 @@ python nve_implicit.py \
 --nvt_time 3 \
 --n_replicas 1 \
 --diameter_viz 0.3 \
---n_dump 200 \
+--n_dump 10 \
 --burn_in_frac 0.8 \
 --n_epochs 100 \
 --diffusion_loss_weight 0 \
