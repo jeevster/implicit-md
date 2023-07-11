@@ -75,10 +75,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         except:
             self.device = "cpu"
 
-        #Set random seeds
-        np.random.seed(seed=params.seed)
-        torch.manual_seed(params.seed)
-        random.seed(params.seed)
+        
 
         self.name = config['dataset']['name']
         self.molecule = config['dataset']['molecule']
@@ -95,8 +92,9 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.train_dataset = LmdbDataset({'src': os.path.join(config['dataset']['src'], self.name, self.molecule, self.size, 'train')})
         self.valid_dataset = LmdbDataset({'src': os.path.join(config['dataset']['src'], self.name, self.molecule, self.size, 'val')})
 
-        #get first configuration from dataset
-        init_data = self.train_dataset.__getitem__(10)
+        #get random initial condition from dataset
+        length = self.train_dataset.__len__()
+        init_data = self.train_dataset.__getitem__(np.random.randint(0, length))
         self.n_atoms = init_data['pos'].shape[0]
         self.atoms = data_to_atoms(init_data)
 
@@ -527,7 +525,7 @@ class Stochastic_IFT(torch.autograd.Function):
         #TODO: scale the estimator by the temperature
         gradients = [multiply_across_lists(losses[j], subtract_across_lists(grads[i], grads[j])) for i,j in product(list(range(len(grads))),repeat=2) if i!=j]
         gradient_estimator = mean_across_lists(gradients)
-        #final_grad_norms = [torch.linalg.norm(g, dim =-1).max().item() for g in gradient_estimator]
+        #final_grad_norms = [torch.Tensor([torch.linalg.norm(g, dim =-1).max()]) for g in gradient_estimator]
         mean_rdf = torch.stack(rdfs).mean(dim=0)
         return equilibriated_simulator, gradient_estimator, mean_rdf, outer_loss(mean_rdf).cuda()
 
@@ -556,6 +554,11 @@ if __name__ == "__main__":
     args, override_args = parser.parse_known_args()
     config = build_config(args, override_args)
     params = types.SimpleNamespace(**config["ift"])
+
+    #Set random seeds
+    np.random.seed(seed=params.seed)
+    torch.manual_seed(params.seed)
+    random.seed(params.seed)
     
     #GPU
     try:
@@ -622,8 +625,13 @@ if __name__ == "__main__":
         ttime = config['ift']["integrator_config"]["ttime"]
         results_dir = os.path.join(results, f"IMPLICIT_{molecule}_{params.exp_name}")
         os.makedirs(results_dir, exist_ok = True)
-    # #load ground truth rdf and diffusion coefficient
+    # #load ground truth rdf and VACF
     gt_rdf = torch.Tensor(find_hr_from_file(data_path, molecule, '10k', params, device)).to(device)
+    contiguous_path = f'/data/ishan-amin/contiguous-md17/{molecule}/10k/val/nequip_npz.npz'
+    gt_data = np.load(contiguous_path)
+    gt_traj = torch.FloatTensor(gt_data.f.R)
+    gt_vels = gt_traj[1:] - gt_traj[:-1] #finite difference approx for now TODO: calculate precisely based on forces and positions
+    gt_vacf = DifferentiableVACF(params)(gt_vels)
     np.save(os.path.join(results_dir, 'gt_rdf.npy'), gt_rdf.cpu())
     #initialize outer loop optimizer/scheduler
     optimizer = torch.optim.Adam(list(model.parameters()), lr=params.lr)
@@ -662,8 +670,8 @@ if __name__ == "__main__":
             #if continuing simulation, initialize with equilibriated NVT coupling constant 
             restart = i == 0 and restart_override
             #initialize simulator parameterized by a NN model
-            if restart: #start from FCC lattice
-                print("Initialize from FCC lattice")
+            if restart: #start from random initial condition
+                print("Initialize from random IC")
                 simulator = ImplicitMDSimulator(config, params, model, model_config)
             else: #continue from where we left off in the last epoch/batch
                 simulator.reset(last_radii, last_velocities, last_rdf)
@@ -677,9 +685,11 @@ if __name__ == "__main__":
             end = time.time()
             sim_time = end - start
             #import pdb; pdb.set_trace()
-            #manual gradient update
+            #manual assignment of gradients
             for param, grad in zip(model.parameters(), grads):
+                param.grad = grad #for grad norm tracking
                 param.data -= params.lr*grad
+            #optimizer.step()
             
             # start = time.time()
             # equilibriated_simulator = simulator.solve()
@@ -735,7 +745,7 @@ if __name__ == "__main__":
             except AttributeError:
                 print("Max norm: ", max_norm)
 
-            optimizer.step()
+            #optimizer.step()
             scheduler.step(outer_loss)
             #log stats
             losses.append(outer_loss.item())

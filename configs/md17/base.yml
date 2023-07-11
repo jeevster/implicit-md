@@ -4,7 +4,7 @@ dataset:
   src: /data/sanjeevr
   name: md17
   size: 1k
-  molecule: aspirin
+  molecule: benzene
   normalize_labels: False
   checkpoint_epoch: 10 #which model to start from
   model: schnet
@@ -34,9 +34,9 @@ ift:
   dr: 0.02
   max_rdf_dist: 10
   dv: 0.1
-  exp_name: "TEST_fabian_method"
+  exp_name: "TEST"
   diffusion_window: 1000
-  vacf_window: 1
+  vacf_window: 100
   batch_size: 1
   loss_measure_freq: 10
   steps: 1
