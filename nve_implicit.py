@@ -69,6 +69,12 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
     def __init__(self, config, params, model, model_config):
         super(ImplicitMDSimulator, self).__init__()
         self.params = params
+
+        #Set random seeds
+        np.random.seed(seed=params.seed)
+        torch.manual_seed(params.seed)
+        random.seed(params.seed)
+
         #GPU
         try:
             self.device = torch.device(torch.cuda.current_device())
@@ -87,6 +93,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.model_dir = os.path.join(config['dataset']["model_dir"], self.model_type, f"{self.name}-{self.molecule}_{self.size}_{self.model_type}")
         self.save_name = config['dataset']["save_name"]
         self.train = config['mode'] == 'train'
+        self.n_replicas = config["ift"]["n_replicas"]
+        self.vacf_window = config["ift"]["vacf_window"]
 
         #initialize datasets
         self.train_dataset = LmdbDataset({'src': os.path.join(config['dataset']['src'], self.name, self.molecule, self.size, 'train')})
@@ -94,7 +102,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
         #get random initial condition from dataset
         length = self.train_dataset.__len__()
-        init_data = self.train_dataset.__getitem__(np.random.randint(0, length))
+        init_data = self.train_dataset.__getitem__(10)#np.random.randint(0, length))
         self.n_atoms = init_data['pos'].shape[0]
         self.atoms = data_to_atoms(init_data)
 
@@ -118,7 +126,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.targeEkin = 0.5 * (3.0 * self.n_atoms) * self.temp
         self.ttime = config["ift"]["integrator_config"]["ttime"]
         self.Q = 3.0 * self.n_atoms * self.temp * (self.ttime * self.dt)**2
-        self.zeta = torch.Tensor([0.0]).to(self.device)
+        self.zeta = torch.zeros((self.n_replicas, 1, 1)).to(self.device)
 
         self.nsteps = params.steps
 
@@ -149,15 +157,18 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #                     save_dir=Path(self.model_dir) / self.save_name, 
         #                     save_frequency=self.config['ift']["n_dump"])
         
-        self.atomic_numbers = torch.Tensor(self.atoms.get_atomic_numbers()).to(torch.long).to(self.device)
-        self.masses = torch.Tensor(self.atoms.get_masses().reshape(-1, 1)).to(self.device)
 
-        self.n_replicas = config["ift"]["n_replicas"]
-        self.vacf_window = config["ift"]["vacf_window"]
+        self.atomic_numbers = torch.Tensor(self.atoms.get_atomic_numbers()).to(torch.long).to(self.device).repeat(self.n_replicas)
+        self.masses = torch.Tensor(self.atoms.get_masses().reshape(-1, 1)).repeat(self.n_replicas, 1, 1).to(self.device)
+        self.batch = torch.arange(self.n_replicas).repeat_interleave(self.n_atoms).to(self.device)
+        
 
         #Register inner parameters
-        self.radii = nn.Parameter(torch.Tensor(self.atoms.get_positions()).clone(), requires_grad=True).to(self.device)
-        self.velocities = nn.Parameter(torch.Tensor(initialize_velocities(self.n_atoms, self.masses, self.temp)).clone(), requires_grad=True).to(self.device)
+        actual_atoms = [self.train_dataset.__getitem__(i) for i in range(self.n_replicas)]
+        radii = torch.stack([torch.Tensor(data_to_atoms(atoms).get_positions()) for atoms in actual_atoms])
+
+        self.radii = nn.Parameter(radii, requires_grad=True).to(self.device)
+        self.velocities = nn.Parameter(torch.Tensor(initialize_velocities(self.n_atoms, self.masses, self.temp, self.n_replicas)).clone(), requires_grad=True).to(self.device)
         
         self.rdf = nn.Parameter(torch.zeros((int(self.params.max_rdf_dist/self.params.dr),)), requires_grad=True).to(self.device)
         # self.diff_coeff = nn.Parameter(torch.zeros((self.n_replicas,)), requires_grad=True).to(self.device)
@@ -199,7 +210,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         torch.set_num_threads(10)
 
         #define vectorized differentiable rdf and velhist
-        self.diff_rdf = DifferentiableRDF(params, self.device)
+        self.diff_rdf = vmap(DifferentiableRDF(params, self.device), 0)
         # self.diff_rdf_cpu = vmap(DifferentiableRDF(params, "cpu"), -1)
         # self.diff_vel_hist = vmap(DifferentiableVelHist(params, self.device), 0)
         # self.diff_vel_hist_cpu = vmap(DifferentiableVelHist(params, "cpu"), 0)
@@ -248,7 +259,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         with torch.enable_grad():
             if not radii.requires_grad:
                     radii.requires_grad = True
-            energy = self.model(pos = radii, z = self.atomic_numbers)
+            energy = self.model(pos = radii.reshape(-1,3), z = self.atomic_numbers, batch = self.batch)
             forces = -compute_grad(inputs = radii, output = energy) if retain_grad else -compute_grad(inputs = radii, output = energy).detach()
             assert(not torch.any(torch.isnan(forces)))
         return energy, forces
@@ -263,7 +274,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             (accel - zeta * velocities) * (0.5 * self.dt ** 2)
 
         # record current KE
-        KE_0 = torch.sum(self.masses*(torch.square(velocities))) / 2
+        KE_0 = 1/2 * (self.masses*torch.square(velocities)).sum(axis = (1,2), keepdims=True)
         
         # make half a step in velocity
         velocities = velocities + 0.5 * self.dt * (accel - zeta * velocities)
@@ -276,7 +287,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         zeta = zeta + 0.5 * self.dt * (1/self.Q) * (KE_0 - self.targeEkin)
 
         #get updated KE
-        ke = torch.sum(self.masses*(torch.square(velocities))) / 2
+        ke = 1/2 * (self.masses*torch.square(velocities)).sum(axis = (1,2), keepdims=True)
 
         # make another halfstep in self.zeta
         zeta = zeta + 0.5 * self.dt * \
@@ -287,12 +298,13 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             (1 + 0.5 * self.dt * zeta)
 
         if calc_rdf:
+            import pdb; pdb.set_trace()
             new_dists = radii_to_dists(radii, self.params)
             
         # new_velhist = self.diff_vel_hist(torch.linalg.norm(velocities, dim=-1).permute((1,0))) if calc_rdf else 0 #calculate velocity histogram from a single frame
-        new_rdf = self.diff_rdf(tuple(new_dists.to(self.device))) if calc_rdf else 0 #calculate the RDF from a single frame
+        new_rdf = self.diff_rdf(tuple(new_dists.to(self.device).permute((1, 2, 3, 0)))) if calc_rdf else 0 #calculate the RDF from a single frame
+        #new_rdf = 0
         # #new_rdf = 0
-
         # if calc_diffusion:
         #     self.last_h_radii.append(radii.unsqueeze(0))
         # if calc_vacf:
@@ -458,8 +470,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
     def create_frame(self, frame):
         # Particle positions, velocities, diameter
-        partpos = detach_numpy(self.radii).tolist()
-        velocities = detach_numpy(self.velocities).tolist()
+        partpos = detach_numpy(self.radii[0]).tolist()
+        velocities = detach_numpy(self.velocities[0]).tolist()
         diameter = 10*self.diameter_viz*np.ones((self.n_atoms,))
         diameter = diameter.tolist()
         # Now make gsd file
@@ -481,15 +493,15 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
     def calc_properties(self, pe):
         # Calculate properties of interest in this function
         p_dof = 3*self.n_atoms
-        ke = torch.sum(self.masses*torch.square(self.velocities)) / 2
-        temp = (2*ke/p_dof) / units.kB
+        ke = 1/2 * (self.masses*torch.square(self.velocities)).sum(axis = (1,2), keepdims=True)
+        temp = (2*ke/p_dof).mean() / units.kB
         #w = -1/6*torch.sum(self.internal_virial)
         #pressure = w/self.vol + self.rho*self.kbt0
         pressure = torch.Tensor(0)
         return {"Temperature": temp.item(),
                 #"Pressure": pressure,
-                "Potential Energy": pe.item(),
-                "Total Energy": (ke+pe).item(),
+                "Potential Energy": pe.mean().item(),
+                "Total Energy": (ke+pe).mean().item(),
                 "Momentum Magnitude": torch.norm(torch.sum(self.masses*self.velocities, axis =-2)).item()}
 
 class Stochastic_IFT(torch.autograd.Function):
@@ -505,8 +517,8 @@ class Stochastic_IFT(torch.autograd.Function):
             rdf_loss = (rdf - gt_rdf).pow(2).mean()
             return params.rdf_loss_weight*rdf_loss
         
-        simulator.eq_steps = 1000
-        simulator.nsteps = 3000
+        simulator.eq_steps = 100
+        simulator.nsteps = 300
         equilibriated_simulator = simulator.solve()
         ctx.save_for_backward(equilibriated_simulator)
         model = equilibriated_simulator.model
@@ -555,10 +567,7 @@ if __name__ == "__main__":
     config = build_config(args, override_args)
     params = types.SimpleNamespace(**config["ift"])
 
-    #Set random seeds
-    np.random.seed(seed=params.seed)
-    torch.manual_seed(params.seed)
-    random.seed(params.seed)
+    
     
     #GPU
     try:

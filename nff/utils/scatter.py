@@ -26,9 +26,9 @@ def compute_grad(inputs, output, create_graph=True, retain_graph=True):
     #             create_graph=create_graph, retain_graph=retain_graph)
     
     try:
-        gradspred, = grad(output, inputs, create_graph=create_graph, retain_graph=retain_graph)
+        gradspred, = grad(output, inputs, grad_outputs=output.data.new(output.shape).fill_(1), create_graph=create_graph, retain_graph=retain_graph)
     except:
-        gradspred = grad(output, inputs, create_graph=create_graph, retain_graph=retain_graph)
+        gradspred = grad(output, inputs, grad_outputs=output.data.new(output.shape).fill_(1), create_graph=create_graph, retain_graph=retain_graph)
 
     return gradspred
 

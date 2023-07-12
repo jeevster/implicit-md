@@ -18,7 +18,7 @@ def radii_to_dists(radii, params):
     # r = -1*torch.where(r > 0.5*params.box, r-params.box, torch.where(r<-0.5*params.box, r+params.box, r))
 
     #get rid of diagonal 0 entries of r matrix (for gradient stability)
-    r = r[~torch.eye(r.shape[1],dtype=bool)].reshape(r.shape[0], -1, 3)
+    r = r[:, ~torch.eye(r.shape[1],dtype=bool)].reshape(r.shape[0], r.shape[1], -1, 3)
     try:
         r.requires_grad = True
     except RuntimeError:
@@ -50,15 +50,16 @@ def fcc_positions(n_particle, box, device):
 
    
 # Procedure to initialize velocities
-def initialize_velocities(n_particle, masses, temp):
+def initialize_velocities(n_particle, masses, temp, n_replicas):
+
     masses = masses.cpu().numpy()
     vel_dist = maxwell()
-    momenta = masses * vel_dist.rvs(size = (n_particle, 3))
+    momenta = masses * vel_dist.rvs(size = (n_replicas, n_particle, 3))
     #shift so that initial momentum is zero
-    momenta -= np.mean(momenta, axis = 0, keepdims=True)
+    momenta -= np.mean(momenta, axis = -2, keepdims=True)
 
     #scale velocities to match desired temperature
-    ke = (momenta**2 / (2*masses)).sum()
+    ke = (momenta**2 / (2*masses)).sum(axis = (1,2), keepdims=True)
     targeEkin = 0.5 * (3.0 * n_particle) * temp
     correction_factor = np.sqrt(targeEkin / ke)
     momenta *= correction_factor
