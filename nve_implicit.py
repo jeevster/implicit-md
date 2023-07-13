@@ -3,6 +3,7 @@ import gsd.hoomd
 import torch
 from pathlib import Path
 import torch.nn as nn
+import math
 from nff.utils.scatter import compute_grad
 from nff.nn.layers import GaussianSmearing
 from YParams import YParams
@@ -70,11 +71,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         super(ImplicitMDSimulator, self).__init__()
         self.params = params
 
-        #Set random seeds
-        np.random.seed(seed=params.seed)
-        torch.manual_seed(params.seed)
-        random.seed(params.seed)
-
+    
         #GPU
         try:
             self.device = torch.device(torch.cuda.current_device())
@@ -164,13 +161,14 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         
 
         #Register inner parameters
-        actual_atoms = [self.train_dataset.__getitem__(i) for i in range(self.n_replicas)]
+        samples = np.random.choice(np.arange(self.train_dataset.__len__()), self.n_replicas)
+        actual_atoms = [self.train_dataset.__getitem__(i) for i in samples]
         radii = torch.stack([torch.Tensor(data_to_atoms(atoms).get_positions()) for atoms in actual_atoms])
 
         self.radii = nn.Parameter(radii, requires_grad=True).to(self.device)
         self.velocities = nn.Parameter(torch.Tensor(initialize_velocities(self.n_atoms, self.masses, self.temp, self.n_replicas)).clone(), requires_grad=True).to(self.device)
         
-        self.rdf = nn.Parameter(torch.zeros((int(self.params.max_rdf_dist/self.params.dr),)), requires_grad=True).to(self.device)
+        self.rdf = nn.Parameter(torch.zeros((self.n_replicas, int(self.params.max_rdf_dist/self.params.dr),)), requires_grad=True).to(self.device)
         # self.diff_coeff = nn.Parameter(torch.zeros((self.n_replicas,)), requires_grad=True).to(self.device)
         # self.vacf = nn.Parameter(torch.zeros((self.n_replicas,self.vacf_window)), requires_grad=True).to(self.device)
 
@@ -210,7 +208,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         torch.set_num_threads(10)
 
         #define vectorized differentiable rdf and velhist
-        self.diff_rdf = vmap(DifferentiableRDF(params, self.device), 0)
+        self.diff_rdf = vmap(DifferentiableRDF(params, self.device), -1)
         # self.diff_rdf_cpu = vmap(DifferentiableRDF(params, "cpu"), -1)
         # self.diff_vel_hist = vmap(DifferentiableVelHist(params, self.device), 0)
         # self.diff_vel_hist_cpu = vmap(DifferentiableVelHist(params, "cpu"), 0)
@@ -298,11 +296,10 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             (1 + 0.5 * self.dt * zeta)
 
         if calc_rdf:
-            import pdb; pdb.set_trace()
             new_dists = radii_to_dists(radii, self.params)
             
         # new_velhist = self.diff_vel_hist(torch.linalg.norm(velocities, dim=-1).permute((1,0))) if calc_rdf else 0 #calculate velocity histogram from a single frame
-        new_rdf = self.diff_rdf(tuple(new_dists.to(self.device).permute((1, 2, 3, 0)))) if calc_rdf else 0 #calculate the RDF from a single frame
+        new_rdf = self.diff_rdf(tuple(new_dists.permute((1, 2, 3, 0)).to(self.device))) if calc_rdf else 0 #calculate the RDF from a single frame
         #new_rdf = 0
         # #new_rdf = 0
         # if calc_diffusion:
@@ -505,38 +502,70 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                 "Momentum Magnitude": torch.norm(torch.sum(self.masses*self.velocities, axis =-2)).item()}
 
 class Stochastic_IFT(torch.autograd.Function):
-    def __init__(self):
+    def __init__(self, params, device):
         super(Stochastic_IFT, self).__init__()
+        self.diff_rdf = DifferentiableRDF(params, device)
         
     @staticmethod
     def forward(ctx, *args):
         simulator = args[0]
         gt_rdf = args[1] 
         params = args[2]
+        diff_rdf = DifferentiableRDF(params, simulator.device)
         def outer_loss(rdf):
             rdf_loss = (rdf - gt_rdf).pow(2).mean()
             return params.rdf_loss_weight*rdf_loss
         
-        simulator.eq_steps = 100
-        simulator.nsteps = 300
+        simulator.eq_steps = 1000
+        simulator.nsteps = 3000
         equilibriated_simulator = simulator.solve()
         ctx.save_for_backward(equilibriated_simulator)
+        
+
         model = equilibriated_simulator.model
         radii = equilibriated_simulator.running_radii
-        dists = [radii_to_dists(r, simulator.params) for r in radii]
-        rdfs = [equilibriated_simulator.diff_rdf(tuple(d)) for d in dists]
+        dists = torch.cat([radii_to_dists(r, simulator.params) for r in radii])
+        rdfs = [diff_rdf(tuple(d)) for d in dists]
         losses = [outer_loss(rdf) for rdf in rdfs]
+        
         #compute energies at each of the positions and then compute gradients wrt model parameters
         grads = []
-        #TODO: vectorize this code
+        #TODO: vectorize this code (over replicas, not over samples)
+        #tradeoff - vectorization gives higher speed but runs out of memory eventually since have to store all intermediate activations
+        #non-vectorized approach can theoretically have infinite # of replicas and samples
         for r in radii:
-            with torch.enable_grad():
-                energy = model(pos = r, z = equilibriated_simulator.atomic_numbers)
-                grads.append([g.detach() for g in compute_grad(inputs=list(model.parameters()), output=energy)])
+            for rep in r:
+                with torch.enable_grad():
+                    energy = model(pos = rep, z = equilibriated_simulator.atomic_numbers[0:simulator.n_atoms])
+                    grads.append([g.detach() for g in compute_grad(inputs=list(model.parameters()), output=energy)])
         #compute the estimator on every pair of positions
         #TODO: scale the estimator by the temperature
-        gradients = [multiply_across_lists(losses[j], subtract_across_lists(grads[i], grads[j])) for i,j in product(list(range(len(grads))),repeat=2) if i!=j]
-        gradient_estimator = mean_across_lists(gradients)
+
+        #this is the super slow line
+        
+        original_shapes = [tensor.shape for tensor in grads[0]]
+        original_numel = [tensor.numel() for tensor in grads[0]]
+        grads_flattened = [torch.cat([tensor.flatten() for tensor in grad]) for grad in grads]
+
+        #TODO: break this up into chunks and do vectorized subtraction (have to break-up bc of memory issues)
+        grad_diffs = [grads_flattened[i] - grads_flattened[j] for i,j in product(list(range(len(grads))),repeat=2) if i!=j]
+        del grads_flattened
+        loss_tensor = torch.stack(losses).repeat(len(grad_diffs))
+        gradients = [l*diff for l, diff in zip(loss_tensor, grad_diffs)]
+        del grad_diffs
+        BLOCK_SIZE = 25000 # may need to modify this if model gets bigger
+        mean = torch.zeros((gradients[0].shape[0],)).to(simulator.device)
+        num_blocks = math.ceil(len(gradients)/ BLOCK_SIZE)
+        for i in range(num_blocks):
+            start = BLOCK_SIZE*i
+            end = BLOCK_SIZE*(i+1)
+            subset = torch.stack(gradients[start:end])
+            mean += subset.mean(dim=0) * subset.shape[0] / len(gradients)
+            del subset
+        gradient_estimator = tuple([g.reshape(shape) for g, shape in zip(mean.split(original_numel), original_shapes)])
+
+        #gradients = [multiply_across_lists(losses[j], subtract_across_lists(grads[i], grads[j])) for i,j in product(list(range(len(grads))),repeat=2) if i!=j]
+        #gradient_estimator = mean_across_lists(gradients)
         #final_grad_norms = [torch.Tensor([torch.linalg.norm(g, dim =-1).max()]) for g in gradient_estimator]
         mean_rdf = torch.stack(rdfs).mean(dim=0)
         return equilibriated_simulator, gradient_estimator, mean_rdf, outer_loss(mean_rdf).cuda()
@@ -567,6 +596,10 @@ if __name__ == "__main__":
     config = build_config(args, override_args)
     params = types.SimpleNamespace(**config["ift"])
 
+    #Set random seeds
+    np.random.seed(seed=params.seed)
+    torch.manual_seed(params.seed)
+    random.seed(params.seed)
     
     
     #GPU
@@ -688,7 +721,7 @@ if __name__ == "__main__":
                 if i !=0:
                     simulator.nsteps = max(params.vacf_window, params.loss_measure_freq)
             
-            top_level = Stochastic_IFT()
+            top_level = Stochastic_IFT(params, device)
             start = time.time()
             equilibriated_simulator, grads, mean_rdf, rdf_loss = top_level.apply(simulator, gt_rdf, params)
             end = time.time()
