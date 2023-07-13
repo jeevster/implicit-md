@@ -527,38 +527,83 @@ class Stochastic_IFT(torch.autograd.Function):
         dists = torch.cat([radii_to_dists(r, simulator.params) for r in radii])
         rdfs = [diff_rdf(tuple(d)) for d in dists]
         losses = [outer_loss(rdf) for rdf in rdfs]
+        loss_tensor = torch.stack(losses)
+
+        original_numel = [param.data.numel() for param in model.parameters()]
+        original_shapes = [param.data.shape for param in model.parameters()]
         
         #compute energies at each of the positions and then compute gradients wrt model parameters
-        grads = []
+        
         #TODO: vectorize this code (over replicas, not over samples)
         #tradeoff - vectorization gives higher speed but runs out of memory eventually since have to store all intermediate activations
         #non-vectorized approach can theoretically have infinite # of replicas and samples
-        for r in radii:
-            for rep in r:
-                with torch.enable_grad():
-                    energy = model(pos = rep, z = equilibriated_simulator.atomic_numbers[0:simulator.n_atoms])
-                    grads.append([g.detach() for g in compute_grad(inputs=list(model.parameters()), output=energy)])
+        start = time.time()
+        MINIBATCH_SIZE = 100 #how many structures to include at a time
+        stacked_radii  = torch.stack(radii).reshape(-1, simulator.n_atoms, 3)
+        batch = torch.arange(MINIBATCH_SIZE).repeat_interleave(simulator.n_atoms).to(simulator.device)
+        atomic_numbers = torch.Tensor(simulator.atoms.get_atomic_numbers()).to(torch.long).to(simulator.device).repeat(MINIBATCH_SIZE)
+        num_blocks = math.ceil(stacked_radii.shape[0]/ (MINIBATCH_SIZE))
+        start = time.time()
+        gradient_estimators = []
+        for i in range(num_blocks):
+            grads = []
+            start = MINIBATCH_SIZE*i
+            end = MINIBATCH_SIZE*(i+1)
+            with torch.enable_grad():
+                #somehow this energy is wrong...
+                energy = model(pos = stacked_radii[start:end].reshape(-1, 3), z = atomic_numbers, batch = batch)
+                
+                for e in energy: #somehow replace this with a vectorized implementation of compute_grad (based on grad_output?)
+                    grads.append([g.detach() for g in compute_grad(inputs=list(model.parameters()), output=e)])
+            import pdb; pdb.set_trace()
+            grads_flattened = torch.stack([torch.cat([tensor.flatten() for tensor in grad]) for grad in grads])
+            grad_diffs = grads_flattened.unsqueeze(0) - grads_flattened.unsqueeze(1)
+            product = loss_tensor[start:end].unsqueeze(-1).unsqueeze(-1) * grad_diffs #check if this is the right dimension
+            mean = product.mean(dim=(0,1))
+            #reshape
+            gradient_estimator = tuple([g.reshape(shape) for g, shape in zip(mean.split(original_numel), original_shapes)])
+            #add to list of gradients
+            gradient_estimators.append(gradient_estimator)
+        end = time.time()
+        print(f"gradient calculation time: {end-start} seconds")
         #compute the estimator on every pair of positions
         #TODO: scale the estimator by the temperature
 
-        #this is the super slow line
         
         original_shapes = [tensor.shape for tensor in grads[0]]
         original_numel = [tensor.numel() for tensor in grads[0]]
+        start = time.time()
         grads_flattened = [torch.cat([tensor.flatten() for tensor in grad]) for grad in grads]
+        end = time.time()
+        print(f"grad flattening time: {end-start} seconds")
+        
+        import pdb; pdb.set_trace()
+        MINIBATCH_SIZE = 100
+        num_blocks = math.ceil(len(grads_flattened)/ MINIBATCH_SIZE)
+        start = time.time()
+        for i in range(num_blocks):
+            start = MINIBATCH_SIZE*i
+            end = MINIBATCH_SIZE*(i+1)
+            subset = torch.stack(grads_flattened[start:end])
+            diffs = (subset.unsqueeze(0) - subset.unsqueeze(1)).reshape(-1, 1)
+            mean += subset.mean(dim=0) * subset.shape[0] / len(gradients)
+            del subset
+        end = time.time()
+        print(f"diff calculation time: {end-start} seconds")
 
         #TODO: break this up into chunks and do vectorized subtraction (have to break-up bc of memory issues)
+        #Vectorized subtraction would lead to a reduction in the effective sample size
         grad_diffs = [grads_flattened[i] - grads_flattened[j] for i,j in product(list(range(len(grads))),repeat=2) if i!=j]
         del grads_flattened
         loss_tensor = torch.stack(losses).repeat(len(grad_diffs))
         gradients = [l*diff for l, diff in zip(loss_tensor, grad_diffs)]
         del grad_diffs
-        BLOCK_SIZE = 25000 # may need to modify this if model gets bigger
+        MINIBATCH_SIZE = 25000 # may need to modify this if model gets bigger
         mean = torch.zeros((gradients[0].shape[0],)).to(simulator.device)
-        num_blocks = math.ceil(len(gradients)/ BLOCK_SIZE)
+        num_blocks = math.ceil(len(gradients)/ MINIBATCH_SIZE)
         for i in range(num_blocks):
-            start = BLOCK_SIZE*i
-            end = BLOCK_SIZE*(i+1)
+            start = MINIBATCH_SIZE*i
+            end = MINIBATCH_SIZE*(i+1)
             subset = torch.stack(gradients[start:end])
             mean += subset.mean(dim=0) * subset.shape[0] / len(gradients)
             del subset

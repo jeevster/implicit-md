@@ -42,7 +42,7 @@ ift:
   steps: 1
   restart_probability: 1.0
   lr: 0.001
-  n_replicas: 1
+  n_replicas: 10
   diameter_viz: 0.08
   n_dump: 10
   save_intermediate_rdf: False
