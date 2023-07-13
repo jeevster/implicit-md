@@ -39,10 +39,11 @@ ift:
   vacf_window: 100
   batch_size: 1
   loss_measure_freq: 10
-  steps: 1
+  eq_steps: 100
+  steps: 3000
   restart_probability: 1.0
   lr: 0.001
-  n_replicas: 64
+  n_replicas: 1
   minibatch_size: 120
   n_dump: 10
   shuffle: True

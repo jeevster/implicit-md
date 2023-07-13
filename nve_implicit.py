@@ -128,6 +128,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.zeta = torch.zeros((self.n_replicas, 1, 1)).to(self.device)
 
         self.nsteps = params.steps
+        self.eq_steps = params.eq_steps
 
         #create model save path
         #(Path(self.model_dir) / self.save_name).mkdir(parents=True, exist_ok=True)
@@ -524,7 +525,6 @@ class Stochastic_IFT(torch.autograd.Function):
             equilibriated_simulator = simulator.solve()
             ctx.save_for_backward(equilibriated_simulator)
             
-
             model = equilibriated_simulator.model
             radii = equilibriated_simulator.running_radii
             dists = torch.cat([radii_to_dists(r, simulator.params) for r in radii])
@@ -532,11 +532,11 @@ class Stochastic_IFT(torch.autograd.Function):
             losses = [outer_loss(rdf) for rdf in rdfs]
             loss_tensor = torch.stack(losses).unsqueeze(-1).unsqueeze(-1)
 
+            #store original shapes of model parameters
             original_numel = [param.data.numel() for param in model.parameters()]
             original_shapes = [param.data.shape for param in model.parameters()]
             
             #TODO: scale the estimator by temperature
-            #TODO: shuffle the radii so each minibatch contains diverse info from multiple simulations
             start = time.time()
             MINIBATCH_SIZE = simulator.minibatch_size #how many structures to include at a time (match rare events sampling paper for now)
             stacked_radii  = torch.stack(radii).reshape(-1, simulator.n_atoms, 3)
@@ -545,7 +545,6 @@ class Stochastic_IFT(torch.autograd.Function):
                 shuffle_idx = torch.randperm(stacked_radii.shape[0])
                 stacked_radii = stacked_radii[shuffle_idx]
                 loss_tensor = loss_tensor[shuffle_idx]
-            
             
             num_blocks = math.ceil(stacked_radii.shape[0]/ (MINIBATCH_SIZE))
             start_time = time.time()
@@ -563,16 +562,16 @@ class Stochastic_IFT(torch.autograd.Function):
                     energy = model(pos = stacked_radii[start:end].reshape(-1, 3), z = atomic_numbers, batch = batch)   
                     #somehow replace this with a vectorized implementation of compute_grad (based on grad_output?)
                     grads = [[g.detach() for g in compute_grad(inputs=list(model.parameters()), output=e)] for e in energy]
+                #flatten the gradients for vectorization
                 grads_flattened = torch.stack([torch.cat([tensor.flatten() for tensor in grad]) for grad in grads])
                 grad_diffs = grads_flattened.unsqueeze(0) - grads_flattened.unsqueeze(1)
                 product = loss_tensor[start:end] * grad_diffs #(I think this is the correct dimension)
                 mean = product.mean(dim=(0,1))
-                #reshape
+                #re-assemble flattened gradients into correct shape
                 gradient_estimator = tuple([g.reshape(shape) for g, shape in zip(mean.split(original_numel), original_shapes)])
                 #add to list of gradients
                 gradient_estimators.append(gradient_estimator)
                 del grads
-                
 
             end_time = time.time()
             print(f"gradient calculation time: {end_time-start_time} seconds")
@@ -580,22 +579,11 @@ class Stochastic_IFT(torch.autograd.Function):
             mean_rdf = torch.stack(rdfs).mean(dim=0)
             return equilibriated_simulator, gradient_estimators, mean_rdf, outer_loss(mean_rdf).cuda()
 
+    #TODO: trigger this custom backwards pass
     @staticmethod
     def backward(ctx, *grad_output):
         import pdb; pdb.set_trace()
         equilibriated_simulator = ctx.saved_tensors
-        #gradient calculation using Fabian's method
-        model = equilibriated_simulator.model
-        radii = equilibriated_simulator.running_radii
-        with torch.enable_grad():
-            radii = [r.requires_grad_(True) for r in radii]
-            dists = [radii_to_dists(r.requires_grad_(True), simulator.params) for r in radii]
-            energies = [model((d/simulator.sigma_pairs)) if simulator.poly else model(d) for d in dists]
-            grads = [compute_grad(inputs=model.parameters(), output=energy / simulator.temp) for energy in energies]
-            forces = [-compute_grad(inputs=r, output=energy) for r, energy in zip(radii, energies)]
-            grads_except = lambda i: grads[:i] + grads[i+1:]
-            #not done yet - need to multiple each element by the radiis themselves
-            gradient_estimator = mean_across_lists([subtract_across_lists(grad, mean_across_lists(grads_except(i))) for i, grad in enumerate(grads)])
         return None
 
 
@@ -610,7 +598,6 @@ if __name__ == "__main__":
     np.random.seed(seed=params.seed)
     torch.manual_seed(params.seed)
     random.seed(params.seed)
-    
     
     #GPU
     try:
@@ -627,8 +614,6 @@ if __name__ == "__main__":
     
     logging.info(f"Loading pretrained {model_type} model")
     pretrained_model_path = os.path.join(config["dataset"]['model_dir'], model_type, f"{name}-{molecule}_{size}_{model_type}") 
-    #pretrained_model_path = os.path.join(config["dataset"]['model_dir'], f"{name}-{molecule}_{size}_{model_type}") 
-
 
     if model_type == "nequip":
         model, model_config = Trainer.load_model_from_training_session(pretrained_model_path, \
@@ -642,28 +627,6 @@ if __name__ == "__main__":
 
     # #initialize RDF calculator
     diff_rdf = DifferentiableRDF(params, device)#, sample_frac = params.rdf_sample_frac)
-
-
-    # #initialize model
-    # mlp_params = {'n_gauss': int(params.cutoff//params.gaussian_width), 
-    #             'r_start': 0.0,
-    #             'r_end': params.cutoff, 
-    #             'n_width': params.n_width,
-    #             'n_layers': params.n_layers,
-    #             'nonlinear': params.nonlinear}
-
-
-    # NN = pairMLP(**mlp_params)
-
-    # #prior potential only contains repulsive term
-    # prior = LJFamily(epsilon=params.prior_epsilon, sigma=params.prior_sigma, rep_pow=params.prior_rep_power, attr_pow=params.prior_attr_power)
-    
-
-    # model = Stack({'nn': NN, 'prior': prior}).to(device)
-    # radii_0 = fcc_positions(params.n_particle, params.box, device).unsqueeze(0).repeat(params.n_replicas, 1, 1)
-    # velocities_0  = initialize_velocities(params.n_particle, params.temp, n_replicas = params.n_replicas)
-    # rdf_0  = diff_rdf(tuple(radii_to_dists(radii_0[0].unsqueeze(0).to(device), params))).unsqueeze(0).repeat(params.n_replicas, 1)
-
     
     if params.nn:
     #     add = "_polylj" if params.poly else ""
@@ -704,6 +667,9 @@ if __name__ == "__main__":
     best_outer_loss = 100
     if params.nn:
         writer = SummaryWriter(log_dir = results_dir)
+
+    #top level simulator
+    top_level = Stochastic_IFT(params, device)
     
     for epoch in range(params.n_epochs):
         rdf = torch.zeros_like(gt_rdf).to(device)
@@ -712,53 +678,34 @@ if __name__ == "__main__":
         diffusion_loss = torch.Tensor([0]).to(device)
         best = False
         print(f"Epoch {epoch+1}")
-        restart_override = epoch==0 or (torch.rand(size=(1,)) <= params.restart_probability).item()
+        restart= epoch==0 or (torch.rand(size=(1,)) <= params.restart_probability).item()
         
-
         optimizer.zero_grad()
 
-        #run MD simulation to get equilibriated radii
-        for i in range(params.batch_size):
-            #if continuing simulation, initialize with equilibriated NVT coupling constant 
-            restart = i == 0 and restart_override
+        if restart: #draw IC from dataset
+            print("Initialize from random IC")
             #initialize simulator parameterized by a NN model
-            if restart: #start from random initial condition
-                print("Initialize from random IC")
-                simulator = ImplicitMDSimulator(config, params, model, model_config)
-            else: #continue from where we left off in the last epoch/batch
-                simulator.reset(last_radii, last_velocities, last_rdf)
-                simulator.zeta = equilibriated_simulator.zeta
-                if i !=0:
-                    simulator.nsteps = max(params.vacf_window, params.loss_measure_freq)
-            
-            top_level = Stochastic_IFT(params, device)
-            start = time.time()
-            equilibriated_simulator, grad_batches, mean_rdf, rdf_loss = top_level.apply(simulator, gt_rdf, params)
-            end = time.time()
-            sim_time = end - start
-            #import pdb; pdb.set_trace()
-            #manual assignment of gradients
-            for grads in grad_batches:
-                for param, grad in zip(model.parameters(), grads):
-                    param.grad = grad #for grad norm tracking
-                    param.data -= params.lr*grad
-            #optimizer.step()
-            
-            # start = time.time()
-            # equilibriated_simulator = simulator.solve()
-            # end = time.time()
-            # sim_time = end-start
-            # print("MD simulation time (s): ", sim_time)
-            
-            #aggregate rdf across timesteps to reduce noise
-            # if params.nn:
-            #     rdf += equilibriated_simulator.rdf / params.batch_size
-                # diffusion_loss += (equilibriated_simulator.diff_coeff - gt_diff_coeff).pow(2).mean() / params.batch_size# if params.diffusion_loss_weight != 0 else torch.Tensor([0.]).to(device)
-                # vacf_loss += (equilibriated_simulator.vacf - gt_vacf).pow(2).mean() / params.batch_size# if params.vacf_loss_weight != 0 else torch.Tensor([0.]).to(device)
-
-            #memory cleanup
-            #last_radii, last_velocities, last_rdf = equilibriated_simulator.cleanup()
+            simulator = ImplicitMDSimulator(config, params, model, model_config)
+        else: #continue from where we left off in the last epoch/batch
+            simulator.reset(last_radii, last_velocities, last_rdf)
+            simulator.zeta = equilibriated_simulator.zeta
         
+        #run MD and compute gradients
+        start = time.time()
+        equilibriated_simulator, grad_batches, mean_rdf, rdf_loss = top_level.apply(simulator, gt_rdf, params)
+        end = time.time()
+        sim_time = end - start
+
+        #manual SGD for now
+        for grads in grad_batches: #loop through minibatches
+            for param, grad in zip(model.parameters(), grads):
+                param.grad = grad #for grad norm tracking
+                param.data -= params.lr*grad
+        #optimizer.step()
+        
+        #memory cleanup
+        #last_radii, last_velocities, last_rdf = equilibriated_simulator.cleanup()
+    
         #save rdf at the end of the trajectory
         filename = f"rdf_epoch{epoch+1}.npy"
         np.save(os.path.join(results_dir, filename), mean_rdf.cpu().detach().numpy())
