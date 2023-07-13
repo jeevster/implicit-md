@@ -508,112 +508,69 @@ class Stochastic_IFT(torch.autograd.Function):
         
     @staticmethod
     def forward(ctx, *args):
-        simulator = args[0]
-        gt_rdf = args[1] 
-        params = args[2]
-        diff_rdf = DifferentiableRDF(params, simulator.device)
-        def outer_loss(rdf):
-            rdf_loss = (rdf - gt_rdf).pow(2).mean()
-            return params.rdf_loss_weight*rdf_loss
-        
-        simulator.eq_steps = 1000
-        simulator.nsteps = 3000
-        equilibriated_simulator = simulator.solve()
-        ctx.save_for_backward(equilibriated_simulator)
-        
+        with torch.no_grad():
+            simulator = args[0]
+            gt_rdf = args[1] 
+            params = args[2]
+            diff_rdf = DifferentiableRDF(params, simulator.device)
+            def outer_loss(rdf):
+                rdf_loss = (rdf - gt_rdf).pow(2).mean()
+                return params.rdf_loss_weight*rdf_loss
+            
+            simulator.eq_steps = 100
+            simulator.nsteps = 300
+            equilibriated_simulator = simulator.solve()
+            ctx.save_for_backward(equilibriated_simulator)
+            
 
-        model = equilibriated_simulator.model
-        radii = equilibriated_simulator.running_radii
-        dists = torch.cat([radii_to_dists(r, simulator.params) for r in radii])
-        rdfs = [diff_rdf(tuple(d)) for d in dists]
-        losses = [outer_loss(rdf) for rdf in rdfs]
-        loss_tensor = torch.stack(losses)
+            model = equilibriated_simulator.model
+            radii = equilibriated_simulator.running_radii
+            dists = torch.cat([radii_to_dists(r, simulator.params) for r in radii])
+            rdfs = [diff_rdf(tuple(d)) for d in dists]
+            losses = [outer_loss(rdf) for rdf in rdfs]
+            loss_tensor = torch.stack(losses).unsqueeze(-1).unsqueeze(-1)
 
-        original_numel = [param.data.numel() for param in model.parameters()]
-        original_shapes = [param.data.shape for param in model.parameters()]
-        
-        #compute energies at each of the positions and then compute gradients wrt model parameters
-        
-        #TODO: vectorize this code (over replicas, not over samples)
-        #tradeoff - vectorization gives higher speed but runs out of memory eventually since have to store all intermediate activations
-        #non-vectorized approach can theoretically have infinite # of replicas and samples
-        start = time.time()
-        MINIBATCH_SIZE = 100 #how many structures to include at a time
-        stacked_radii  = torch.stack(radii).reshape(-1, simulator.n_atoms, 3)
-        batch = torch.arange(MINIBATCH_SIZE).repeat_interleave(simulator.n_atoms).to(simulator.device)
-        atomic_numbers = torch.Tensor(simulator.atoms.get_atomic_numbers()).to(torch.long).to(simulator.device).repeat(MINIBATCH_SIZE)
-        num_blocks = math.ceil(stacked_radii.shape[0]/ (MINIBATCH_SIZE))
-        start = time.time()
-        gradient_estimators = []
-        for i in range(num_blocks):
-            grads = []
-            start = MINIBATCH_SIZE*i
-            end = MINIBATCH_SIZE*(i+1)
-            with torch.enable_grad():
-                #somehow this energy is wrong...
-                energy = model(pos = stacked_radii[start:end].reshape(-1, 3), z = atomic_numbers, batch = batch)
+            original_numel = [param.data.numel() for param in model.parameters()]
+            original_shapes = [param.data.shape for param in model.parameters()]
+            
+            #TODO: scale the estimator by temperature
+            #TODO: shuffle the radii so each minibatch contains diverse info from multiple simulations
+            start = time.time()
+            MINIBATCH_SIZE = 120 #how many structures to include at a time (match rare events sampling paper for now)
+            stacked_radii  = torch.stack(radii).reshape(-1, simulator.n_atoms, 3)
+            
+            num_blocks = math.ceil(stacked_radii.shape[0]/ (MINIBATCH_SIZE))
+            start_time = time.time()
+            gradient_estimators = []
+            print(f"Computing gradients in minibatches of {MINIBATCH_SIZE} structures")
+            print_active_torch_tensors()
+            for i in tqdm(range(num_blocks)):
+                #print_active_torch_tensors()
+                start = MINIBATCH_SIZE*i
+                end = MINIBATCH_SIZE*(i+1)
+                actual_batch_size = min(end, stacked_radii.shape[0]) - start
+                batch = torch.arange(actual_batch_size).repeat_interleave(simulator.n_atoms).to(simulator.device)
+                atomic_numbers = torch.Tensor(simulator.atoms.get_atomic_numbers()).to(torch.long).to(simulator.device).repeat(actual_batch_size)
+                with torch.enable_grad():
+                    energy = model(pos = stacked_radii[start:end].reshape(-1, 3), z = atomic_numbers, batch = batch)   
+                    #somehow replace this with a vectorized implementation of compute_grad (based on grad_output?)
+                    grads = [[g.detach() for g in compute_grad(inputs=list(model.parameters()), output=e)] for e in energy]
+                grads_flattened = torch.stack([torch.cat([tensor.flatten() for tensor in grad]) for grad in grads])
+                grad_diffs = grads_flattened.unsqueeze(0) - grads_flattened.unsqueeze(1)
+                product = loss_tensor[start:end] * grad_diffs #(I think this is the correct dimension)
+                mean = product.mean(dim=(0,1))
+                #reshape
+                gradient_estimator = tuple([g.reshape(shape) for g, shape in zip(mean.split(original_numel), original_shapes)])
+                #add to list of gradients
+                gradient_estimators.append(gradient_estimator)
+                del grads
                 
-                for e in energy: #somehow replace this with a vectorized implementation of compute_grad (based on grad_output?)
-                    grads.append([g.detach() for g in compute_grad(inputs=list(model.parameters()), output=e)])
-            import pdb; pdb.set_trace()
-            grads_flattened = torch.stack([torch.cat([tensor.flatten() for tensor in grad]) for grad in grads])
-            grad_diffs = grads_flattened.unsqueeze(0) - grads_flattened.unsqueeze(1)
-            product = loss_tensor[start:end].unsqueeze(-1).unsqueeze(-1) * grad_diffs #check if this is the right dimension
-            mean = product.mean(dim=(0,1))
-            #reshape
-            gradient_estimator = tuple([g.reshape(shape) for g, shape in zip(mean.split(original_numel), original_shapes)])
-            #add to list of gradients
-            gradient_estimators.append(gradient_estimator)
-        end = time.time()
-        print(f"gradient calculation time: {end-start} seconds")
-        #compute the estimator on every pair of positions
-        #TODO: scale the estimator by the temperature
 
-        
-        original_shapes = [tensor.shape for tensor in grads[0]]
-        original_numel = [tensor.numel() for tensor in grads[0]]
-        start = time.time()
-        grads_flattened = [torch.cat([tensor.flatten() for tensor in grad]) for grad in grads]
-        end = time.time()
-        print(f"grad flattening time: {end-start} seconds")
-        
-        import pdb; pdb.set_trace()
-        MINIBATCH_SIZE = 100
-        num_blocks = math.ceil(len(grads_flattened)/ MINIBATCH_SIZE)
-        start = time.time()
-        for i in range(num_blocks):
-            start = MINIBATCH_SIZE*i
-            end = MINIBATCH_SIZE*(i+1)
-            subset = torch.stack(grads_flattened[start:end])
-            diffs = (subset.unsqueeze(0) - subset.unsqueeze(1)).reshape(-1, 1)
-            mean += subset.mean(dim=0) * subset.shape[0] / len(gradients)
-            del subset
-        end = time.time()
-        print(f"diff calculation time: {end-start} seconds")
-
-        #TODO: break this up into chunks and do vectorized subtraction (have to break-up bc of memory issues)
-        #Vectorized subtraction would lead to a reduction in the effective sample size
-        grad_diffs = [grads_flattened[i] - grads_flattened[j] for i,j in product(list(range(len(grads))),repeat=2) if i!=j]
-        del grads_flattened
-        loss_tensor = torch.stack(losses).repeat(len(grad_diffs))
-        gradients = [l*diff for l, diff in zip(loss_tensor, grad_diffs)]
-        del grad_diffs
-        MINIBATCH_SIZE = 25000 # may need to modify this if model gets bigger
-        mean = torch.zeros((gradients[0].shape[0],)).to(simulator.device)
-        num_blocks = math.ceil(len(gradients)/ MINIBATCH_SIZE)
-        for i in range(num_blocks):
-            start = MINIBATCH_SIZE*i
-            end = MINIBATCH_SIZE*(i+1)
-            subset = torch.stack(gradients[start:end])
-            mean += subset.mean(dim=0) * subset.shape[0] / len(gradients)
-            del subset
-        gradient_estimator = tuple([g.reshape(shape) for g, shape in zip(mean.split(original_numel), original_shapes)])
-
-        #gradients = [multiply_across_lists(losses[j], subtract_across_lists(grads[i], grads[j])) for i,j in product(list(range(len(grads))),repeat=2) if i!=j]
-        #gradient_estimator = mean_across_lists(gradients)
-        #final_grad_norms = [torch.Tensor([torch.linalg.norm(g, dim =-1).max()]) for g in gradient_estimator]
-        mean_rdf = torch.stack(rdfs).mean(dim=0)
-        return equilibriated_simulator, gradient_estimator, mean_rdf, outer_loss(mean_rdf).cuda()
+            end_time = time.time()
+            print(f"gradient calculation time: {end_time-start_time} seconds")
+            
+            mean_rdf = torch.stack(rdfs).mean(dim=0)
+            return equilibriated_simulator, gradient_estimators, mean_rdf, outer_loss(mean_rdf).cuda()
 
     @staticmethod
     def backward(ctx, *grad_output):
@@ -768,14 +725,15 @@ if __name__ == "__main__":
             
             top_level = Stochastic_IFT(params, device)
             start = time.time()
-            equilibriated_simulator, grads, mean_rdf, rdf_loss = top_level.apply(simulator, gt_rdf, params)
+            equilibriated_simulator, grad_batches, mean_rdf, rdf_loss = top_level.apply(simulator, gt_rdf, params)
             end = time.time()
             sim_time = end - start
             #import pdb; pdb.set_trace()
             #manual assignment of gradients
-            for param, grad in zip(model.parameters(), grads):
-                param.grad = grad #for grad norm tracking
-                param.data -= params.lr*grad
+            for grads in grad_batches:
+                for param, grad in zip(model.parameters(), grads):
+                    param.grad = grad #for grad norm tracking
+                    param.data -= params.lr*grad
             #optimizer.step()
             
             # start = time.time()
