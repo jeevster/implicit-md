@@ -91,6 +91,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.save_name = config['dataset']["save_name"]
         self.train = config['mode'] == 'train'
         self.n_replicas = config["ift"]["n_replicas"]
+        self.minibatch_size = config["ift"]['minibatch_size']
+        self.shuffle = config["ift"]['shuffle']
         self.vacf_window = config["ift"]["vacf_window"]
 
         #initialize datasets
@@ -536,8 +538,14 @@ class Stochastic_IFT(torch.autograd.Function):
             #TODO: scale the estimator by temperature
             #TODO: shuffle the radii so each minibatch contains diverse info from multiple simulations
             start = time.time()
-            MINIBATCH_SIZE = 120 #how many structures to include at a time (match rare events sampling paper for now)
+            MINIBATCH_SIZE = simulator.minibatch_size #how many structures to include at a time (match rare events sampling paper for now)
             stacked_radii  = torch.stack(radii).reshape(-1, simulator.n_atoms, 3)
+            #shuffle the radii and losses
+            if simulator.shuffle:
+                shuffle_idx = torch.randperm(stacked_radii.shape[0])
+                stacked_radii = stacked_radii[shuffle_idx]
+                loss_tensor = loss_tensor[shuffle_idx]
+            
             
             num_blocks = math.ceil(stacked_radii.shape[0]/ (MINIBATCH_SIZE))
             start_time = time.time()
