@@ -37,20 +37,19 @@ ift:
   exp_name: "TEST"
   diffusion_window: 1000
   vacf_window: 100
-  batch_size: 1
-  loss_measure_freq: 10
   eq_steps: 100
   steps: 3000
-  restart_probability: 1.0
-  lr: 0.001
-  n_replicas: 1
+  n_dump: 50
+  n_replicas: 64
   minibatch_size: 120
-  n_dump: 10
   shuffle: True
+  restart_probability: 1.0
+  n_epochs: 100
+  lr: 0.001
   diameter_viz: 0.08
   save_intermediate_rdf: False
   burn_in_frac: 0.8
-  n_epochs: 100
+  
   diffusion_loss_weight: 0
   vacf_loss_weight: 0
   rdf_loss_weight: 1

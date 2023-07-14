@@ -12,8 +12,9 @@ import types
 
 import argparse
 import logging
-from itertools import product
 import os
+logging.basicConfig(level=os.environ.get("LOGLEVEL", "WARNING"))
+from itertools import product
 from tqdm import tqdm
 import pstats
 import pdb
@@ -33,7 +34,8 @@ from functorch import vmap
 from utils import radii_to_dists, fcc_positions, initialize_velocities, \
                     dump_params_to_yml, powerlaw_inv_cdf, print_active_torch_tensors, plot_pair, solve_continuity_system, find_hr_from_file, mean_across_lists, subtract_across_lists, multiply_across_lists
 
-
+import warnings
+warnings.filterwarnings("ignore")
 
 #NNIP stuff:
 from ase import Atoms, units
@@ -167,8 +169,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         samples = np.random.choice(np.arange(self.train_dataset.__len__()), self.n_replicas)
         actual_atoms = [self.train_dataset.__getitem__(i) for i in samples]
         radii = torch.stack([torch.Tensor(data_to_atoms(atoms).get_positions()) for atoms in actual_atoms])
-
-        self.radii = nn.Parameter(radii, requires_grad=True).to(self.device)
+        self.radii = nn.Parameter(radii + torch.normal(torch.zeros_like(radii), 0.1), requires_grad=True).to(self.device)
         self.velocities = nn.Parameter(torch.Tensor(initialize_velocities(self.n_atoms, self.masses, self.temp, self.n_replicas)).clone(), requires_grad=True).to(self.device)
         
         self.rdf = nn.Parameter(torch.zeros((self.n_replicas, int(self.params.max_rdf_dist/self.params.dr),)), requires_grad=True).to(self.device)
@@ -520,13 +521,14 @@ class Stochastic_IFT(torch.autograd.Function):
                 rdf_loss = (rdf - gt_rdf).pow(2).mean()
                 return params.rdf_loss_weight*rdf_loss
             
-            simulator.eq_steps = 100
-            simulator.nsteps = 300
+            print('Collect MD Simulation Data')
             equilibriated_simulator = simulator.solve()
             ctx.save_for_backward(equilibriated_simulator)
             
             model = equilibriated_simulator.model
             radii = equilibriated_simulator.running_radii
+            #TODO: vectorize this: 
+            import pdb; pdb.set_trace()
             dists = torch.cat([radii_to_dists(r, simulator.params) for r in radii])
             rdfs = [diff_rdf(tuple(d)) for d in dists]
             losses = [outer_loss(rdf) for rdf in rdfs]
@@ -550,28 +552,43 @@ class Stochastic_IFT(torch.autograd.Function):
             start_time = time.time()
             gradient_estimators = []
             print(f"Computing gradients in minibatches of {MINIBATCH_SIZE} structures")
-            print_active_torch_tensors()
+            
             for i in tqdm(range(num_blocks)):
                 #print_active_torch_tensors()
+                last = i==num_blocks-1
                 start = MINIBATCH_SIZE*i
                 end = MINIBATCH_SIZE*(i+1)
                 actual_batch_size = min(end, stacked_radii.shape[0]) - start
+    
                 batch = torch.arange(actual_batch_size).repeat_interleave(simulator.n_atoms).to(simulator.device)
                 atomic_numbers = torch.Tensor(simulator.atoms.get_atomic_numbers()).to(torch.long).to(simulator.device).repeat(actual_batch_size)
                 with torch.enable_grad():
-                    energy = model(pos = stacked_radii[start:end].reshape(-1, 3), z = atomic_numbers, batch = batch)   
+                    energy = model(pos = stacked_radii[start:end].reshape(-1, 3), z = atomic_numbers, batch = batch)
                     #somehow replace this with a vectorized implementation of compute_grad (based on grad_output?)
-                    grads = [[g.detach() for g in compute_grad(inputs=list(model.parameters()), output=e)] for e in energy]
+                    #seems like this might be harder than expected RIP: https://github.com/pytorch/pytorch/issues/7786
+                    #this is the super slow line now
+                    #check if it can be made faster by not creating/retaining the graph?
+                def get_vjp(v):
+                    return compute_grad(inputs = list(model.parameters()), create_graph = False, output = energy, grad_outputs = v)
+                vectorized_vjp = vmap(get_vjp)
+                I_N = torch.eye(energy.shape[0]).unsqueeze(-1).to(simulator.device)
+                grads_vectorized = vectorized_vjp(I_N)
                 #flatten the gradients for vectorization
-                grads_flattened = torch.stack([torch.cat([tensor.flatten() for tensor in grad]) for grad in grads])
+                num_params = len(list(model.parameters()))
+                num_samples = energy.shape[0]
+                grads_flattened= torch.stack([torch.cat([grads_vectorized[i][j].flatten().detach() for i in range(num_params)]) for j in range(num_samples)])
+                #grads_flattened = torch.stack([torch.cat([tensor.flatten() for tensor in grad]) for grad in grads])
+
                 grad_diffs = grads_flattened.unsqueeze(0) - grads_flattened.unsqueeze(1)
                 product = loss_tensor[start:end] * grad_diffs #(I think this is the correct dimension)
                 mean = product.mean(dim=(0,1))
+                
                 #re-assemble flattened gradients into correct shape
                 gradient_estimator = tuple([g.reshape(shape) for g, shape in zip(mean.split(original_numel), original_shapes)])
+                #print(f"reassemble time: {e-s} s")
                 #add to list of gradients
                 gradient_estimators.append(gradient_estimator)
-                del grads
+                
 
             end_time = time.time()
             print(f"gradient calculation time: {end_time-start_time} seconds")
@@ -654,7 +671,7 @@ if __name__ == "__main__":
 
     if not params.nn:
         params.n_epochs = 1
-        params.batch_size = 1
+        
 
     #outer training loop
     losses = []
@@ -700,7 +717,7 @@ if __name__ == "__main__":
         for grads in grad_batches: #loop through minibatches
             for param, grad in zip(model.parameters(), grads):
                 param.grad = grad #for grad norm tracking
-                param.data -= params.lr*grad
+                param.data -= optimizer.param_groups[0]['lr']*grad
         #optimizer.step()
         
         #memory cleanup
