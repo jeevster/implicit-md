@@ -486,8 +486,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         s.configuration.step = self.dt
 
         s.bonds.N = self.bonds.shape[0]
-        s.bonds.types = self.atom_types_list
-        s.bonds.typeid = self.typeid
         s.bonds.group = detach_numpy(self.bonds)
         return s
     
@@ -528,7 +526,6 @@ class Stochastic_IFT(torch.autograd.Function):
             model = equilibriated_simulator.model
             radii = equilibriated_simulator.running_radii
             #TODO: vectorize this: 
-            import pdb; pdb.set_trace()
             dists = torch.cat([radii_to_dists(r, simulator.params) for r in radii])
             rdfs = [diff_rdf(tuple(d)) for d in dists]
             losses = [outer_loss(rdf) for rdf in rdfs]

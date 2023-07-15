@@ -4,7 +4,7 @@ dataset:
   src: /data/sanjeevr
   name: md17
   size: 1k
-  molecule: aspirin
+  molecule: naphthalene
   normalize_labels: False
   checkpoint_epoch: 10 #which model to start from
   model: schnet
@@ -40,7 +40,7 @@ ift:
   eq_steps: 100
   steps: 3000
   n_dump: 50
-  n_replicas: 64
+  n_replicas: 600
   minibatch_size: 120
   shuffle: True
   restart_probability: 1.0
