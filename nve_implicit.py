@@ -525,11 +525,13 @@ class Stochastic_IFT(torch.autograd.Function):
             
             model = equilibriated_simulator.model
             radii = equilibriated_simulator.running_radii
-            #TODO: vectorize this: 
-            dists = torch.cat([radii_to_dists(r, simulator.params) for r in radii])
-            rdfs = [diff_rdf(tuple(d)) for d in dists]
-            losses = [outer_loss(rdf) for rdf in rdfs]
-            loss_tensor = torch.stack(losses).unsqueeze(-1).unsqueeze(-1)
+
+            r2d = lambda r: radii_to_dists(r, simulator.params)
+            stacked_radii  = torch.stack(radii)#.reshape(-1, simulator.n_atoms, 3)
+            dists = vmap(r2d, 0)(stacked_radii).reshape(1, -1, simulator.n_atoms, simulator.n_atoms-1, 1)
+
+            rdfs = vmap(diff_rdf, 0)(tuple(dists))
+            loss_tensor = vmap(outer_loss, 0)(rdfs).unsqueeze(-1).unsqueeze(-1)
 
             #store original shapes of model parameters
             original_numel = [param.data.numel() for param in model.parameters()]
@@ -538,7 +540,7 @@ class Stochastic_IFT(torch.autograd.Function):
             #TODO: scale the estimator by temperature
             start = time.time()
             MINIBATCH_SIZE = simulator.minibatch_size #how many structures to include at a time (match rare events sampling paper for now)
-            stacked_radii  = torch.stack(radii).reshape(-1, simulator.n_atoms, 3)
+            stacked_radii = stacked_radii.reshape(-1, simulator.n_atoms, 3)
             #shuffle the radii and losses
             if simulator.shuffle:
                 shuffle_idx = torch.randperm(stacked_radii.shape[0])
@@ -577,7 +579,7 @@ class Stochastic_IFT(torch.autograd.Function):
                 #grads_flattened = torch.stack([torch.cat([tensor.flatten() for tensor in grad]) for grad in grads])
 
                 grad_diffs = grads_flattened.unsqueeze(0) - grads_flattened.unsqueeze(1)
-                product = loss_tensor[start:end] * grad_diffs #(I think this is the correct dimension)
+                product = loss_tensor[start:end] * grad_diffs
                 mean = product.mean(dim=(0,1))
                 
                 #re-assemble flattened gradients into correct shape
@@ -590,7 +592,7 @@ class Stochastic_IFT(torch.autograd.Function):
             end_time = time.time()
             print(f"gradient calculation time: {end_time-start_time} seconds")
             
-            mean_rdf = torch.stack(rdfs).mean(dim=0)
+            mean_rdf = rdfs.mean(dim=0)
             return equilibriated_simulator, gradient_estimators, mean_rdf, outer_loss(mean_rdf).cuda()
 
     #TODO: trigger this custom backwards pass

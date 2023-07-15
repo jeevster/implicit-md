@@ -38,7 +38,7 @@ ift:
   diffusion_window: 1000
   vacf_window: 100
   eq_steps: 100
-  steps: 3000
+  steps: 300
   n_dump: 50
   n_replicas: 600
   minibatch_size: 120
