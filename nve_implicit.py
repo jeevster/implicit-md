@@ -80,8 +80,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         except:
             self.device = "cpu"
 
-        
-
+    
         self.name = config['dataset']['name']
         self.molecule = config['dataset']['molecule']
         self.size = '10k' #override for now #config['dataset']['size']
@@ -129,7 +128,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.gt_traj[:, self.bonds[:, 0]], self.gt_traj[:, self.bonds[:, 1]], \
                     torch.FloatTensor([30., 30., 30.]).to(self.device)).mean(dim=0)
         
-
         #Nose-Hoover Thermostat stuff
         self.dt = config["ift"]['integrator_config']["timestep"] * units.fs
         self.temp = config["ift"]['integrator_config']["temperature"]
@@ -254,7 +252,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         num_batches = math.ceil(self.gt_traj.shape[0]/ batch_size)
         energies = []
         forces = []
-        for i in tqdm(range(num_batches)):
+        for i in range(num_batches):
             #print_active_torch_tensors()
             start = batch_size*i
             end = batch_size*(i+1)
@@ -270,9 +268,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         energy_rmse = (self.gt_energies - energies).pow(2).mean().sqrt()
         force_rmse = (self.gt_forces - forces).pow(2).mean()
         force_mae = (self.gt_forces - forces).abs().mean()
-
-
-        import pdb; pdb.set_trace()
+        return energy_rmse, force_rmse
 
     '''memory cleanups'''
     def cleanup(self):
@@ -726,6 +722,8 @@ if __name__ == "__main__":
     diffusion_losses = []
     vacf_losses = []
     max_bond_len_devs = []
+    energy_rmses = []
+    force_rmses = []
     grad_times = []
     sim_times = []
     grad_norms = []
@@ -819,8 +817,11 @@ if __name__ == "__main__":
             vacf_losses.append(vacf_loss.item())
             max_bond_len_devs.append(simulator.max_dev)
             #energy/force error
-            # print("Logging energy/force error")
-            # energy_rmse, force_rmse = simulator.energy_force_error(params.test_batch_size)
+            print("Logging energy/force error")
+            energy_rmse, force_rmse = simulator.energy_force_error(params.test_batch_size)
+            energy_rmses.append(energy_rmse)
+            force_rmses.append(force_rmse)
+
             sim_times.append(sim_time)
             #grad_times.append(grad_time)
             try:
@@ -833,6 +834,8 @@ if __name__ == "__main__":
             #writer.add_scalar('Relative Diffusion Loss', diffusion_losses[-1], global_step=epoch+1)
             writer.add_scalar('VACF Loss', vacf_losses[-1], global_step=epoch+1)
             writer.add_scalar('Max Bond Length Deviation', max_bond_len_devs[-1], global_step=epoch+1)
+            writer.add_scalar('Energy RMSE', energy_rmses[-1], global_step=epoch+1)
+            writer.add_scalar('Force RMSE', force_rmses[-1], global_step=epoch+1)
             writer.add_scalar('Simulation Time', sim_times[-1], global_step=epoch+1)
             #writer.add_scalar('Gradient Time', grad_times[-1], global_step=epoch+1)
             writer.add_scalar('Gradient Norm', grad_norms[-1], global_step=epoch+1)
