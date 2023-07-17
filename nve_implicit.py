@@ -32,7 +32,7 @@ from torch.utils.tensorboard import SummaryWriter
 from sys import getrefcount
 from functorch import vmap
 from utils import radii_to_dists, fcc_positions, initialize_velocities, \
-                    dump_params_to_yml, powerlaw_inv_cdf, print_active_torch_tensors, plot_pair, solve_continuity_system, find_hr_from_file, mean_across_lists, subtract_across_lists, multiply_across_lists
+                    dump_params_to_yml, powerlaw_inv_cdf, print_active_torch_tensors, plot_pair, solve_continuity_system, find_hr_from_file, distance_pbc
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -89,6 +89,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
         logging.info("Initializing MD simulation environment")
         self.config = config
+        self.data_dir = config['dataset']['src']
         self.model_dir = os.path.join(config['dataset']["model_dir"], self.model_type, f"{self.name}-{self.molecule}_{self.size}_{self.model_type}")
         self.save_name = config['dataset']["save_name"]
         self.train = config['mode'] == 'train'
@@ -98,7 +99,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.vacf_window = config["ift"]["vacf_window"]
 
         #initialize datasets
-        self.train_dataset = LmdbDataset({'src': os.path.join(config['dataset']['src'], self.name, self.molecule, self.size, 'train')})
+        self.train_dataset = LmdbDataset({'src': os.path.join(self.data_dir, self.name, self.molecule, self.size, 'train')})
         self.valid_dataset = LmdbDataset({'src': os.path.join(config['dataset']['src'], self.name, self.molecule, self.size, 'val')})
 
         #get random initial condition from dataset
@@ -117,6 +118,17 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.typeid = np.zeros(self.n_atoms, dtype=int)
         for i, _type in enumerate(self.atom_types):
             self.typeid[i] = type_to_index[_type]    
+
+        #bond length deviation
+        DATAPATH = f'{self.data_dir}/{self.name}/{self.molecule}/{self.size}/test/nequip_npz.npz'
+        gt_data = np.load(DATAPATH)
+        self.gt_traj = torch.FloatTensor(gt_data.f.R).to(self.device)
+        self.gt_energies = torch.FloatTensor(gt_data.f.E).to(self.device)
+        self.gt_forces = torch.FloatTensor(gt_data.f.F).to(self.device)
+        self.mean_bond_lens = distance_pbc(
+        self.gt_traj[:, self.bonds[:, 0]], self.gt_traj[:, self.bonds[:, 1]], \
+                    torch.FloatTensor([30., 30., 30.]).to(self.device)).mean(dim=0)
+        
 
         #Nose-Hoover Thermostat stuff
         self.dt = config["ift"]['integrator_config']["timestep"] * units.fs
@@ -237,6 +249,31 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.t = gsd.hoomd.open(name=f'{self.save_dir}/sim_temp.gsd', mode='w') 
         self.n_dump = params.n_dump # dump for configuration
 
+    '''compute energy/force error on held-out test set'''
+    def energy_force_error(self, batch_size):
+        num_batches = math.ceil(self.gt_traj.shape[0]/ batch_size)
+        energies = []
+        forces = []
+        for i in tqdm(range(num_batches)):
+            #print_active_torch_tensors()
+            start = batch_size*i
+            end = batch_size*(i+1)
+            actual_batch_size = min(end, self.gt_traj.shape[0]) - start        
+            atomic_numbers = torch.Tensor(self.atoms.get_atomic_numbers()).to(torch.long).to(self.device).repeat(actual_batch_size)
+            batch = torch.arange(actual_batch_size).repeat_interleave(self.n_atoms).to(self.device)
+            energy, force = self.force_calc(self.gt_traj[start:end], atomic_numbers, batch) 
+            energies.append(energy)
+            forces.append(force)
+        energies = torch.cat(energies)
+        forces = torch.cat(forces)
+        energy_mae = (self.gt_energies - energies).abs().mean()
+        energy_rmse = (self.gt_energies - energies).pow(2).mean().sqrt()
+        force_rmse = (self.gt_forces - forces).pow(2).mean()
+        force_mae = (self.gt_forces - forces).abs().mean()
+
+
+        import pdb; pdb.set_trace()
+
     '''memory cleanups'''
     def cleanup(self):
         #detach the radii and velocities - saves some memory
@@ -257,11 +294,15 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         # self.diff_coeff = nn.Parameter(torch.zeros((self.n_replicas,)), requires_grad=True).to(self.device)
         # self.vacf = nn.Parameter(torch.zeros((self.n_replicas,self.vacf_window)), requires_grad=True).to(self.device)
 
-    def force_calc(self, radii, retain_grad = False):
+    def force_calc(self, radii, atomic_numbers = None, batch = None, retain_grad = False):
+        if atomic_numbers is None:
+            atomic_numbers = self.atomic_numbers
+        if batch is None:
+            batch = self.batch
         with torch.enable_grad():
             if not radii.requires_grad:
                     radii.requires_grad = True
-            energy = self.model(pos = radii.reshape(-1,3), z = self.atomic_numbers, batch = self.batch)
+            energy = self.model(pos = radii.reshape(-1,3), z = atomic_numbers, batch = batch)
             forces = -compute_grad(inputs = radii, output = energy) if retain_grad else -compute_grad(inputs = radii, output = energy).detach()
             assert(not torch.any(torch.isnan(forces)))
         return energy, forces
@@ -426,6 +467,11 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             # length = len(self.running_dists)
             self.zeta = zeta
             self.forces = forces
+
+            #compute bond length deviation
+            stacked_radii = torch.cat(self.running_radii)
+            bond_lens = distance_pbc(stacked_radii[:, self.bonds[:, 0]], stacked_radii[:, self.bonds[:, 1]], torch.FloatTensor([30., 30., 30.]).to(self.device))
+            self.max_dev = (bond_lens - self.mean_bond_lens).abs().max(dim=-1)[0].mean()
             # #compute diffusion coefficient
             # #if self.diffusion_loss_weight != 0 or not self.nn:
             # msd_data = msd(torch.cat(self.last_h_radii, dim=0), self.box)
@@ -497,11 +543,17 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #w = -1/6*torch.sum(self.internal_virial)
         #pressure = w/self.vol + self.rho*self.kbt0
         pressure = torch.Tensor(0)
+
+        #max bond length deviation calculation (mean over replicas)
+        bond_lens = distance_pbc(self.radii[:, self.bonds[:, 0]], self.radii[:, self.bonds[:, 1]], torch.FloatTensor([30., 30., 30.]).to(self.device))
+        max_dev = (bond_lens - self.mean_bond_lens).abs().max(dim=-1)[0].mean()
+
         return {"Temperature": temp.item(),
                 #"Pressure": pressure,
                 "Potential Energy": pe.mean().item(),
                 "Total Energy": (ke+pe).mean().item(),
-                "Momentum Magnitude": torch.norm(torch.sum(self.masses*self.velocities, axis =-2)).item()}
+                "Momentum Magnitude": torch.norm(torch.sum(self.masses*self.velocities, axis =-2)).item(),
+                "Max Bond Length Deviation": max_dev.item()}
 
 class Stochastic_IFT(torch.autograd.Function):
     def __init__(self, params, device):
@@ -527,7 +579,7 @@ class Stochastic_IFT(torch.autograd.Function):
             radii = equilibriated_simulator.running_radii
 
             r2d = lambda r: radii_to_dists(r, simulator.params)
-            stacked_radii  = torch.stack(radii)#.reshape(-1, simulator.n_atoms, 3)
+            stacked_radii  = torch.stack(radii)
             dists = vmap(r2d, 0)(stacked_radii).reshape(1, -1, simulator.n_atoms, simulator.n_atoms-1, 1)
 
             rdfs = vmap(diff_rdf, 0)(tuple(dists))
@@ -563,10 +615,6 @@ class Stochastic_IFT(torch.autograd.Function):
                 atomic_numbers = torch.Tensor(simulator.atoms.get_atomic_numbers()).to(torch.long).to(simulator.device).repeat(actual_batch_size)
                 with torch.enable_grad():
                     energy = model(pos = stacked_radii[start:end].reshape(-1, 3), z = atomic_numbers, batch = batch)
-                    #somehow replace this with a vectorized implementation of compute_grad (based on grad_output?)
-                    #seems like this might be harder than expected RIP: https://github.com/pytorch/pytorch/issues/7786
-                    #this is the super slow line now
-                    #check if it can be made faster by not creating/retaining the graph?
                 def get_vjp(v):
                     return compute_grad(inputs = list(model.parameters()), create_graph = False, output = energy, grad_outputs = v)
                 vectorized_vjp = vmap(get_vjp)
@@ -677,6 +725,7 @@ if __name__ == "__main__":
     rdf_losses = []
     diffusion_losses = []
     vacf_losses = []
+    max_bond_len_devs = []
     grad_times = []
     sim_times = []
     grad_norms = []
@@ -768,6 +817,10 @@ if __name__ == "__main__":
             rdf_losses.append(rdf_loss.item())
             #diffusion_losses.append((diffusion_loss.sqrt()/gt_diff_coeff).item())
             vacf_losses.append(vacf_loss.item())
+            max_bond_len_devs.append(simulator.max_dev)
+            #energy/force error
+            # print("Logging energy/force error")
+            # energy_rmse, force_rmse = simulator.energy_force_error(params.test_batch_size)
             sim_times.append(sim_time)
             #grad_times.append(grad_time)
             try:
@@ -779,6 +832,7 @@ if __name__ == "__main__":
             writer.add_scalar('RDF Loss', rdf_losses[-1], global_step=epoch+1)
             #writer.add_scalar('Relative Diffusion Loss', diffusion_losses[-1], global_step=epoch+1)
             writer.add_scalar('VACF Loss', vacf_losses[-1], global_step=epoch+1)
+            writer.add_scalar('Max Bond Length Deviation', max_bond_len_devs[-1], global_step=epoch+1)
             writer.add_scalar('Simulation Time', sim_times[-1], global_step=epoch+1)
             #writer.add_scalar('Gradient Time', grad_times[-1], global_step=epoch+1)
             writer.add_scalar('Gradient Norm', grad_norms[-1], global_step=epoch+1)

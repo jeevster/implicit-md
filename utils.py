@@ -151,6 +151,13 @@ def find_hr_from_file(base_path: str, molecule: str, size: str, params, device):
     hist_gt = 100*hist_gt/ hist_gt.sum()
     return hist_gt
 
+
+def distance_pbc(x0, x1, lattices):
+    delta = torch.abs(x0 - x1)
+    lattices = lattices.view(-1,1,3)
+    delta = torch.where(delta > 0.5 * lattices, delta - lattices, delta)
+    return torch.sqrt((delta ** 2).sum(dim=-1))
+
 def mean_across_lists(list_of_lists):
     num_lists = len(list_of_lists)
     num_tensors = len(list_of_lists[0])

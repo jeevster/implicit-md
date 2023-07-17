@@ -38,10 +38,11 @@ ift:
   diffusion_window: 1000
   vacf_window: 100
   eq_steps: 100
-  steps: 300
+  steps: 3000
   n_dump: 50
-  n_replicas: 600
+  n_replicas: 64
   minibatch_size: 120
+  test_batch_size: 1000
   shuffle: True
   restart_probability: 1.0
   n_epochs: 100
