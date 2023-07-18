@@ -39,9 +39,9 @@ ift:
   vacf_window: 100
   ic_stddev: 0
   eq_steps: 100
-  steps: 30000
+  steps: 3000
   n_dump: 10
-  n_replicas: 600
+  n_replicas: 10
   minibatch_size: 120
   test_batch_size: 1000
   shuffle: True
@@ -60,6 +60,6 @@ ift:
   kcal: False
   T_init: 500.
   integrator: Langevin
-  integrator_config: {"timestep": 0.5, "temperature": 200., "ttime": 20., "gamma": 0.1} ##ttime is only used for NVT setup - it's not the total time
+  integrator_config: {"timestep": 0.5, "temperature": 500., "ttime": 20., "gamma": 0.1} ##ttime is only used for NVT setup - it's not the total time
   name: md_500ps_discriminatordata_123
 

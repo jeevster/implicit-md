@@ -104,7 +104,7 @@ class DifferentiableVACF(torch.nn.Module):
         self.t_window = [i for i in range(1, params.vacf_window, 1)]
 
     def forward(self, vel):
-        vacf = [torch.Tensor([1.])]
+        vacf = [torch.Tensor([1.]).cuda()]
         average_vel_sq = (vel * vel).mean()
 
         # can be implemented in parallel
