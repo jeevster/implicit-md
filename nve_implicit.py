@@ -56,6 +56,7 @@ from mdsim.datasets import data_list_collater
 from mdsim.datasets.lmdb_dataset import LmdbDataset, data_list_collater
 
 from mdsim.common.utils import load_config
+BOLTZMAN = 0.001987191
 
 from mdsim.common.utils import (
     build_config,
@@ -133,7 +134,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.temp = config["ift"]['integrator_config']["temperature"]
         self.integrator = self.config['ift']["integrator"]
         # adjust units.
-        if self.integrator in ['NoseHoover', 'NoseHooverChain']:
+        if self.integrator in ['NoseHoover', 'NoseHooverChain', 'Langevin']:
             self.temp *= units.kB
         self.targeEkin = 0.5 * (3.0 * self.n_atoms) * self.temp
         self.ttime = config["ift"]["integrator_config"]["ttime"]
@@ -143,9 +144,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
 
         #Langevin thermostat stuff
-        import pdb; pdb.set_trace()
         self.gamma = config["ift"]["integrator_config"]["gamma"] / (1000*units.fs)
-        self.noise_f = (2.0 * self.gamma/self.masses * units.kB*self.temp * self.dt).sqrt().to(self.device)
+        self.noise_f = (2.0 * self.gamma/self.masses * self.temp * self.dt).sqrt().to(self.device)
 
         self.nsteps = params.steps
         self.eq_steps = params.eq_steps
@@ -180,13 +180,13 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
         self.atomic_numbers = torch.Tensor(self.atoms.get_atomic_numbers()).to(torch.long).to(self.device).repeat(self.n_replicas)
         self.batch = torch.arange(self.n_replicas).repeat_interleave(self.n_atoms).to(self.device)
-        
+        self.ic_stddev = params.ic_stddev
 
         #Register inner parameters
         samples = np.random.choice(np.arange(self.train_dataset.__len__()), self.n_replicas)
         actual_atoms = [self.train_dataset.__getitem__(i) for i in samples]
         radii = torch.stack([torch.Tensor(data_to_atoms(atoms).get_positions()) for atoms in actual_atoms])
-        self.radii = nn.Parameter(radii + torch.normal(torch.zeros_like(radii), 0.0001), requires_grad=True).to(self.device)
+        self.radii = nn.Parameter(radii + torch.normal(torch.zeros_like(radii), self.ic_stddev), requires_grad=True).to(self.device)
         self.velocities = nn.Parameter(torch.Tensor(initialize_velocities(self.n_atoms, self.masses, self.temp, self.n_replicas)).clone(), requires_grad=True).to(self.device)
         
         self.rdf = nn.Parameter(torch.zeros((self.n_replicas, int(self.params.max_rdf_dist/self.params.dr),)), requires_grad=True).to(self.device)
@@ -273,7 +273,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         forces = torch.cat(forces)
         energy_mae = (self.gt_energies - energies).abs().mean()
         energy_rmse = (self.gt_energies - energies).pow(2).mean().sqrt()
-        force_rmse = (self.gt_forces - forces).pow(2).mean()
+        force_rmse = (self.gt_forces - forces).pow(2).mean().sqrt()
         force_mae = (self.gt_forces - forces).abs().mean()
         return energy_rmse, force_rmse
 
@@ -364,11 +364,11 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
     def forward_langevin(self, radii, velocities, forces, calc_rdf = False, calc_vacf = False, retain_grad = False):
         
         #full step in position
+        #import pdb; pdb.set_trace()
         radii = radii + self.dt*velocities
 
         #calculate force at new position
         energy, forces = self.force_calc(radii.to(self.device), retain_grad=retain_grad)
-
         #full step in velocities
         velocities = velocities + self.dt*(forces/self.masses - self.gamma * velocities) + self.noise_f * torch.randn_like(velocities)
 
@@ -565,9 +565,9 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         # Calculate properties of interest in this function
         p_dof = 3*self.n_atoms
         ke = 1/2 * (self.masses*torch.square(self.velocities)).sum(axis = (1,2), keepdims=True)
-        temp = (2*ke/p_dof).mean()
-        if self.integrator == 'NoseHoover':
-            temp /= units.kB
+        temp = (2*ke/p_dof).mean() / units.kB
+        # if self.integrator == 'NoseHoover':
+        #     temp /= units.kB
         #w = -1/6*torch.sum(self.internal_virial)
         #pressure = w/self.vol + self.rho*self.kbt0
         pressure = torch.Tensor(0)
