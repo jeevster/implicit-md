@@ -14,7 +14,6 @@ def compute_grad(inputs, output, grad_outputs = None, create_graph=True, retain_
         torch.Tensor: gradients with respect to each input component 
     """
     if not isinstance(inputs, torch.Tensor):
-        
         for inp in inputs:
             assert inp.requires_grad
     else:
