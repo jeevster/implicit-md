@@ -137,14 +137,14 @@ def get_hr(traj, bins):
     hist, _ = np.histogram(pdist[:].flatten().numpy(), bins, density=True)
     return hist
     
-def find_hr_from_file(base_path: str, molecule: str, size: str, params, device):
+def find_hr_from_file(base_path: str, name: str, molecule: str, size: str, params, device):
     #RDF plotting parameters
     xlim = params.max_rdf_dist
     diff_rdf = DifferentiableRDF(params, device)
     n_bins = int(xlim/params.dr)
     bins = np.linspace(1e-6, xlim, n_bins + 1) # for computing h(r)
     # load ground truth data
-    DATAPATH = f'{base_path}/md17/{molecule}/{size}/test/nequip_npz.npz'
+    DATAPATH = f'{base_path}/{name}/{molecule}/{size}/test/nequip_npz.npz'
     gt_data = np.load(DATAPATH)
     gt_traj = torch.FloatTensor(gt_data.f.R)
     hist_gt = get_hr(gt_traj, bins)
