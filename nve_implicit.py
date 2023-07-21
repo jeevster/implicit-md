@@ -30,7 +30,7 @@ import gc
 import shutil
 from torch.utils.tensorboard import SummaryWriter
 from sys import getrefcount
-from functorch import vmap
+from functorch import vmap, vjp
 from utils import radii_to_dists, fcc_positions, initialize_velocities, \
                     dump_params_to_yml, powerlaw_inv_cdf, print_active_torch_tensors, plot_pair, solve_continuity_system, find_hr_from_file, distance_pbc
 
@@ -69,7 +69,7 @@ from mdsim.common.utils import (
 from mdsim.common.flags import flags
 
 
-class ImplicitMDSimulator():
+class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.linear_solve.solve_normal_cg(maxiter=5, atol=0)):
     def __init__(self, config, params, model, model_config):
         super(ImplicitMDSimulator, self).__init__()
         self.params = params
@@ -149,6 +149,8 @@ class ImplicitMDSimulator():
 
         self.nsteps = params.steps
         self.eq_steps = params.eq_steps
+        #ensure that the number of logged steps is a multiple of the vacf window (for chopping up the trajectory)
+        self.nsteps += (self.nsteps - self.eq_steps) % self.vacf_window
 
         #create model save path
         #(Path(self.model_dir) / self.save_name).mkdir(parents=True, exist_ok=True)
@@ -234,7 +236,7 @@ class ImplicitMDSimulator():
         # self.diff_vel_hist = vmap(DifferentiableVelHist(params, self.device), 0)
         # self.diff_vel_hist_cpu = vmap(DifferentiableVelHist(params, "cpu"), 0)
         # #define vectorized differentiable vacf and diffusion coefficients
-        self.diff_vacf = vmap(DifferentiableVACF(params), 0)
+        self.diff_vacf = vmap(DifferentiableVACF(params, self.device), 0)
         # #vectorize over dim 1 (the input will be of shape [diffusion_window , n_replicas])
         # self.diffusion_coefficient = vmap(DiffusionCoefficient(params, self.device) , 1)
         
@@ -242,10 +244,7 @@ class ImplicitMDSimulator():
         if self.nn:
             results = 'results_nnip'
             self.save_dir = os.path.join(results, f"IMPLICIT_{self.molecule}_{params.exp_name}")
-        # else: 
-        #     add = "_polylj" if self.poly else ""
-        #     self.save_dir = os.path.join('ground_truth' + add, f"n={self.n_particle}_box={self.box}_temp={self.temp}_eps={self.epsilon}_sigma={self.sigma}_rep_power={self.rep_power}_attr_power={self.attr_power}")
-
+        
         os.makedirs(self.save_dir, exist_ok = True)
         dump_params_to_yml(self.params, self.save_dir)
 
@@ -308,10 +307,10 @@ class ImplicitMDSimulator():
             energy = self.model(pos = radii.reshape(-1,3), z = atomic_numbers, batch = batch)
             forces = -compute_grad(inputs = radii, output = energy) if retain_grad else -compute_grad(inputs = radii, output = energy).detach()
             assert(not torch.any(torch.isnan(forces)))
-        return energy, forces
+            return energy, forces
 
 
-    def forward_nvt(self, radii, velocities, forces, zeta, calc_rdf = False, calc_vacf = False, retain_grad=False):
+    def forward_nvt(self, radii, velocities, forces, zeta, calc_rdf = False, calc_vacf = False, retain_grad=True):
         # get current accelerations
         accel = forces / self.masses
 
@@ -346,7 +345,6 @@ class ImplicitMDSimulator():
         if calc_rdf:
             new_dists = radii_to_dists(radii, self.params)
             
-        # new_velhist = self.diff_vel_hist(torch.linalg.norm(velocities, dim=-1).permute((1,0))) if calc_rdf else 0 #calculate velocity histogram from a single frame
         new_rdf = self.diff_rdf(tuple(new_dists.permute((1, 2, 3, 0)).to(self.device))) if calc_rdf else 0 #calculate the RDF from a single frame
         
         # if calc_diffusion:
@@ -383,12 +381,53 @@ class ImplicitMDSimulator():
             print(self.step, self.calc_properties(energy), file=self.f)
             self.t.append(self.create_frame(frame = self.step/self.n_dump))
         return radii, velocities, forces, new_rdf
+    '''Stationary condition construction for calculating implicit gradient'''
+    def optimality(self, enable_grad = True):
+        
+        #get current forces - treat as a constant (since it's coming from before the fixed point)
+        # forces = self.force_calc(self.radii, retain_grad=False)[1]
+        
+        #hacky fix for non-square matrix stuff
+        if type(enable_grad) != bool:
+            enable_grad = False
+
+        
+        with torch.enable_grad() if enable_grad else nullcontext():
+            #make an MD step - retain grads
+            new_radii, new_velocities, forces, new_rdf, zeta = self.forward_nvt(self.radii, self.velocities, self.forces, self.zeta, calc_rdf = True, retain_grad = False)
+            
+            #compute residuals
+            radii_residual  = self.radii - new_radii
+            velocity_residual  = self.velocities - new_velocities
+            rdf_residual = self.rdf - new_rdf
+
+            #compute diffusion coefficient residual
+            if self.diffusion_loss_weight != 0:
+                new_msd_data = msd(torch.cat(self.last_h_radii[1:], dim=0), self.box)
+                new_diffusion_coeff = self.diffusion_coefficient(new_msd_data)
+                diffusion_residual = (new_diffusion_coeff - self.diff_coeff)
+                zeta_residual = (self.zeta - new_zeta)
+
+            #compute VACF residual
+            if self.vacf_loss_weight != 0:
+                last_h_vels = torch.cat(self.last_h_velocities[1:], dim = 0).permute((1,0,2,3))
+                new_vacf = self.diff_vacf(last_h_vels)
+                vacf_residual = (new_vacf - self.vacf)
+            
+            #for now assume rdf + only one dynamical observable: either diffusion coefficient or VACF, not both
+            if self.diffusion_loss_weight != 0:
+                return (radii_residual, velocity_residual, rdf_residual, diffusion_residual, zeta_residual)
+            elif self.vacf_loss_weight != 0:
+                return (radii_residual, velocity_residual, rdf_residual, vacf_residual)
+
+            return (radii_residual, velocity_residual, rdf_residual)
 
     #top level MD simulation code (i.e the "solver") that returns the optimal "parameter" -aka the equilibriated radii
     def solve(self):
         
         self.running_dists = []
         self.running_vels = []
+        self.running_accs = []
         self.last_h_radii = []
         self.last_h_velocities = []
         self.running_radii = []
@@ -406,14 +445,6 @@ class ImplicitMDSimulator():
                 calc_vacf = True #(step >= self.nsteps - self.vacf_window) or self.save_intermediate_rdf or not self.nn #calculate VACF if within window from the end
                 # calc_diffusion = (step >= self.nsteps - self.diffusion_window) or self.save_intermediate_rdf or not self.nn #calculate diffusion coefficient if within window from the end
 
-                # with torch.enable_grad() if (calc_diffusion and self.diffusion_loss_weight!=0) or (calc_vacf and self.diffusion_loss_weight!=0) else nullcontext():
-                #     if step < self.n_nvt_steps: #NVT step
-                #         radii, velocities, forces, zeta, rdf, velhist = self.forward_nvt(self.radii, self.velocities, forces, zeta, calc_rdf = calc_rdf, calc_diffusion=calc_diffusion, calc_vacf = calc_vacf)
-                #     else: # NVE step
-                #         if step == self.n_nvt_steps:
-                #             print("NVT Equilibration Complete, switching to NVE", file=self.f)
-                #         radii, velocities, forces, rdf, velhist = self.forward(self.radii, self.velocities, forces, calc_rdf = calc_rdf, calc_diffusion=calc_diffusion, calc_vacf = calc_vacf)
-                
                 #MD Step
                 if self.integrator == 'NoseHoover':
                     radii, velocities, forces, rdf, zeta = self.forward_nvt(self.radii, self.velocities, forces, zeta, calc_rdf = calc_rdf, calc_vacf = calc_vacf)
@@ -425,25 +456,12 @@ class ImplicitMDSimulator():
                 self.velocities.copy_(velocities)
                 self.rdf.copy_(rdf)
                 #save equilibriated radiis for backward pass
-                if step > self.eq_steps and step % self.n_dump == 0: 
+                if step >= self.eq_steps:# and step % self.n_dump == 0: 
                     self.running_radii.append(radii.detach())
+                    self.running_vels.append(velocities.detach())
+                    self.running_accs.append((forces/self.masses).detach())
                 
-                # if not self.nn and self.save_intermediate_rdf and step % self.n_dump == 0:
-                #     filename = f"step{step+1}_rdf.npy"
-                #     np.save(os.path.join(self.save_dir, filename), self.rdf.mean(dim = 0).cpu().detach().numpy())
 
-                #     filename = f"step{step+1}_velhist.npy"
-                #     np.save(os.path.join(self.save_dir, filename), velhist.mean(dim = 0).cpu().detach().numpy())
-
-                #     if step > self.vacf_window:
-                #         last_h_vels = torch.cat(self.last_h_velocities[-self.vacf_window:], dim = 0).permute((1,0,2,3))
-                #         vacf = self.diff_vacf(last_h_vels)
-                #         filename = f"step{step+1}_vacf.npy"
-                #         np.save(os.path.join(self.save_dir, filename), vacf.mean(dim = 0).cpu().detach().numpy())
-            
-            
-            
-            # length = len(self.running_dists)
             self.zeta = zeta
             self.forces = forces
 
@@ -468,7 +486,7 @@ class ImplicitMDSimulator():
             
             # self.vacf.copy_(vacf)
             # filename ="gt_vacf.npy" if not self.nn else f"vacf_epoch{epoch+1}.npy"
-            np.save(os.path.join(self.save_dir, 'vacf_langevin.npy'), vacf.mean(dim=0).cpu().detach().numpy())
+            np.save(os.path.join(self.save_dir, 'vacf_nosehoover_500.npy'), vacf.mean(dim=0).cpu().detach().numpy())
             
             # #compute ground truth rdf over entire trajectory (do it on CPU to avoid memory issues)
             # save_velhist = self.diff_vel_hist_cpu(torch.stack(self.running_vels[int(self.burn_in_frac*length):], dim = 1)) if not self.nn else velhist
@@ -538,6 +556,49 @@ class ImplicitMDSimulator():
                 "Momentum Magnitude": torch.norm(torch.sum(self.masses*self.velocities, axis =-2)).item(),
                 "Max Bond Length Deviation": max_dev.item()}
 
+    def get_adjoints(self, pos_traj, vel_traj, grad_outputs, force_fn = None):
+        #initial adjoints
+        a = grad_outputs[:, -1]
+
+        with torch.no_grad():
+            a_dt = self.dt*1 #save frequency = 1 for now
+            M = self.masses[0].unsqueeze(0)
+
+            adjoints = []
+            testR = []
+            
+            R = pos_traj[:, -1].detach().to(self.device)
+            
+            a = a*a_dt**2/M #premultiply the initial adjoints by dt^2/M
+            
+            adjoints.append(a.detach())
+            testR.append(R.detach())
+            
+            
+            
+            for i in range(self.vacf_window):
+                
+                #work backwards from the closest point
+                R = pos_traj[:, -1 -i].detach().to(self.device)
+
+                #compute VJP between adjoint (a) and df/dR which is the time-derivative of the adjoint state
+                _, vjp_a = torch.autograd.functional.vjp(force_fn, R, a)
+                #vjp_a = force_fn(R,a)
+                
+                #update adjoint state
+                a = a + a_dt**2 * vjp_a /M - a_dt*self.gamma * a
+
+                #adjust in the direction of the grad outputs
+                a = a + grad_outputs[:, -1-i]
+
+                adjoints.append(a.detach())
+                testR.append(R.detach())
+            
+            adjoints = torch.stack(adjoints, axis=1)
+            testR = torch.stack(testR, axis=1)
+
+        return adjoints, testR
+
 class Stochastic_IFT(torch.autograd.Function):
     def __init__(self, params, device):
         super(Stochastic_IFT, self).__init__()
@@ -545,86 +606,173 @@ class Stochastic_IFT(torch.autograd.Function):
         
     @staticmethod
     def forward(ctx, *args):
-        with torch.no_grad():
-            simulator = args[0]
-            gt_rdf = args[1] 
-            params = args[2]
-            diff_rdf = DifferentiableRDF(params, simulator.device)
-            def outer_loss(rdf):
-                rdf_loss = (rdf - gt_rdf).pow(2).mean()
-                return params.rdf_loss_weight*rdf_loss
-            
-            print('Collect MD Simulation Data')
-            equilibriated_simulator = simulator.solve()
-            ctx.save_for_backward(equilibriated_simulator)
-            
-            model = equilibriated_simulator.model
-            radii = equilibriated_simulator.running_radii
+        
+        simulator = args[0]
+        gt_rdf = args[1] 
+        params = args[2]
+        diff_rdf = DifferentiableRDF(params, simulator.device)
+        diff_vacf = DifferentiableVACF(params, simulator.device)
+        def rdf_loss(rdf):
+            rdf_loss = (rdf - gt_rdf).pow(2).mean()
+            return params.rdf_loss_weight*rdf_loss
+        
+        print('Collect MD Simulation Data')
+        equilibriated_simulator = simulator.solve()
+        ctx.save_for_backward(equilibriated_simulator)
+        
+        model = equilibriated_simulator.model
+        
+        #get continuous trajectories
+        radii_traj = torch.stack(equilibriated_simulator.running_radii)
+        velocities_traj = torch.stack(equilibriated_simulator.running_vels).permute(1,0,2,3)
+        accel_traj = torch.stack(equilibriated_simulator.running_accs).permute(1,0,2,3)
+        stacked_radii = radii_traj[::simulator.n_dump] #take i.i.d samples for RDF loss
+        radii_traj = radii_traj.permute(1,0,2,3)
+        radii_traj = radii_traj.reshape(radii_traj.shape[0], -1, simulator.vacf_window, simulator.n_atoms, 3)
+        velocities_traj = velocities_traj.reshape(velocities_traj.shape[0], -1, simulator.vacf_window, simulator.n_atoms, 3)
+        accel_traj = accel_traj.reshape(accel_traj.shape[0], -1, simulator.vacf_window, simulator.n_atoms, 3)
+        #compute Onsager-Machlup Action for an single trajectory segment of shape [vacf_window, N, 3]
+        def om_action(vel_traj, acc_traj):
+            om_action = simulator.masses.unsqueeze(1).unsqueeze(1)*(vel_traj[:, :, 1:] - \
+                        vel_traj[:, :, :-1] - acc_traj[:, :, :-1]*simulator.dt + \
+                        simulator.gamma*vel_traj[:, :, :-1]*simulator.dt)**2
+            #sum over euclidean dimensions, atoms, and vacf window
+            return om_action.sum((-3, -2, -1))
 
-            r2d = lambda r: radii_to_dists(r, simulator.params)
-            stacked_radii  = torch.stack(radii)
-            dists = vmap(r2d, 0)(stacked_radii).reshape(1, -1, simulator.n_atoms, simulator.n_atoms-1, 1)
+        with torch.enable_grad():
+            velocities_traj.requires_grad = True
+            accel_traj.requires_grad = True
+            om_act = om_action(velocities_traj, accel_traj)
+        
+        #get initial adjoint states
+        grad_outputs = compute_grad(inputs = velocities_traj, output = om_act)
 
-            rdfs = vmap(diff_rdf, 0)(tuple(dists))
-            loss_tensor = vmap(outer_loss, 0)(rdfs).unsqueeze(-1).unsqueeze(-1)
+        #define energy function - expects input of shape (batch, N, 3)
+        def get_energy(radii):
+            batch_size = radii.shape[0]
+            batch = torch.arange(batch_size).repeat_interleave(simulator.n_atoms).to(simulator.device)
+            atomic_numbers = torch.Tensor(simulator.atoms.get_atomic_numbers()).to(torch.long).to(simulator.device).repeat(batch_size)
+            energy = model(pos = radii.reshape(-1, 3), z = atomic_numbers, batch = batch)
+            return energy
+        
+        #define force function - expects input of shape (batch, N, 3)
+        def get_forces(radii):
+            batch_size = radii.shape[0]
+            batch = torch.arange(batch_size).repeat_interleave(simulator.n_atoms).to(simulator.device)
+            atomic_numbers = torch.Tensor(simulator.atoms.get_atomic_numbers()).to(torch.long).to(simulator.device).repeat(batch_size)
+            energy = model(pos = radii.reshape(-1,3), z = atomic_numbers, batch = batch)
+            forces = -compute_grad(inputs = radii, output = energy)
+            #forces = simulator.force_calc(radii, atomic_numbers, batch, retain_grad = True)
+            return forces
+        
+        #reshape to join replica and sample dimensions
+        radii_traj = radii_traj.reshape(-1, radii_traj.shape[2], radii_traj.shape[3], radii_traj.shape[4])
+        velocities_traj = velocities_traj.reshape(radii_traj.shape)
+        grad_outputs = grad_outputs.reshape(radii_traj.shape)
 
-            #store original shapes of model parameters
-            original_numel = [param.data.numel() for param in model.parameters()]
-            original_shapes = [param.data.shape for param in model.parameters()]
+        #run backward dynamics
+        start = time.time()
+        final_adjoints, R = simulator.get_adjoints(radii_traj, velocities_traj, grad_outputs, force_fn = get_forces)
+        end = time.time()
+        print(f"Adjoint calculation time: {end - start} s")
+        #now get dO/dtheta (where O is the OM action)
+        for traj in range(R.shape[0]):
             
-            #TODO: scale the estimator by temperature
-            start = time.time()
-            MINIBATCH_SIZE = simulator.minibatch_size #how many structures to include at a time (match rare events sampling paper for now)
-            stacked_radii = stacked_radii.reshape(-1, simulator.n_atoms, 3)
-            #shuffle the radii and losses
-            if simulator.shuffle:
-                shuffle_idx = torch.randperm(stacked_radii.shape[0])
-                stacked_radii = stacked_radii[shuffle_idx]
-                loss_tensor = loss_tensor[shuffle_idx]
-            
-            num_blocks = math.ceil(stacked_radii.shape[0]/ (MINIBATCH_SIZE))
-            start_time = time.time()
-            gradient_estimators = []
-            print(f"Computing gradients in minibatches of {MINIBATCH_SIZE} structures")
-            
-            for i in tqdm(range(num_blocks)):
-                #print_active_torch_tensors()
-                last = i==num_blocks-1
-                start = MINIBATCH_SIZE*i
-                end = MINIBATCH_SIZE*(i+1)
-                actual_batch_size = min(end, stacked_radii.shape[0]) - start
-    
-                batch = torch.arange(actual_batch_size).repeat_interleave(simulator.n_atoms).to(simulator.device)
-                atomic_numbers = torch.Tensor(simulator.atoms.get_atomic_numbers()).to(torch.long).to(simulator.device).repeat(actual_batch_size)
-                with torch.enable_grad():
-                    energy = model(pos = stacked_radii[start:end].reshape(-1, 3), z = atomic_numbers, batch = batch)
-                def get_vjp(v):
-                    return compute_grad(inputs = list(model.parameters()), create_graph = False, output = energy, grad_outputs = v)
-                vectorized_vjp = vmap(get_vjp)
-                I_N = torch.eye(energy.shape[0]).unsqueeze(-1).to(simulator.device)
-                grads_vectorized = vectorized_vjp(I_N)
-                #flatten the gradients for vectorization
-                num_params = len(list(model.parameters()))
-                num_samples = energy.shape[0]
-                grads_flattened= torch.stack([torch.cat([grads_vectorized[i][j].flatten().detach() for i in range(num_params)]) for j in range(num_samples)])
-                #grads_flattened = torch.stack([torch.cat([tensor.flatten() for tensor in grad]) for grad in grads])
+            adjoints = final_adjoints[traj]
+            radii = R[traj]
+            radii.requires_grad=True
+            with torch.enable_grad():
+                #repeat get_forces (for debugging)
+                batch_size = radii.shape[0]
+                batch = torch.arange(batch_size).repeat_interleave(simulator.n_atoms).to(simulator.device)
+                atomic_numbers = torch.Tensor(simulator.atoms.get_atomic_numbers()).to(torch.long).to(simulator.device).repeat(batch_size)
+                energy = model(pos = radii.reshape(-1,3), z = atomic_numbers, batch = batch)
+                forces = -compute_grad(inputs = radii, output = energy)
+                #forces = get_forces(radii)
+            #compute gradient of force w.r.t model params
+            import pdb; pdb.set_trace()
+            #this gradient is zero for some reason
+            grad = torch.autograd.grad(forces, list(model.parameters()), adjoints, create_graph = True)
 
-                grad_diffs = grads_flattened.unsqueeze(0) - grads_flattened.unsqueeze(1)
-                product = loss_tensor[start:end] * grad_diffs
-                mean = product.mean(dim=(0,1))
-                
-                #re-assemble flattened gradients into correct shape
-                gradient_estimator = tuple([g.reshape(shape) for g, shape in zip(mean.split(original_numel), original_shapes)])
-                #print(f"reassemble time: {e-s} s")
-                #add to list of gradients
-                gradient_estimators.append(gradient_estimator)
-                
+        #once we have the vectorized grads we can calculate Fabian's estimator on them            
+        #TODO: compute vacf losses
 
-            end_time = time.time()
-            print(f"gradient calculation time: {end_time-start_time} seconds")
+
+        r2d = lambda r: radii_to_dists(r, simulator.params)
+        dists = vmap(r2d)(stacked_radii).reshape(1, -1, simulator.n_atoms, simulator.n_atoms-1, 1)
+
+        rdfs = vmap(diff_rdf)(tuple(dists))
+        loss_tensor = vmap(rdf_loss)(rdfs).unsqueeze(-1).unsqueeze(-1)
+
+        #store original shapes of model parameters
+        original_numel = [param.data.numel() for param in model.parameters()]
+        original_shapes = [param.data.shape for param in model.parameters()]
+        
+        #TODO: scale the estimator by temperature
+        start = time.time()
+        MINIBATCH_SIZE = simulator.minibatch_size #how many structures to include at a time (match rare events sampling paper for now)
+        stacked_radii = stacked_radii.reshape(-1, simulator.n_atoms, 3)
+        #shuffle the radii and losses
+        if simulator.shuffle:
+            shuffle_idx = torch.randperm(stacked_radii.shape[0])
+            stacked_radii = stacked_radii[shuffle_idx]
+            loss_tensor = loss_tensor[shuffle_idx]
+        
+        num_blocks = math.ceil(stacked_radii.shape[0]/ (MINIBATCH_SIZE))
+        start_time = time.time()
+        gradient_estimators = []
+        print(f"Computing gradients in minibatches of {MINIBATCH_SIZE} structures")
+        
+        for i in tqdm(range(num_blocks)):
+            #print_active_torch_tensors()
+            start = MINIBATCH_SIZE*i
+            end = MINIBATCH_SIZE*(i+1)
+            actual_batch_size = min(end, stacked_radii.shape[0]) - start
+
+            batch = torch.arange(actual_batch_size).repeat_interleave(simulator.n_atoms).to(simulator.device)
+            atomic_numbers = torch.Tensor(simulator.atoms.get_atomic_numbers()).to(torch.long).to(simulator.device).repeat(actual_batch_size)
+
+            with torch.enable_grad():
+                radii_in = stacked_radii[start:end].reshape(-1, 3)
+                radii_in.requires_grad = True
+                #this line is producing zero gradients for the vjp
+                # import pdb; pdb.set_trace()
+                # #We want a Hessian-vector product
+                # out = -torch.autograd.functional.hvp(get_energy, radii_in[0:18], torch.ones_like(radii_in[0:18]))
+
+                # energy = model(pos = radii_in, z = atomic_numbers, batch = batch)
+                # forces, = torch.autograd.grad(energy, radii_in, torch.ones_like(energy), retain_graph = True, create_graph = True)
+                # hessian, = torch.autograd.grad(forces, radii_in, torch.ones_like(forces), retain_graph = True, create_graph = True)
+                # out = torch.autograd.functional.vjp(get_forces, radii_in, torch.ones_like(radii_in), create_graph = True, strict = True)
+                energy = model(pos = radii_in, z = atomic_numbers, batch = batch)
+            def get_vjp(v):
+                return compute_grad(inputs = list(model.parameters()), output = energy, grad_outputs = v, create_graph = False)
+            vectorized_vjp = vmap(get_vjp)
+            import pdb; pdb.set_trace()
+            I_N = torch.eye(energy.shape[0]).unsqueeze(-1).to(simulator.device)
+            grads_vectorized = vectorized_vjp(I_N)
+            #flatten the gradients for vectorization
+            num_params = len(list(model.parameters()))
+            num_samples = energy.shape[0]
+            grads_flattened= torch.stack([torch.cat([grads_vectorized[i][j].flatten().detach() for i in range(num_params)]) for j in range(num_samples)])
+            #grads_flattened = torch.stack([torch.cat([tensor.flatten() for tensor in grad]) for grad in grads])
+
+            grad_diffs = grads_flattened.unsqueeze(0) - grads_flattened.unsqueeze(1)
+            product = loss_tensor[start:end] * grad_diffs
+            mean = product.mean(dim=(0,1))
             
-            mean_rdf = rdfs.mean(dim=0)
-            return equilibriated_simulator, gradient_estimators, mean_rdf, outer_loss(mean_rdf).cuda()
+            #re-assemble flattened gradients into correct shape
+            gradient_estimator = tuple([g.reshape(shape) for g, shape in zip(mean.split(original_numel), original_shapes)])
+            #print(f"reassemble time: {e-s} s")
+            #add to list of gradients
+            gradient_estimators.append(gradient_estimator)
+            
+
+        end_time = time.time()
+        print(f"gradient calculation time: {end_time-start_time} seconds")
+        
+        mean_rdf = rdfs.mean(dim=0)
+        return equilibriated_simulator, gradient_estimators, mean_rdf, rdf_loss(mean_rdf).cuda()
 
     #TODO: trigger this custom backwards pass
     @staticmethod
@@ -693,8 +841,9 @@ if __name__ == "__main__":
     gt_data = np.load(contiguous_path)
     gt_traj = torch.FloatTensor(gt_data.f.R).to(device)
     gt_vels = gt_traj[1:] - gt_traj[:-1] #finite difference approx for now TODO: calculate precisely based on forces and positions
-    gt_vacf = DifferentiableVACF(params)(gt_vels)
+    gt_vacf = DifferentiableVACF(params, device)(gt_vels)
     np.save(os.path.join(results_dir, 'gt_rdf.npy'), gt_rdf.cpu())
+    np.save(os.path.join(results_dir, 'gt_vacf.npy'), gt_vacf.cpu())
     #initialize outer loop optimizer/scheduler
     optimizer = torch.optim.Adam(list(model.parameters()), lr=params.lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=10)

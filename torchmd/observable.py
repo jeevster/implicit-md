@@ -99,12 +99,13 @@ class DifferentiableVelHist(torch.nn.Module):
 
 '''Sanjeev's differentiable VACF implementation - doesn't use system stuff'''
 class DifferentiableVACF(torch.nn.Module):
-    def __init__(self, params):
+    def __init__(self, params, device):
         super(DifferentiableVACF, self).__init__()
+        self.device = device
         self.t_window = [i for i in range(1, params.vacf_window, 1)]
 
     def forward(self, vel):
-        vacf = [torch.Tensor([1.]).cuda()]
+        vacf = [torch.Tensor([1.]).to(self.device)]
         average_vel_sq = (vel * vel).mean()
 
         # can be implemented in parallel

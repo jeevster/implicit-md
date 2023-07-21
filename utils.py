@@ -158,29 +158,6 @@ def distance_pbc(x0, x1, lattices):
     delta = torch.where(delta > 0.5 * lattices, delta - lattices, delta)
     return torch.sqrt((delta ** 2).sum(dim=-1))
 
-def mean_across_lists(list_of_lists):
-    num_lists = len(list_of_lists)
-    num_tensors = len(list_of_lists[0])
-
-    means = []
-    for i in range(num_tensors):
-        tensor_sum = None
-
-        for j in range(num_lists):
-            tensor = list_of_lists[j][i]
-            if tensor_sum is None:
-                tensor_sum = tensor
-            else:
-                tensor_sum += tensor
-
-        tensor_mean = tensor_sum / num_lists
-        means.append(tensor_mean)
-
-    return means
 
 
-def subtract_across_lists(list1, list2):
-    return [l1 - l2 for (l1, l2) in zip(list1, list2)]
-
-def multiply_across_lists(scalar, list1):
-    return [scalar*l for l in list1]
+        
