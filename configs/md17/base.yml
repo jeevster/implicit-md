@@ -1,10 +1,10 @@
 trainer: trainer
 
 dataset:
-  src: /data/ishan-amin
-  name: md22
+  src: /data/sanjeevr
+  name: md17
   size: 1k
-  molecule: buckyball_catcher
+  molecule: naphthalene
   normalize_labels: False
   checkpoint_epoch: 10 #which model to start from
   model: schnet
@@ -27,7 +27,7 @@ ift:
   vacf_loss_weight: 1
   rdf_loss_weight: 0
   diffusion_window: 1000
-  vacf_window: 500
+  vacf_window: 100
   ic_stddev: 0.05
   eq_steps: 100
   steps: 1000

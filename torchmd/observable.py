@@ -106,7 +106,7 @@ class DifferentiableVACF(torch.nn.Module):
 
     def forward(self, vel):
         vacf = [torch.Tensor([1.]).to(self.device)]
-        average_vel_sq = (vel * vel).mean()
+        average_vel_sq = (vel * vel).mean() + 1e-6
 
         # can be implemented in parallel
         vacf += [((vel[t:] * vel[:-t]).mean() / average_vel_sq)[None] for t in self.t_window]
