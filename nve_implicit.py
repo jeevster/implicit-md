@@ -206,26 +206,29 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
     '''compute energy/force error on held-out test set'''
     def energy_force_error(self, batch_size):
-        num_batches = math.ceil(self.gt_traj.shape[0]/ batch_size)
-        energies = []
-        forces = []
-        for i in range(num_batches):
-            #print_active_torch_tensors()
-            start = batch_size*i
-            end = batch_size*(i+1)
-            actual_batch_size = min(end, self.gt_traj.shape[0]) - start        
-            atomic_numbers = torch.Tensor(self.atoms.get_atomic_numbers()).to(torch.long).to(self.device).repeat(actual_batch_size)
-            batch = torch.arange(actual_batch_size).repeat_interleave(self.n_atoms).to(self.device)
-            energy, force = self.force_calc(self.gt_traj[start:end], atomic_numbers, batch) 
-            energies.append(energy)
-            forces.append(force)
-        energies = torch.cat(energies)
-        forces = torch.cat(forces)
-        energy_mae = (self.gt_energies - energies).abs().mean()
-        energy_rmse = (self.gt_energies - energies).pow(2).mean().sqrt()
-        force_rmse = (self.gt_forces - forces).pow(2).mean().sqrt()
-        force_mae = (self.gt_forces - forces).abs().mean()
-        return energy_rmse, force_rmse
+        with torch.no_grad():
+            num_batches = math.ceil(self.gt_traj.shape[0]/ batch_size)
+            energies = []
+            forces = []
+            for i in range(num_batches):
+                #print_active_torch_tensors()
+                start = batch_size*i
+                end = batch_size*(i+1)
+                actual_batch_size = min(end, self.gt_traj.shape[0]) - start        
+                atomic_numbers = torch.Tensor(self.atoms.get_atomic_numbers()).to(torch.long).to(self.device).repeat(actual_batch_size)
+                batch = torch.arange(actual_batch_size).repeat_interleave(self.n_atoms).to(self.device)
+                energy, force = self.force_calc(self.gt_traj[start:end], atomic_numbers, batch) 
+                energies.append(energy.detach())
+                forces.append(force.detach())
+            energies = torch.cat(energies)
+            forces = torch.cat(forces)
+            energy_mae = (self.gt_energies - energies).abs().mean()
+            energy_rmse = (self.gt_energies - energies).pow(2).mean().sqrt()
+            force_rmse = (self.gt_forces - forces).pow(2).mean().sqrt()
+            force_mae = (self.gt_forces - forces).abs().mean()
+            energies = 0
+            forces = 0
+            return energy_rmse, force_rmse
 
     '''memory cleanups'''
     def cleanup(self):        
