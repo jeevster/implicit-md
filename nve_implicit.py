@@ -83,7 +83,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
     
         self.name = config['dataset']['name']
         self.molecule = config['dataset']['molecule']
-        self.size = '10k' #override for now #config['dataset']['size']
+        self.size = config['dataset']['size']
         self.model_type = config['dataset']['model']
 
         logging.info("Initializing MD simulation environment")
@@ -317,8 +317,10 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
         #calculate force at new position
         energy, forces = self.force_calc(radii.to(self.device), retain_grad=retain_grad)
+        noise = torch.randn_like(velocities)
         #full step in velocities
-        velocities = velocities + self.dt*(forces/self.masses - self.gamma * velocities) + self.noise_f * torch.randn_like(velocities)
+        velocities = velocities + self.dt*(forces/self.masses - self.gamma * velocities) + self.noise_f * noise
+        
 
         if calc_rdf:
             new_dists = radii_to_dists(radii, self.params)
@@ -403,15 +405,16 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                     radii, velocities, forces, rdf = self.forward_langevin(self.radii, self.velocities, forces, calc_rdf = calc_rdf, calc_vacf = calc_vacf)
                 else:
                     RuntimeError("Must choose either NoseHoover or Langevin as integrator")
+                
+                #save trajectory for gradient calculation
+                if step >= self.eq_steps:# and step % self.n_dump == 0: 
+                    self.running_radii.append(self.radii.detach().clone())
+                    self.running_vels.append(self.velocities.detach().clone())
+                    self.running_accs.append((forces/self.masses).detach().clone())
+                
                 self.radii.copy_(radii)
                 self.velocities.copy_(velocities)
                 self.rdf.copy_(rdf)
-                #save equilibriated radiis for backward pass
-                if step >= self.eq_steps:# and step % self.n_dump == 0: 
-                    self.running_radii.append(radii.detach())
-                    self.running_vels.append(velocities.detach())
-                    self.running_accs.append((forces/self.masses).detach())
-                
 
             self.zeta = zeta
             self.forces = forces
@@ -423,7 +426,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             
             last_h_vels = torch.cat(self.last_h_velocities, dim = 0).permute((1,0,2,3))
             vacf = self.diff_vacf(last_h_vels)
-            #np.save(os.path.join(self.save_dir, 'vacf_nosehoover_500.npy'), vacf.mean(dim=0).cpu().detach().numpy())
             
         return self 
 
@@ -487,26 +489,34 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             a_dt = self.dt*1 #save frequency = 1 for now
             M = self.masses[0].unsqueeze(0)
             adjoints = []
+            adjoint_norms = []
             testR = []
-            R = pos_traj[:, -1].detach().to(self.device)
-            a = a*a_dt**2/M #premultiply the initial adjoints by dt^2/M - TODO: why?
-            adjoints.append(a.detach())
-            testR.append(R.detach())
+            # R = pos_traj[:, -1].detach().to(self.device)
+            # a = a*a_dt**2/M #premultiply the initial adjoints by dt^2/M - TODO: why?
+            # adjoints.append(a.detach())
+            # adjoint_norms.append(a.norm(dim = (-2, -1)).detach())
+            # testR.append(R.detach())
             for i in tqdm(range(self.vacf_window)):
                 #work backwards from the final state
-                R = pos_traj[:, -1 -i].detach().to(self.device)
+                R = pos_traj[:, -i -1].detach().to(self.device)
+                
+                testR.append(R.detach())
+                adjoints.append(a.detach())
+                adjoint_norms.append(a.norm(dim = (-2, -1)).detach())
                 #compute VJP between adjoint (a) and df/dR which is the time-derivative of the adjoint state
+                #verified that this does the same thing as torch.autograd.grad(forces, R, a, create_graph = True)
+                #where forces = force_fn(R)
                 _, vjp_a = torch.autograd.functional.vjp(force_fn, R, a)
                 #update adjoint state
                 a = a + a_dt**2 * vjp_a /M - a_dt*self.gamma * a
-                #adjust in the direction of the grad outputs - TODO: do this before or after adjoint update?
-                a = a + grad_outputs[:, -1-i]
-                adjoints.append(a.detach())
-                testR.append(R.detach())
-            
+                #adjust in the direction of the next grad outputs
+                if i != self.vacf_window -1:   
+                    a = a + grad_outputs[:, -i - 2]
+                
             adjoints = torch.stack(adjoints, axis=1)
+            adjoint_norms = torch.stack(adjoint_norms)
             testR = torch.stack(testR, axis=1)
-        return adjoints, testR
+        return adjoints, adjoint_norms, testR
 
 class Stochastic_IFT(torch.autograd.Function):
     def __init__(self, params, device):
@@ -537,7 +547,7 @@ class Stochastic_IFT(torch.autograd.Function):
             original_numel = [param.data.numel() for param in model.parameters()]
             original_shapes = [param.data.shape for param in model.parameters()]
             
-            #get continuous trajectories
+            #get continuous trajectories (permute to make replica dimension come first)
             radii_traj = torch.stack(equilibriated_simulator.running_radii)
             stacked_radii = radii_traj[::simulator.n_dump] #take i.i.d samples for RDF loss
             radii_traj = radii_traj.permute(1,0,2,3)
@@ -552,17 +562,21 @@ class Stochastic_IFT(torch.autograd.Function):
                 vacf_package = (vacf_gradient_estimators, mean_vacf, vacf_loss(mean_vacf).to(simulator.device))
             else:
                 #split into sub-trajectories of length = vacf_window
-                radii_traj = radii_traj.reshape(radii_traj.shape[0], -1, simulator.vacf_window, simulator.n_atoms, 3)
+                radii_traj = radii_traj.reshape(radii_traj.shape[0], -1, simulator.vacf_window,simulator.n_atoms, 3)
                 velocities_traj = velocities_traj.reshape(velocities_traj.shape[0], -1, simulator.vacf_window, simulator.n_atoms, 3)
                 accel_traj = accel_traj.reshape(accel_traj.shape[0], -1, simulator.vacf_window, simulator.n_atoms, 3)
-                
+
                 vacf_loss_tensor = vmap(vmap(vacf_loss))(vacfs).reshape(-1, 1, 1)
 
                 #compute Onsager-Machlup Action
+                #Update step from Langevin integrator
+                #velocities = velocities + self.dt*(forces/self.masses - self.gamma * velocities) + self.noise_f * torch.randn_like(velocities)
+
                 def om_action(vel_traj, acc_traj):
-                    om_action = simulator.masses.unsqueeze(1).unsqueeze(1)*(vel_traj[:, :, 1:] - \
+                    diff = (vel_traj[:, :, 1:] - \
                                 vel_traj[:, :, :-1] - acc_traj[:, :, :-1]*simulator.dt + \
-                                simulator.gamma*vel_traj[:, :, :-1]*simulator.dt)**2
+                                simulator.gamma*vel_traj[:, :, :-1]*simulator.dt) #should be approximately normally distributed
+                    om_action = diff**2 / simulator.noise_f.unsqueeze(1).unsqueeze(1)
                     #sum over euclidean dimensions, atoms, and vacf window
                     return om_action.sum((-3, -2, -1))
 
@@ -575,6 +589,7 @@ class Stochastic_IFT(torch.autograd.Function):
                 grad_outputs = compute_grad(inputs = velocities_traj, output = om_act).detach()
                 #print_active_torch_tensors()
                 #reshape to join replica and sample dimensions
+                import pdb; pdb.set_trace()
                 radii_traj = radii_traj.reshape(-1, radii_traj.shape[2], radii_traj.shape[3], radii_traj.shape[4])
                 velocities_traj = velocities_traj.reshape(radii_traj.shape)
                 grad_outputs = grad_outputs.reshape(radii_traj.shape)
@@ -592,8 +607,11 @@ class Stochastic_IFT(torch.autograd.Function):
                 #run backward dynamics
                 print(f"Run backward dynamics to calculate adjoints:")
                 start = time.time()
-                final_adjoints, R = simulator.get_adjoints(radii_traj, velocities_traj, grad_outputs, force_fn = get_forces)
+                final_adjoints, adjoint_norms, R = simulator.get_adjoints(radii_traj, velocities_traj, grad_outputs, force_fn = get_forces)
                 end = time.time()
+
+                #log adjoint norms
+                np.save(os.path.join(simulator.save_dir, f'adjoint_norms_epoch{simulator.epoch}'), adjoint_norms.cpu().numpy())
                 #print_active_torch_tensors()
                 
                 #print(f"Adjoint calculation time: {end - start} s")
@@ -813,7 +831,7 @@ if __name__ == "__main__":
         else: #continue from where we left off in the last epoch/batch
             simulator.reset(last_radii, last_velocities, last_rdf)
             simulator.zeta = equilibriated_simulator.zeta
-        
+        simulator.epoch = epoch
         #run MD and compute gradients
         start = time.time()
         equilibriated_simulator, rdf_package, vacf_package = top_level.apply(simulator, gt_rdf, gt_vacf, params)
