@@ -123,6 +123,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         gt_data = np.load(DATAPATH)
         self.gt_traj = torch.FloatTensor(gt_data.f.R).to(self.device)
         self.gt_energies = torch.FloatTensor(gt_data.f.E).to(self.device)
+        #normalize
+        self.gt_energies = (self.gt_energies - self.gt_energies.mean()) / self.gt_energies.std()
         self.gt_forces = torch.FloatTensor(gt_data.f.F).to(self.device)
         self.mean_bond_lens = distance_pbc(
         self.gt_traj[:, self.bonds[:, 0]], self.gt_traj[:, self.bonds[:, 1]], \
@@ -221,6 +223,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
                 energies.append(energy.detach())
                 forces.append(force.detach())
             energies = torch.cat(energies)
+            #normalize energies
+            energies = (energies - energies.mean()) / energies.std()
             forces = torch.cat(forces)
             energy_mae = (self.gt_energies - energies).abs().mean()
             energy_rmse = (self.gt_energies - energies).pow(2).mean().sqrt()
@@ -589,7 +593,6 @@ class Stochastic_IFT(torch.autograd.Function):
                 grad_outputs = compute_grad(inputs = velocities_traj, output = om_act).detach()
                 #print_active_torch_tensors()
                 #reshape to join replica and sample dimensions
-                import pdb; pdb.set_trace()
                 radii_traj = radii_traj.reshape(-1, radii_traj.shape[2], radii_traj.shape[3], radii_traj.shape[4])
                 velocities_traj = velocities_traj.reshape(radii_traj.shape)
                 grad_outputs = grad_outputs.reshape(radii_traj.shape)
@@ -877,11 +880,8 @@ if __name__ == "__main__":
                 best = True
             simulator.save_checkpoint(best = best)
 
-            print_active_torch_tensors()
             equilibriated_simulator.cleanup()
-            print_active_torch_tensors()
 
-            #print_active_torch_tensors()
             torch.cuda.empty_cache()
             gc.collect()
             max_norm = 0
