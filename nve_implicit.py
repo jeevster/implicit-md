@@ -68,7 +68,7 @@ from mdsim.common.utils import (
 from mdsim.common.flags import flags
 
 
-class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.linear_solve.solve_normal_cg(maxiter=5, atol=0)):
+class ImplicitMDSimulator():
     def __init__(self, config, params, model, model_config):
         super(ImplicitMDSimulator, self).__init__()
         self.params = params
@@ -96,6 +96,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.minibatch_size = config["ift"]['minibatch_size']
         self.shuffle = config["ift"]['shuffle']
         self.vacf_window = config["ift"]["vacf_window"]
+        self.no_ift = config["ift"]["no_ift"]
 
         #initialize datasets
         self.train_dataset = LmdbDataset({'src': os.path.join(self.data_dir, self.name, self.molecule, self.size, 'train')})
@@ -196,7 +197,8 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
     
         if self.nn:
             results = 'results_nnip'
-            self.save_dir = os.path.join(results, f"IMPLICIT_{self.molecule}_{params.exp_name}")
+            name = f"{self.molecule}_{params.exp_name}" if self.no_ift else f"IMPLICIT_{self.molecule}_{params.exp_name}"
+            self.save_dir = os.path.join(results, name)
         
         os.makedirs(self.save_dir, exist_ok = True)
         dump_params_to_yml(self.params, self.save_dir)
@@ -260,12 +262,13 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             if not radii.requires_grad:
                     radii.requires_grad = True
             energy = self.model(pos = radii.reshape(-1,3), z = atomic_numbers, batch = batch)
+
             forces = -compute_grad(inputs = radii, output = energy) if retain_grad else -compute_grad(inputs = radii, output = energy).detach()
             assert(not torch.any(torch.isnan(forces)))
             return energy, forces
 
 
-    def forward_nvt(self, radii, velocities, forces, zeta, calc_rdf = False, calc_vacf = False, retain_grad=True):
+    def forward_nvt(self, radii, velocities, forces, zeta, calc_rdf = False, calc_vacf = False, retain_grad=False):
         # get current accelerations
         accel = forces / self.masses
 
@@ -325,7 +328,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #full step in velocities
         velocities = velocities + self.dt*(forces/self.masses - self.gamma * velocities) + self.noise_f * noise
         
-
         if calc_rdf:
             new_dists = radii_to_dists(radii, self.params)
         new_rdf = self.diff_rdf(tuple(new_dists.permute((1, 2, 3, 0)).to(self.device))) if calc_rdf else 0 #calculate the RDF from a single frame
@@ -338,46 +340,6 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             print(self.step, self.calc_properties(energy), file=self.f)
             self.t.append(self.create_frame(frame = self.step/self.n_dump))
         return radii, velocities, forces, new_rdf
-    '''Stationary condition construction for calculating implicit gradient'''
-    def optimality(self, enable_grad = True):
-        
-        #get current forces - treat as a constant (since it's coming from before the fixed point)
-        # forces = self.force_calc(self.radii, retain_grad=False)[1]
-        
-        #hacky fix for non-square matrix stuff
-        if type(enable_grad) != bool:
-            enable_grad = False
-
-        
-        with torch.enable_grad() if enable_grad else nullcontext():
-            #make an MD step - retain grads
-            new_radii, new_velocities, forces, new_rdf, zeta = self.forward_nvt(self.radii, self.velocities, self.forces, self.zeta, calc_rdf = True, retain_grad = False)
-            
-            #compute residuals
-            radii_residual  = self.radii - new_radii
-            velocity_residual  = self.velocities - new_velocities
-            rdf_residual = self.rdf - new_rdf
-
-            #compute diffusion coefficient residual
-            if self.diffusion_loss_weight != 0:
-                new_msd_data = msd(torch.cat(self.last_h_radii[1:], dim=0), self.box)
-                new_diffusion_coeff = self.diffusion_coefficient(new_msd_data)
-                diffusion_residual = (new_diffusion_coeff - self.diff_coeff)
-                zeta_residual = (self.zeta - new_zeta)
-
-            #compute VACF residual
-            if self.vacf_loss_weight != 0:
-                last_h_vels = torch.cat(self.last_h_velocities[1:], dim = 0).permute((1,0,2,3))
-                new_vacf = self.diff_vacf(last_h_vels)
-                vacf_residual = (new_vacf - self.vacf)
-            
-            #for now assume rdf + only one dynamical observable: either diffusion coefficient or VACF, not both
-            if self.diffusion_loss_weight != 0:
-                return (radii_residual, velocity_residual, rdf_residual, diffusion_residual, zeta_residual)
-            elif self.vacf_loss_weight != 0:
-                return (radii_residual, velocity_residual, rdf_residual, vacf_residual)
-
-            return (radii_residual, velocity_residual, rdf_residual)
 
     #top level MD simulation code (i.e the "solver") that returns the optimal "parameter" -aka the equilibriated radii
     def solve(self):
@@ -388,10 +350,11 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         self.last_h_radii = []
         self.last_h_velocities = []
         self.running_radii = []
+        self.running_energy = []
         #Initialize forces/potential of starting configuration
-        with torch.no_grad():
-            
-            _, forces = self.force_calc(self.radii)
+        with torch.enable_grad() if self.no_ift else torch.no_grad():
+            self.step = -1
+            _, forces = self.force_calc(self.radii, retain_grad = self.no_ift)
             zeta = self.zeta
             #Run MD
             print("Start MD trajectory", file=self.f)
@@ -404,33 +367,41 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
 
                 #MD Step
                 if self.integrator == 'NoseHoover':
-                    radii, velocities, forces, rdf, zeta = self.forward_nvt(self.radii, self.velocities, forces, zeta, calc_rdf = calc_rdf, calc_vacf = calc_vacf)
+                    radii, velocities, forces, rdf, zeta = self.forward_nvt(self.radii, self.velocities, forces, zeta, calc_rdf = calc_rdf, calc_vacf = calc_vacf, retain_grad = self.no_ift)
                 elif self.integrator == 'Langevin':
-                    radii, velocities, forces, rdf = self.forward_langevin(self.radii, self.velocities, forces, calc_rdf = calc_rdf, calc_vacf = calc_vacf)
+                    radii, velocities, forces, rdf = self.forward_langevin(self.radii, self.velocities, forces, calc_rdf = calc_rdf, calc_vacf = calc_vacf, retain_grad = self.no_ift)
                 else:
                     RuntimeError("Must choose either NoseHoover or Langevin as integrator")
                 
                 #save trajectory for gradient calculation
                 if step >= self.eq_steps:# and step % self.n_dump == 0: 
-                    self.running_radii.append(self.radii.detach().clone())
-                    self.running_vels.append(self.velocities.detach().clone())
+
+                    self.running_radii.append(radii if self.no_ift else radii.detach().clone())
+                    self.running_vels.append(velocities if self.no_ift else velocities.detach().clone())
                     self.running_accs.append((forces/self.masses).detach().clone())
                 
-                self.radii.copy_(radii)
-                self.velocities.copy_(velocities)
-                self.rdf.copy_(rdf)
+                if self.no_ift:
+                    self.radii = radii
+                    self.velocities = velocities
+                    self.rdf = rdf
+                else:
+                    self.radii.copy_(radii)
+                    self.velocities.copy_(velocities)
+                    self.rdf.copy_(rdf)
+                    
 
             self.zeta = zeta
             self.forces = forces
 
             #compute bond length deviation
-            stacked_radii = torch.cat(self.running_radii)
-            bond_lens = distance_pbc(stacked_radii[:, self.bonds[:, 0]], stacked_radii[:, self.bonds[:, 1]], torch.FloatTensor([30., 30., 30.]).to(self.device))
-            self.max_dev = (bond_lens - self.mean_bond_lens).abs().max(dim=-1)[0].mean()
-            
-            last_h_vels = torch.cat(self.last_h_velocities, dim = 0).permute((1,0,2,3))
-            vacf = self.diff_vacf(last_h_vels)
-            
+            self.stacked_radii = torch.cat(self.running_radii)
+            bond_lens = distance_pbc(self.stacked_radii[:, self.bonds[:, 0]], self.stacked_radii[:, self.bonds[:, 1]], torch.FloatTensor([30., 30., 30.]).to(self.device))
+            self.max_dev = (bond_lens - self.mean_bond_lens).abs().max(dim=-1)[0].mean().detach()
+            self.stacked_vels = torch.cat(self.running_vels)
+         
+            energies = torch.cat(self.running_energy)
+            np.save(os.path.join(self.save_dir, f'energies_{self.integrator}_{self.ic_stddev}.npy'), energies.cpu())
+
         return self 
 
     def save_checkpoint(self, best=False):
@@ -467,7 +438,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
     def calc_properties(self, pe):
         # Calculate properties of interest in this function
         p_dof = 3*self.n_atoms
-        ke = 1/2 * (self.masses*torch.square(self.velocities)).sum(axis = (1,2), keepdims=True)
+        ke = 1/2 * (self.masses*torch.square(self.velocities)).sum(axis = (1,2)).unsqueeze(-1)
         temp = (2*ke/p_dof).mean() / units.kB
         # if self.integrator == 'NoseHoover':
         #     temp /= units.kB
@@ -478,7 +449,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
         #max bond length deviation calculation (mean over replicas)
         bond_lens = distance_pbc(self.radii[:, self.bonds[:, 0]], self.radii[:, self.bonds[:, 1]], torch.FloatTensor([30., 30., 30.]).to(self.device))
         max_dev = (bond_lens - self.mean_bond_lens).abs().max(dim=-1)[0].mean()
-
+        self.running_energy.append((ke+pe).detach())
         return {"Temperature": temp.item(),
                 #"Pressure": pressure,
                 "Potential Energy": pe.mean().item(),
@@ -496,7 +467,7 @@ class ImplicitMDSimulator(ImplicitMetaGradientModule, linear_solve=torchopt.line
             adjoint_norms = []
             testR = []
             # R = pos_traj[:, -1].detach().to(self.device)
-            # a = a*a_dt**2/M #premultiply the initial adjoints by dt^2/M - TODO: why?
+            # a = a*a_dt**2/M #premultiply the initial adjoints by dt^2/M - TODO: why? to make adjoints match naive backprop norms
             # adjoints.append(a.detach())
             # adjoint_norms.append(a.norm(dim = (-2, -1)).detach())
             # testR.append(R.detach())
@@ -572,23 +543,20 @@ class Stochastic_IFT(torch.autograd.Function):
 
                 vacf_loss_tensor = vmap(vmap(vacf_loss))(vacfs).reshape(-1, 1, 1)
 
-                #compute Onsager-Machlup Action
-                #Update step from Langevin integrator
-                #velocities = velocities + self.dt*(forces/self.masses - self.gamma * velocities) + self.noise_f * torch.randn_like(velocities)
-
+                #compute Onsager-Machlup Action ("energy" of each trajectory)
                 def om_action(vel_traj, acc_traj):
                     diff = (vel_traj[:, :, 1:] - \
                                 vel_traj[:, :, :-1] - acc_traj[:, :, :-1]*simulator.dt + \
                                 simulator.gamma*vel_traj[:, :, :-1]*simulator.dt) #should be approximately normally distributed
-                    om_action = diff**2 / simulator.noise_f.unsqueeze(1).unsqueeze(1)
-                    #sum over euclidean dimensions, atoms, and vacf window
+                    om_action = diff**2 / simulator.noise_f.unsqueeze(1).unsqueeze(1) #this is exponentially distributed
+                    #sum over euclidean dimensions, atoms, and vacf window: TODO: this ruins the exponential property
                     return om_action.sum((-3, -2, -1))
 
                 with torch.enable_grad():
                     velocities_traj.requires_grad = True
                     accel_traj.requires_grad = True
                     om_act = om_action(velocities_traj, accel_traj)
-                
+                                
                 #get initial adjoint states
                 grad_outputs = compute_grad(inputs = velocities_traj, output = om_act).detach()
                 #print_active_torch_tensors()
@@ -626,6 +594,7 @@ class Stochastic_IFT(torch.autograd.Function):
                         forces = get_forces(radii)
                     #compute gradient of force w.r.t model params
                     #some of the model gradients are zero for some reason - have to use allow_unused - seems suspicious
+                    import pdb; pdb.set_trace()
                     grads = [g.detach() if g is not None else torch.Tensor([0.]).to(simulator.device) \
                                 for g in torch.autograd.grad(forces, model.parameters(), \
                                         adjoints, create_graph = True, allow_unused = True)]
@@ -694,6 +663,7 @@ class Stochastic_IFT(torch.autograd.Function):
                 rdf_gradient_estimators = []
                 print(f"Computing RDF gradients in minibatches of {MINIBATCH_SIZE} structures")
                 
+                running_energy = []
                 for i in tqdm(range(num_blocks)):
                     #print_active_torch_tensors()
                     start = MINIBATCH_SIZE*i
@@ -705,6 +675,7 @@ class Stochastic_IFT(torch.autograd.Function):
                         radii_in = stacked_radii[start:end].reshape(-1, 3)
                         radii_in.requires_grad = True
                         energy = model(pos = radii_in, z = atomic_numbers, batch = batch)
+                        running_energy.append(energy)
                     def get_vjp(v):
                         return compute_grad(inputs = list(model.parameters()), output = energy, grad_outputs = v, create_graph = False)
                     vectorized_vjp = vmap(get_vjp)
@@ -721,6 +692,8 @@ class Stochastic_IFT(torch.autograd.Function):
                     gradient_estimator = tuple([g.reshape(shape) for g, shape in zip(mean.split(original_numel), original_shapes)])
                     rdf_gradient_estimators.append(gradient_estimator)
                 #print_active_torch_tensors()
+                # energies = torch.cat(running_energy)
+                # np.save(os.path.join(simulator.save_dir, f'energies_{simulator.integrator}_{simulator.ic_stddev}.npy'), energies.cpu())
                 end_time = time.time()
                 #print(f"gradient calculation time: {end_time-start_time} seconds")
                 rdf_package = (rdf_gradient_estimators, mean_rdf, rdf_loss(mean_rdf).to(simulator.device))
@@ -835,33 +808,53 @@ if __name__ == "__main__":
             simulator.reset(last_radii, last_velocities, last_rdf)
             simulator.zeta = equilibriated_simulator.zeta
         simulator.epoch = epoch
-        #run MD and compute gradients
+
+
         start = time.time()
-        equilibriated_simulator, rdf_package, vacf_package = top_level.apply(simulator, gt_rdf, gt_vacf, params)
+        if simulator.no_ift: #full backprop through MD simulation - baseline
+            with torch.enable_grad():
+                #run MD with gradients enabled
+                equilibriated_simulator = simulator.solve()
+                diff_rdf = DifferentiableRDF(simulator.params, simulator.device)
+                diff_vacf = DifferentiableVACF(simulator.params, simulator.device)
+                r2d = lambda r: radii_to_dists(r, simulator.params)
+                dists = r2d(equilibriated_simulator.stacked_radii).reshape(1, -1, simulator.n_atoms, simulator.n_atoms-1, 1)
+                rdfs = vmap(diff_rdf)(tuple(dists))
+                mean_rdf = rdfs.mean(dim=0)[0]
+                velocities_traj = torch.stack(equilibriated_simulator.running_vels).permute(1,0,2,3)
+                vacfs = vmap(diff_vacf)(velocities_traj)
+                mean_vacf = vacfs.mean(dim = 0)
+                rdf_loss = (mean_rdf - gt_rdf).pow(2).mean()
+                vacf_loss = (mean_vacf - gt_vacf).pow(2).mean()
+                loss = params.rdf_loss_weight*rdf_loss + params.vacf_loss_weight*vacf_loss
+                #this line is currently giving zero gradients
+                torch.autograd.backward(tensors = loss, inputs = list(model.parameters()))
+                optimizer.step()
+
+        else:
+            #run simulation and get gradients via Fabian method/adjoint
+            equilibriated_simulator, rdf_package, vacf_package = top_level.apply(simulator, gt_rdf, gt_vacf, params)
+            #unpack results
+            rdf_grad_batches, mean_rdf, rdf_loss = rdf_package
+            vacf_grad_batches, mean_vacf, vacf_loss = vacf_package
+            
+            #make lengths match for iteration
+            if rdf_grad_batches is None:
+                rdf_grad_batches = vacf_grad_batches
+            if vacf_grad_batches is None:
+                vacf_grad_batches = rdf_grad_batches
+            
+            #manual SGD for now
+            for rdf_grads, vacf_grads in zip(rdf_grad_batches, vacf_grad_batches): #loop through minibatches
+                for param, rdf_grad, vacf_grad in zip(model.parameters(), rdf_grads, vacf_grads):
+                    grad = params.rdf_loss_weight*rdf_grad + params.vacf_loss_weight*vacf_grad
+                    param.grad = grad#for grad norm tracking
+                    param.data -= optimizer.param_groups[0]['lr']*grad
+
         end = time.time()
         sim_time = end - start
 
-        #unpack results
-        rdf_grad_batches, mean_rdf, rdf_loss = rdf_package
-        vacf_grad_batches, mean_vacf, vacf_loss = vacf_package
-        #manual SGD for now
-
-        #make lengths match for iteration
-        if rdf_grad_batches is None:
-            rdf_grad_batches = vacf_grad_batches
-        if vacf_grad_batches is None:
-            vacf_grad_batches = rdf_grad_batches
         
-        for rdf_grads, vacf_grads in zip(rdf_grad_batches, vacf_grad_batches): #loop through minibatches
-            for param, rdf_grad, vacf_grad in zip(model.parameters(), rdf_grads, vacf_grads):
-                grad = params.rdf_loss_weight*rdf_grad + params.vacf_loss_weight*vacf_grad
-                param.grad = grad#for grad norm tracking
-                param.data -= optimizer.param_groups[0]['lr']*grad
-        #optimizer.step()
-        
-        #memory cleanup
-        #last_radii, last_velocities, last_rdf = equilibriated_simulator.cleanup()
-    
         #save rdf and vacf at the end of the trajectory
         filename = f"rdf_epoch{epoch+1}.npy"
         np.save(os.path.join(results_dir, filename), mean_rdf.cpu().detach().numpy())
@@ -880,7 +873,7 @@ if __name__ == "__main__":
                 best = True
             simulator.save_checkpoint(best = best)
 
-            equilibriated_simulator.cleanup()
+            #equilibriated_simulator.cleanup()
 
             torch.cuda.empty_cache()
             gc.collect()
@@ -902,7 +895,7 @@ if __name__ == "__main__":
             rdf_losses.append(rdf_loss.item())
             #diffusion_losses.append((diffusion_loss.sqrt()/gt_diff_coeff).item())
             vacf_losses.append(vacf_loss.item())
-            max_bond_len_devs.append(simulator.max_dev)
+            max_bond_len_devs.append(equilibriated_simulator.max_dev)
             #energy/force error
             print("Logging energy/force error")
             energy_rmse, force_rmse = simulator.energy_force_error(params.test_batch_size)
@@ -920,6 +913,7 @@ if __name__ == "__main__":
             writer.add_scalar('RDF Loss', rdf_losses[-1], global_step=epoch+1)
             #writer.add_scalar('Relative Diffusion Loss', diffusion_losses[-1], global_step=epoch+1)
             writer.add_scalar('VACF Loss', vacf_losses[-1], global_step=epoch+1)
+            import pdb; 
             writer.add_scalar('Max Bond Length Deviation', max_bond_len_devs[-1], global_step=epoch+1)
             writer.add_scalar('Energy RMSE', energy_rmses[-1], global_step=epoch+1)
             writer.add_scalar('Force RMSE', force_rmses[-1], global_step=epoch+1)
