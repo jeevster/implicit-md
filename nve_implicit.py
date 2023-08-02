@@ -357,7 +357,6 @@ class ImplicitMDSimulator():
                     self.running_radii.append(radii if self.no_ift else radii.detach().clone())
                     self.running_vels.append(velocities if self.no_ift else velocities.detach().clone())
                     self.running_accs.append((forces/self.masses) if self.no_ift else (forces/self.masses).detach().clone())
-                
                 if self.no_ift:
                     self.radii = radii
                     self.velocities = velocities
@@ -515,18 +514,18 @@ class Stochastic_IFT(torch.autograd.Function):
 
                 #define Onsager-Machlup Action ("energy" of each trajectory)
                 def om_action(vel_traj, acc_traj):
-                    diff = (vel_traj[:, :, 1:] - \
-                                vel_traj[:, :, :-1] - acc_traj[:, :, :-1]*simulator.dt + \
-                                simulator.gamma*vel_traj[:, :, :-1]*simulator.dt) #should be approximately normally distributed
+                    v_tp1 = vel_traj[:, :, 1:]
+                    v_t = vel_traj[:, :, :-1]
+                    a_tp1 = acc_traj[:, :, 1:]
+                    diff = (v_tp1 - v_t - a_tp1*simulator.dt + simulator.gamma*v_t*simulator.dt)
                     om_action = diff**2 / simulator.noise_f.unsqueeze(1).unsqueeze(1) #this is exponentially distributed
                     #sum over euclidean dimensions, atoms, and vacf window: TODO: this ruins the exponential property
-                    return om_action.sum((-3, -2, -1))
+                    return diff/simulator.noise_f.unsqueeze(1).unsqueeze(1), om_action.sum((-3, -2, -1))
                 
                 #split into sub-trajectories of length = vacf_window
                 radii_traj = radii_traj.reshape(radii_traj.shape[0], -1, simulator.vacf_window,simulator.n_atoms, 3)
                 velocities_traj = velocities_traj.reshape(velocities_traj.shape[0], -1, simulator.vacf_window, simulator.n_atoms, 3)
                 accel_traj = accel_traj.reshape(accel_traj.shape[0], -1, simulator.vacf_window, simulator.n_atoms, 3)
-
                 vacf_loss_tensor = vmap(vmap(vacf_loss))(vacfs).reshape(-1, 1, 1)
             
                 '''DEBUGGING: compare gradients from naive backprop with gradients from adjoint method'''
@@ -565,7 +564,8 @@ class Stochastic_IFT(torch.autograd.Function):
                     velocities_traj = velocities_traj.reshape(velocities_traj.shape[0], -1, simulator.vacf_window, simulator.n_atoms, 3)
                     accel_traj = accel_traj.reshape(accel_traj.shape[0], -1, simulator.vacf_window, simulator.n_atoms, 3)
 
-                    om_act = om_action(velocities_traj, accel_traj)
+                    diff, om_act = om_action(velocities_traj, accel_traj)
+                    #assert(torch.allclose(diff, noise_traj[:, :, 1:], atol = 1e-4)) #make sure the diffs match the stored noises along the trajectory
                     naive_backprop_grads = [[g.detach() if g is not None else torch.Tensor([0.]).to(simulator.device) for g in torch.autograd.grad(o, model.parameters(), create_graph = True, allow_unused = True)] for o in tqdm(om_act.flatten())]
                 
                 #get initial adjoint states
@@ -923,7 +923,6 @@ if __name__ == "__main__":
             writer.add_scalar('RDF Loss', rdf_losses[-1], global_step=epoch+1)
             #writer.add_scalar('Relative Diffusion Loss', diffusion_losses[-1], global_step=epoch+1)
             writer.add_scalar('VACF Loss', vacf_losses[-1], global_step=epoch+1)
-            import pdb; 
             writer.add_scalar('Max Bond Length Deviation', max_bond_len_devs[-1], global_step=epoch+1)
             writer.add_scalar('Energy RMSE', energy_rmses[-1], global_step=epoch+1)
             writer.add_scalar('Force RMSE', force_rmses[-1], global_step=epoch+1)
