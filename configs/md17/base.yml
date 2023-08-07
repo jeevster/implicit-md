@@ -30,12 +30,12 @@ ift:
   vacf_loss_weight: 1
   rdf_loss_weight: 0
   diffusion_window: 1000
-  vacf_window: 100
+  vacf_window: 50
   ic_stddev: 0.05
   eq_steps: 100
   steps: 1000
   n_dump: 50
-  n_replicas: 128
+  n_replicas: 16
   minibatch_size: 120
   test_batch_size: 1000
   shuffle: True
