@@ -30,7 +30,7 @@ ift:
   vacf_loss_weight: 1
   rdf_loss_weight: 0
   diffusion_window: 1000
-  vacf_window: 50
+  vacf_window: 25
   ic_stddev: 0.05
   eq_steps: 100
   steps: 1000

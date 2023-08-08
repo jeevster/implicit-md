@@ -227,7 +227,8 @@ class ImplicitMDSimulator():
                 
     def solve(self):
         '''DEBUGGING: compare gradients from naive backprop with gradients from adjoint method'''
-                
+        def process_gradient(g):
+            return g.detach() if g is not None else torch.Tensor([0.]).to(self.device)
         running_radii = []
         running_vels = []
         running_accs = []
@@ -271,7 +272,8 @@ class ImplicitMDSimulator():
             assert(torch.allclose(diff, noise_traj[:, :, 1:], atol = 1e-3)) #make sure the diffs match the stored noises along the trajectory
             
             print("Compute gradients by naive backprop")
-            naive_backprop_grads = [[g.detach() if g is not None else torch.Tensor([0.]).to(self.device) for g in torch.autograd.grad(o, model.parameters(), create_graph = True, allow_unused = True)] for o in tqdm(om_act.flatten())]
+            #TODO: is this correct?
+            naive_backprop_grads = [[process_gradient(g) for g in torch.autograd.grad(o, model.parameters(), create_graph = True, allow_unused = True)] for o in tqdm(om_act.flatten())]
             
             print("Compute adjoints by naive backprop")
             #r adjoints are pretty tiny, v adjoints have reasonable values (as expected due to detach?)
@@ -279,7 +281,6 @@ class ImplicitMDSimulator():
             naive_v_adjoints = torch.stack([compute_grad(inputs = v, output = om_act).detach()  for v in tqdm(reversed(running_vels))])
             naive_adjoint_norms = naive_v_adjoints.norm(dim = (-2, -1))
         #get initial adjoint states
-        import pdb; pdb.set_trace()
         pure_partials = compute_grad(inputs = velocities_traj, output = om_act).detach()
         partials_via_x = compute_grad(inputs = radii_traj, output = om_act).detach()
         zeros = torch.zeros_like(partials_via_x[:, :, 0]).unsqueeze(2).to(self.device)
@@ -293,39 +294,49 @@ class ImplicitMDSimulator():
         #run backward dynamics
         print(f"Run backward dynamics to calculate adjoints:")
         start = time.time()
-        final_adjoints, adjoint_norms, R = self.get_adjoints(radii_traj, velocities_traj, grad_outputs, force_fn = self.force_calc)
+        final_adjoints, adjoint_norms, R_reversed = self.get_adjoints(radii_traj, velocities_traj, grad_outputs, force_fn = self.force_calc)
         end = time.time()
-
+        assert(torch.allclose(adjoint_norms[:-1], naive_adjoint_norms[:-1], atol = 1))
         #log adjoint norms
         np.save(os.path.join(self.save_dir, f'adjoint_norms_epoch0'), adjoint_norms.cpu().numpy())
         np.save(os.path.join(self.save_dir, f'naive_adjoint_norms_epoch0'), naive_adjoint_norms.cpu().numpy())
+
+
         #print(f"Adjoint calculation time: {end - start} s")
         #now get dO/dtheta (where O is the OM action)
         #Loop over trajectories for now
+        #TODO: Something about this final step is incorrect - doesn't match naive backprop even though the adjoints now match
         def calc_grads(adjoints, radii):
             with torch.enable_grad():
                 radii.requires_grad=True
                 forces = self.force_calc(radii)
             #compute gradient of force w.r.t model params
             #some of the model gradients are zero - have to use allow_unused - I believe these correspond to the bias parameters which don't affect the force calculation (only the energies)?
-            grads = [g.detach() if g is not None else torch.Tensor([0.]).to(self.device) \
+            grads = [process_gradient(g)*self.dt \
                         for g in torch.autograd.grad(forces, model.parameters(), \
                                 adjoints, create_graph = True, allow_unused = True)]
+            
             return grads
         print(f"Calculate gradients of Onsager-Machlup action for {len(final_adjoints)} trajectories")
-        grads = [calc_grads(adj, r) for adj, r in tqdm(zip(final_adjoints, R))]
+        
+        grads = [calc_grads(adj, r) for adj, r in tqdm(zip(final_adjoints, R_reversed))]
+        grads_naive = [calc_grads(adj, r) for adj, r in tqdm(zip(naive_v_adjoints.permute(1,0,2,3), R_reversed))]
         #flatten out the grads
         num_params = len(list(model.parameters()))
         num_samples = final_adjoints.shape[0]
 
-        
         naive_backprop_grads_flattened = torch.stack([torch.cat([naive_backprop_grads[i][j].flatten().detach() \
                                 for j in range(num_params)]) for i in range(num_samples)])
-        vacf_grads_flattened = torch.stack([torch.cat([grads[i][j].flatten().detach() \
-                                for j in range(num_params)]) for i in range(num_samples)])
+        vacf_grads_flattened = torch.stack([torch.cat([grads[i][j].flatten().detach() for j in range(num_params)]) for i in range(num_samples)])
+        vacf_grads_flattened_naive = torch.stack([torch.cat([grads_naive[i][j].flatten().detach() for j in range(num_params)]) for i in range(num_samples)])
         ratios = (naive_backprop_grads_flattened + 1e-8) / (vacf_grads_flattened + 1e-8)
         mask = ratios != 1
         ratios = ratios[mask].reshape(final_adjoints.shape[0], -1)
+        import pdb; pdb.set_trace()
+        ratios = (vacf_grads_flattened_naive + 1e-8) / (vacf_grads_flattened + 1e-8)
+        mask = ratios != 1
+        ratios = ratios[mask].reshape(final_adjoints.shape[0], -1)
+
         
         return naive_backprop_grads_flattened, vacf_grads_flattened
         
@@ -336,7 +347,7 @@ class ImplicitMDSimulator():
             M = self.masses[0].unsqueeze(0)
             adjoints = []
             adjoint_norms = []
-            testR = []
+            R_reversed = []
     
             #initial adjoints
             #grad_outputs *= a_dt**2/M #pre-multiply the grad outputs to make norms closer to naive backprop (still not sure why this is needed)
@@ -345,7 +356,7 @@ class ImplicitMDSimulator():
                 #work backwards from the final state
                 R = pos_traj[:, -i -1].detach().to(self.device)
                 
-                testR.append(R.detach())
+                R_reversed.append(R.detach())
                 adjoints.append(a.detach())
                 adjoint_norms.append(a.norm(dim = (-2, -1)).detach())
                 #compute VJP between adjoint (a) and df/dR which is the time-derivative of the adjoint state
@@ -360,8 +371,8 @@ class ImplicitMDSimulator():
                 
             adjoints = torch.stack(adjoints, axis=1)
             adjoint_norms = torch.stack(adjoint_norms)
-            testR = torch.stack(testR, axis=1)
-        return adjoints, adjoint_norms, testR
+            R_reversed = torch.stack(R_reversed, axis=1)
+        return adjoints, adjoint_norms, R_reversed
 
 
 if __name__ == "__main__":
