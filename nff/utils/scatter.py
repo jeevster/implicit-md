@@ -3,7 +3,7 @@ from torch.autograd import grad
 import torch
 
 
-def compute_grad(inputs, output, grad_outputs = None, create_graph=True, retain_graph=True):
+def compute_grad(inputs, output, grad_outputs = None, create_graph=True, retain_graph=True, allow_unused = False):
     """Compute gradient of the scalar output with respect to inputs.
     
     Args:
@@ -26,9 +26,9 @@ def compute_grad(inputs, output, grad_outputs = None, create_graph=True, retain_
     if grad_outputs is None:
         grad_outputs=output.data.new(output.shape).fill_(1)
     try:
-        gradspred, = grad(output, inputs, grad_outputs=grad_outputs, create_graph=create_graph, retain_graph=retain_graph)
+        gradspred, = grad(output, inputs, grad_outputs=grad_outputs, create_graph=create_graph, retain_graph=retain_graph, allow_unused = allow_unused)
     except:
-        gradspred = grad(output, inputs, grad_outputs=grad_outputs, create_graph=create_graph, retain_graph=retain_graph)
+        gradspred = grad(output, inputs, grad_outputs=grad_outputs, create_graph=create_graph, retain_graph=retain_graph, allow_unused = allow_unused)
 
     return gradspred
 
