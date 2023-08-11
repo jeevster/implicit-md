@@ -94,6 +94,7 @@ class ImplicitMDSimulator():
         self.train = config['mode'] == 'train'
         self.n_replicas = config["ift"]["n_replicas"]
         self.minibatch_size = config["ift"]['minibatch_size']
+        self.allow_off_policy_updates = config["ift"]['allow_off_policy_updates']
         self.shuffle = config["ift"]['shuffle']
         self.vacf_window = config["ift"]["vacf_window"]
         self.no_ift = config["ift"]["no_ift"]
@@ -260,9 +261,11 @@ class ImplicitMDSimulator():
                     radii.requires_grad = True
             energy = self.model(pos = radii.reshape(-1,3), z = atomic_numbers, batch = batch)
 
-            forces = -compute_grad(inputs = radii, output = energy) if retain_grad else -compute_grad(inputs = radii, output = energy).detach()
-            assert(not torch.any(torch.isnan(forces)))
-            return energy, forces
+            grad = compute_grad(inputs = radii, output = energy) if retain_grad else compute_grad(inputs = radii, output = energy).detach()
+            assert(not torch.any(torch.isnan(grad)))
+            if retain_grad:
+                assert(not grad.is_leaf)
+            return energy, -grad
 
 
     def forward_nvt(self, radii, velocities, forces, zeta, retain_grad=False):
@@ -518,15 +521,17 @@ class Stochastic_IFT(torch.autograd.Function):
                 vacf_package = (vacf_gradient_estimators, mean_vacf, vacf_loss(mean_vacf).to(simulator.device))
             else:
                 vacf_loss_tensor = vmap(vmap(vacf_loss))(vacfs).reshape(-1, 1, 1)
+                import pdb; pdb.set_trace()
                 #define force function - expects input of shape (batch, N, 3)
                 def get_forces(radii):
                     batch_size = radii.shape[0]
                     batch = torch.arange(batch_size).repeat_interleave(simulator.n_atoms).to(simulator.device)
                     atomic_numbers = torch.Tensor(simulator.atoms.get_atomic_numbers()).to(torch.long).to(simulator.device).repeat(batch_size)
                     energy = model(pos = radii.reshape(-1,3), z = atomic_numbers, batch = batch)
-                    forces = -compute_grad(inputs = radii, output = energy)
+                    grad = compute_grad(inputs = radii, output = energy)
+                    assert(not grad.is_leaf)
                     #forces = simulator.force_calc(radii, atomic_numbers, batch, retain_grad = True)
-                    return forces
+                    return -grad
 
                 #define Onsager-Machlup Action ("energy" of each trajectory)
                 #TODO: make this a torch.nn.Module in observable.py
@@ -539,8 +544,6 @@ class Stochastic_IFT(torch.autograd.Function):
                     om_action = diff**2 / simulator.noise_f.unsqueeze(1).unsqueeze(1) #this is exponentially distributed
                     #sum over euclidean dimensions, atoms, and vacf window: TODO: this ruins the exponential property
                     return (diff/simulator.noise_f.unsqueeze(1).unsqueeze(1)).detach(), om_action.sum((-3, -2, -1))
-                
-                
                 
                 #compute OM action - do it in mini-batches to avoid OOM issues
                 batch_size = 5
@@ -562,14 +565,15 @@ class Stochastic_IFT(torch.autograd.Function):
                         #make sure the diffs match the stored noises along the trajectory
                         assert(torch.allclose(diff, noise_traj[start:end, :, 1:], atol = 1e-3))
                         def get_grads(v):
-                            return compute_grad(inputs = list(model.parameters()), output = om_act.flatten(), grad_outputs = v, retain_graph = True, allow_unused = True)
+                            return compute_grad(inputs = list(model.parameters()), output = om_act.flatten(), \
+                                    grad_outputs = v, retain_graph = True, allow_unused = True)
                         get_grads_vmaped = vmap(get_grads)
                         I_N = torch.eye(om_act.flatten().shape[0]).to(simulator.device)
                         #the vmap leads to a seg fault for some reason
-                        #grad = get_grads_vmaped(I_N)
+                        grad = get_grads_vmaped(I_N)
                         #grad = [[simulator.process_gradient(g) for g in get_grads(v)] for v in I_N]
                         #this explicit loop is very slow though (10 seconds per iteration)
-                        grad = [[simulator.process_gradient(g) for g in torch.autograd.grad(o, model.parameters(), create_graph = True, allow_unused = True)] for o in om_act.flatten()]
+                        grad = [[simulator.process_gradient(g) for g in torch.autograd.grad(o, model.parameters(), create_graph = False, retain_graph = True, allow_unused = True)] for o in om_act.flatten()]
                         
                         om_act = om_act.detach()
                         diffs.append(diff)
@@ -588,8 +592,7 @@ class Stochastic_IFT(torch.autograd.Function):
                 num_params = len(list(model.parameters()))
                 num_samples = len(grads)
 
-                vacf_grads_flattened = torch.stack([torch.cat([grads[i][j].flatten().detach() \
-                                        for j in range(num_params)]) for i in range(num_samples)])
+                vacf_grads_flattened = torch.stack([torch.cat([grads[i][j].flatten().detach() for j in range(num_params)]) for i in range(num_samples)])
               
                 if simulator.shuffle:   
                     shuffle_idx = torch.randperm(vacf_grads_flattened.shape[0])
@@ -603,6 +606,7 @@ class Stochastic_IFT(torch.autograd.Function):
                 num_blocks = math.ceil(vacf_grads_flattened.shape[0]/ vacf_minibatch_size)
                 start_time = time.time()
                 vacf_gradient_estimators = []
+                raw_grads = []
                 print(f"Computing VACF gradients from {vacf_grads_flattened.shape[0]} trajectories in minibatches of size {vacf_minibatch_size}")
                 for i in tqdm(range(num_blocks)):
                     start = vacf_minibatch_size*i
@@ -611,8 +615,16 @@ class Stochastic_IFT(torch.autograd.Function):
                     grad_diffs = grads_batch.unsqueeze(0) - grads_batch.unsqueeze(1)
                     product = vacf_loss_tensor[start:end] * grad_diffs
                     mean = product.mean(dim=(0,1))
+                    if not simulator.allow_off_policy_updates:
+                        raw_grads.append(mean)
+                    else:
+                        #re-assemble flattened gradients into correct shape
+                        gradient_estimator = tuple([g.reshape(shape) for g, shape in zip(mean.split(original_numel), original_shapes)])
+                        vacf_gradient_estimators.append(gradient_estimator)
+                if not simulator.allow_off_policy_updates:
+                    mean_grads = torch.stack(raw_grads).mean(dim=0)
                     #re-assemble flattened gradients into correct shape
-                    gradient_estimator = tuple([g.reshape(shape) for g, shape in zip(mean.split(original_numel), original_shapes)])
+                    gradient_estimator = tuple([g.reshape(shape) for g, shape in zip(mean_grads.split(original_numel), original_shapes)])
                     vacf_gradient_estimators.append(gradient_estimator)
                 vacf_package = (vacf_gradient_estimators, mean_vacf, vacf_loss(mean_vacf).to(simulator.device))
             #print_active_torch_tensors()
@@ -640,6 +652,7 @@ class Stochastic_IFT(torch.autograd.Function):
                 num_blocks = math.ceil(stacked_radii.shape[0]/ (MINIBATCH_SIZE))
                 start_time = time.time()
                 rdf_gradient_estimators = []
+                raw_grads = []
                 print(f"Computing RDF gradients from {stacked_radii.shape[0]} structures in minibatches of size {MINIBATCH_SIZE}")
                 
                 running_energy = []
@@ -667,8 +680,16 @@ class Stochastic_IFT(torch.autograd.Function):
                     grad_diffs = grads_flattened.unsqueeze(0) - grads_flattened.unsqueeze(1)
                     product = rdf_loss_tensor[start:end] * grad_diffs
                     mean = product.mean(dim=(0,1))
+                    if not simulator.allow_off_policy_updates:
+                        raw_grads.append(mean)
+                    else:
+                        #re-assemble flattened gradients into correct shape
+                        gradient_estimator = tuple([g.reshape(shape) for g, shape in zip(mean.split(original_numel), original_shapes)])
+                        rdf_gradient_estimators.append(gradient_estimator)
+                if not simulator.allow_off_policy_updates:
+                    mean_grads = torch.stack(raw_grads).mean(dim=0)
                     #re-assemble flattened gradients into correct shape
-                    gradient_estimator = tuple([g.reshape(shape) for g, shape in zip(mean.split(original_numel), original_shapes)])
+                    gradient_estimator = tuple([g.reshape(shape) for g, shape in zip(mean_grads.split(original_numel), original_shapes)])
                     rdf_gradient_estimators.append(gradient_estimator)
                 #print_active_torch_tensors()
                 # energies = torch.cat(running_energy)
