@@ -35,7 +35,7 @@ ift:
   eq_steps: 100
   steps: 1000
   n_dump: 50
-  n_replicas: 128
+  n_replicas: 1000
   minibatch_size: 120
   allow_off_policy_updates: True
   test_batch_size: 1000

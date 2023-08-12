@@ -521,7 +521,6 @@ class Stochastic_IFT(torch.autograd.Function):
                 vacf_package = (vacf_gradient_estimators, mean_vacf, vacf_loss(mean_vacf).to(simulator.device))
             else:
                 vacf_loss_tensor = vmap(vmap(vacf_loss))(vacfs).reshape(-1, 1, 1)
-                import pdb; pdb.set_trace()
                 #define force function - expects input of shape (batch, N, 3)
                 def get_forces(radii):
                     batch_size = radii.shape[0]
@@ -546,47 +545,50 @@ class Stochastic_IFT(torch.autograd.Function):
                     return (diff/simulator.noise_f.unsqueeze(1).unsqueeze(1)).detach(), om_action.sum((-3, -2, -1))
                 
                 #compute OM action - do it in mini-batches to avoid OOM issues
-                batch_size = 5
-                print(f"Calculate gradients of Onsager-Machlup action of {velocities_traj.shape[0]} replicas in minibatches of size {batch_size}")
-                num_blocks = math.ceil(velocities_traj.shape[0]/ batch_size)
+                batch_size = 1
+                print(f"Calculate gradients of Onsager-Machlup action of {radii_traj.shape[0]*radii_traj.shape[1]} trajectories")
+                num_blocks = math.ceil(radii_traj.shape[0]*radii_traj.shape[1]/ batch_size)
                 diffs = []
                 om_acts = []
                 grads = []
                 
                 with torch.enable_grad():
-                    velocities_traj = velocities_traj.detach().requires_grad_(True)
                     radii_traj = radii_traj.detach().requires_grad_(True)
                     for i in tqdm(range(num_blocks)):
                         start = batch_size*i
                         end = batch_size*(i+1)
-                        velocities = velocities_traj[start:end]
-                        radii = radii_traj[start:end]
-                        diff, om_act = om_action(velocities, radii)
+                        radii = radii_traj.reshape(-1, simulator.vacf_window, simulator.n_atoms, 3)[start:end].reshape(-1, simulator.n_atoms, 3)
+                        noises = noise_traj.reshape(-1, simulator.vacf_window, simulator.n_atoms, 3)[start:end].reshape(-1, simulator.n_atoms, 3)
+                        with torch.enable_grad():
+                            forces = get_forces(radii)
+                        #VJP between df/dtheta and noise
+                        grad = [simulator.process_gradient(g) for g in torch.autograd.grad(forces, list(model.parameters()), \
+                                    noises, allow_unused = True)]
                         #make sure the diffs match the stored noises along the trajectory
-                        assert(torch.allclose(diff, noise_traj[start:end, :, 1:], atol = 1e-3))
-                        def get_grads(v):
-                            return compute_grad(inputs = list(model.parameters()), output = om_act.flatten(), \
-                                    grad_outputs = v, retain_graph = True, allow_unused = True)
-                        get_grads_vmaped = vmap(get_grads)
-                        I_N = torch.eye(om_act.flatten().shape[0]).to(simulator.device)
-                        #the vmap leads to a seg fault for some reason
-                        grad = get_grads_vmaped(I_N)
-                        #grad = [[simulator.process_gradient(g) for g in get_grads(v)] for v in I_N]
-                        #this explicit loop is very slow though (10 seconds per iteration)
-                        grad = [[simulator.process_gradient(g) for g in torch.autograd.grad(o, model.parameters(), create_graph = False, retain_graph = True, allow_unused = True)] for o in om_act.flatten()]
+                        #assert(torch.allclose(diff, noise_traj[start:end, :, 1:], atol = 1e-3))
+                        # def get_grads(v):
+                        #     return compute_grad(inputs = list(model.parameters()), output = om_act.flatten(), \
+                        #             grad_outputs = v, retain_graph = True, allow_unused = True)
+                        # get_grads_vmaped = vmap(get_grads)
+                        # I_N = torch.eye(om_act.flatten().shape[0]).to(simulator.device)
+                        # #the vmap leads to a seg fault for some reason
+                        # grad = get_grads_vmaped(I_N)
+                        # #grad = [[simulator.process_gradient(g) for g in get_grads(v)] for v in I_N]
+                        # #this explicit loop is very slow though (10 seconds per iteration)
+                        # grad = [[simulator.process_gradient(g) for g in torch.autograd.grad(o, model.parameters(), create_graph = False, retain_graph = True, allow_unused = True)] for o in om_act.flatten()]
                         
-                        om_act = om_act.detach()
-                        diffs.append(diff)
-                        om_acts.append(om_act)
+                        #om_act = om_act.detach()
+                        #diffs.append(diff)
+                        #om_acts.append(om_act)
                         grads.append(grad)
 
                 #recombine batches
-                diff = torch.cat(diffs)
-                om_act = torch.cat(om_acts)
-                grads = sum(grads, [])
+                #diff = torch.cat(diffs)
+                #om_act = torch.cat(om_acts)
+                import pdb; pdb.set_trace()
                 #log OM stats
-                np.save(os.path.join(simulator.save_dir, f'om_diffs_epoch{simulator.epoch}'), diff.flatten().cpu().numpy())
-                np.save(os.path.join(simulator.save_dir, f'om_action_epoch{simulator.epoch}'), om_act.detach().flatten().cpu().numpy())
+                # np.save(os.path.join(simulator.save_dir, f'om_diffs_epoch{simulator.epoch}'), diff.flatten().cpu().numpy())
+                # np.save(os.path.join(simulator.save_dir, f'om_action_epoch{simulator.epoch}'), om_act.detach().flatten().cpu().numpy())
                     
                 #flatten out the grads
                 num_params = len(list(model.parameters()))
