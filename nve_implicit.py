@@ -94,9 +94,12 @@ class ImplicitMDSimulator():
         self.train = config['mode'] == 'train'
         self.n_replicas = config["ift"]["n_replicas"]
         self.minibatch_size = config["ift"]['minibatch_size']
+        self.allow_off_policy_updates = config["ift"]['allow_off_policy_updates']
         self.shuffle = config["ift"]['shuffle']
         self.vacf_window = config["ift"]["vacf_window"]
         self.no_ift = config["ift"]["no_ift"]
+        self.optimizer = config["ift"]["optimizer"]
+        self.use_mse_gradient = config["ift"]["use_mse_gradient"]
 
         #initialize datasets
         self.train_dataset = LmdbDataset({'src': os.path.join(self.data_dir, self.name, self.molecule, self.size, 'train')})
@@ -359,7 +362,8 @@ class ImplicitMDSimulator():
                     self.running_radii.append(radii if self.no_ift else radii.detach().clone())
                     self.running_vels.append(velocities if self.no_ift else velocities.detach().clone())
                     self.running_accs.append((forces/self.masses) if self.no_ift else (forces/self.masses).detach().clone())
-                    self.running_noise.append(noise)
+                    if self.integrator == "Langevin":
+                        self.running_noise.append(noise)
                 if self.no_ift:
                     self.radii = radii
                     self.velocities = velocities
@@ -500,7 +504,8 @@ class Stochastic_IFT(torch.autograd.Function):
             radii_traj = radii_traj.permute(1,0,2,3)
             velocities_traj = torch.stack(equilibriated_simulator.running_vels).permute(1,0,2,3)
             accel_traj = torch.stack(equilibriated_simulator.running_accs).permute(1,0,2,3)
-            noise_traj = torch.stack(equilibriated_simulator.running_noise).permute(1,0,2,3)
+            if simulator.integrator == "Langevin":
+                noise_traj = torch.stack(equilibriated_simulator.running_noise).permute(1,0,2,3)
             
             with torch.enable_grad():
                 velocities_traj.requires_grad = True
@@ -513,6 +518,8 @@ class Stochastic_IFT(torch.autograd.Function):
                 vacf_gradient_estimators = None
                 vacf_package = (vacf_gradient_estimators, mean_vacf, vacf_loss(mean_vacf).to(simulator.device))
             else:
+                if simulator.integrator != "Langevin":
+                    RuntimeError
                 vacf_loss_tensor = vmap(vmap(vacf_loss))(vacfs).reshape(-1, 1, 1)
                 #get initial values for adjoint dynamics
                 grad_outputs, = torch.autograd.grad(mean_vacf_loss, velocities_traj)
@@ -531,7 +538,6 @@ class Stochastic_IFT(torch.autograd.Function):
                 velocities_traj = velocities_traj.reshape(velocities_traj.shape[0], -1, simulator.vacf_window, simulator.n_atoms, 3)
                 noise_traj = noise_traj.reshape(noise_traj.shape[0], -1, simulator.vacf_window, simulator.n_atoms, 3)
                 grad_outputs = grad_outputs.reshape(grad_outputs.shape[0], -1, simulator.vacf_window, simulator.n_atoms, 3)
-                import pdb; pdb.set_trace()
             
                 '''DEBUGGING: compare gradients from naive backprop with gradients from adjoint method'''
                 #choose initial condition
@@ -610,9 +616,7 @@ class Stochastic_IFT(torch.autograd.Function):
                                         adjoints, create_graph = True, allow_unused = True)]
                     return grads
                 print(f"Calculate gradients of VACF loss for {len(final_adjoints)} trajectories")
-                #vmap isn't working for some reason - weird shape error in get_forces
-                # vmap_calc_grads = vmap(calc_grads)
-                # grads = vmap_calc_grads(final_adjoints, R)
+               
                 #Loop explicitly over trajectories for now
                 grads = [calc_grads(adj, r) for adj, r in tqdm(zip(final_adjoints, R))]
                 #flatten out the grads
@@ -623,12 +627,6 @@ class Stochastic_IFT(torch.autograd.Function):
                                         for j in range(num_params)]) for i in range(num_samples)])
                 mean_vacf_grads = vacf_loss_grads_flattened.mean(dim=0)
                 final_vacf_grads = tuple([g.reshape(shape) for g, shape in zip(mean_vacf_grads.split(original_numel), original_shapes)])
-                #compare naive backprop and adjoint grads
-                
-                # ratios = (naive_backprop_grads_flattened + 1e-8) / (vacf_grads_flattened + 1e-8)
-                # mask = ratios != 1
-                # ratios = ratios[mask].reshape(final_adjoints.shape[0], -1)
-                # import pdb; pdb.set_trace()
                 vacf_package = ([final_vacf_grads], mean_vacf, vacf_loss(mean_vacf).to(simulator.device))
             ###RDF Stuff
             r2d = lambda r: radii_to_dists(r, simulator.params)
@@ -644,20 +642,20 @@ class Stochastic_IFT(torch.autograd.Function):
                 #TODO: scale the estimator by temperature
                 start = time.time()
                 stacked_radii = stacked_radii.reshape(-1, simulator.n_atoms, 3)
-                #shuffle the radii and losses
+                #shuffle the radii, rdfs, and losses
                 if simulator.shuffle:   
                     shuffle_idx = torch.randperm(stacked_radii.shape[0])
                     stacked_radii = stacked_radii[shuffle_idx]
                     rdf_loss_tensor = rdf_loss_tensor[shuffle_idx]
+                    rdfs = rdfs[shuffle_idx]
                 
                 num_blocks = math.ceil(stacked_radii.shape[0]/ (MINIBATCH_SIZE))
                 start_time = time.time()
                 rdf_gradient_estimators = []
+                raw_grads = []
                 print(f"Computing RDF gradients from {stacked_radii.shape[0]} structures in minibatches of size {MINIBATCH_SIZE}")
                 
-                running_energy = []
                 for i in tqdm(range(num_blocks)):
-                    #print_active_torch_tensors()
                     start = MINIBATCH_SIZE*i
                     end = MINIBATCH_SIZE*(i+1)
                     actual_batch_size = min(end, stacked_radii.shape[0]) - start
@@ -667,7 +665,6 @@ class Stochastic_IFT(torch.autograd.Function):
                         radii_in = stacked_radii[start:end].reshape(-1, 3)
                         radii_in.requires_grad = True
                         energy = model(pos = radii_in, z = atomic_numbers, batch = batch)
-                        running_energy.append(energy)
                     def get_vjp(v):
                         return compute_grad(inputs = list(model.parameters()), output = energy, grad_outputs = v, create_graph = False)
                     vectorized_vjp = vmap(get_vjp)
@@ -677,16 +674,38 @@ class Stochastic_IFT(torch.autograd.Function):
                     num_params = len(list(model.parameters()))
                     num_samples = energy.shape[0]
                     grads_flattened= torch.stack([torch.cat([grads_vectorized[i][j].flatten().detach() for i in range(num_params)]) for j in range(num_samples)])
-                    grad_diffs = grads_flattened.unsqueeze(0) - grads_flattened.unsqueeze(1)
-                    product = rdf_loss_tensor[start:end] * grad_diffs
-                    mean = product.mean(dim=(0,1))
+                    # grad_diffs = grads_flattened.unsqueeze(0) - grads_flattened.unsqueeze(1)
+                    
+                    if simulator.use_mse_gradient:
+                        #compute VJP with MSE gradient
+                        rdf_batch = rdfs[start:end]
+                        gradient_estimator = (grads_flattened.mean(0).unsqueeze(0)*rdf_batch.mean(0).unsqueeze(-1) - grads_flattened.unsqueeze(1) * rdf_batch.unsqueeze(-1)).mean(dim=0)
+                        grad_outputs = 2*(mean_rdf - gt_rdf).unsqueeze(0) #MSE Loss
+                        final_vjp = torch.mm(grad_outputs, gradient_estimator)[0]
+                    else:
+                        #use loss directly
+                        rdf_loss_batch = rdf_loss_tensor[start:end].squeeze(-1)
+                        final_vjp = grads_flattened.mean(0)*rdf_loss_batch.mean(0) \
+                                            - (grads_flattened*rdf_loss_batch).mean(dim=0)
+
+                #     #product = rdf_loss_tensor[start:end] * grad_diffs
+                #     rdf_batch = rdfs[start:end]
+                #     product = rdf_batch.unsqueeze(1).unsqueeze(-1) *  grad_diffs.unsqueeze(2)
+                #     mean = product.mean(dim=(0,1))
+                    if not simulator.allow_off_policy_updates:
+                        raw_grads.append(final_vjp)
+                    else:
+                        #re-assemble flattened gradients into correct shape
+                        final_vjp = tuple([g.reshape(shape) for g, shape in zip(final_vjp.split(original_numel), original_shapes)])
+                        rdf_gradient_estimators.append(final_vjp)
+
+                if not simulator.allow_off_policy_updates:
+                    mean_vjps = torch.stack(raw_grads).mean(dim=0)
                     #re-assemble flattened gradients into correct shape
-                    gradient_estimator = tuple([g.reshape(shape) for g, shape in zip(mean.split(original_numel), original_shapes)])
-                    rdf_gradient_estimators.append(gradient_estimator)
-                #print_active_torch_tensors()
-                # energies = torch.cat(running_energy)
-                # np.save(os.path.join(simulator.save_dir, f'energies_{simulator.integrator}_{simulator.ic_stddev}.npy'), energies.cpu())
-                end_time = time.time()
+                    mean_vjps = tuple([g.reshape(shape) for g, shape in zip(mean_vjps.split(original_numel), original_shapes)])
+                    rdf_gradient_estimators.append(mean_vjps)
+
+                # end_time = time.time()
                 #print(f"gradient calculation time: {end_time-start_time} seconds")
                 rdf_package = (rdf_gradient_estimators, mean_rdf, rdf_loss(mean_rdf).to(simulator.device))
             
@@ -734,7 +753,7 @@ if __name__ == "__main__":
     diff_rdf = DifferentiableRDF(params, device)#, sample_frac = params.rdf_sample_frac)
     
     if params.nn:
-        results = 'results_nnip'
+        results = 'results_nnip_new'
         timestep = config['ift']["integrator_config"]["timestep"]
         ttime = config['ift']["integrator_config"]["ttime"]
         results_dir = os.path.join(results, f"IMPLICIT_{molecule}_{params.exp_name}")
@@ -767,6 +786,7 @@ if __name__ == "__main__":
     grad_times = []
     sim_times = []
     grad_norms = []
+    lrs = []
     best_outer_loss = 100
     if params.nn:
         writer = SummaryWriter(log_dir = results_dir)
@@ -830,11 +850,16 @@ if __name__ == "__main__":
             
             #manual SGD for now
             for rdf_grads, vacf_grads in zip(rdf_grad_batches, vacf_grad_batches): #loop through minibatches
+                optimizer.zero_grad()
                 for param, rdf_grad, vacf_grad in zip(model.parameters(), rdf_grads, vacf_grads):
                     grad = params.rdf_loss_weight*rdf_grad + params.vacf_loss_weight*vacf_grad
                     param.grad = grad#for grad norm tracking
-                    param.data -= optimizer.param_groups[0]['lr']*grad
-
+                    if params.optimizer == 'SGD':
+                        param.data -= optimizer.param_groups[0]['lr']*grad
+                if params.optimizer == 'Adam':
+                    optimizer.step()
+                    
+            
         end = time.time()
         sim_time = end - start
 
@@ -872,7 +897,7 @@ if __name__ == "__main__":
             except AttributeError:
                 print("Max norm: ", max_norm)
 
-            #optimizer.step()
+            
             scheduler.step(outer_loss)
             #log stats
             losses.append(outer_loss.item())
@@ -880,6 +905,7 @@ if __name__ == "__main__":
             #diffusion_losses.append((diffusion_loss.sqrt()/gt_diff_coeff).item())
             vacf_losses.append(vacf_loss.item())
             max_bond_len_devs.append(equilibriated_simulator.max_dev)
+            lrs.append(optimizer.param_groups[0]['lr'])
             #energy/force error
             print("Logging energy/force error")
             energy_rmse, force_rmse = simulator.energy_force_error(params.test_batch_size)
@@ -898,6 +924,7 @@ if __name__ == "__main__":
             #writer.add_scalar('Relative Diffusion Loss', diffusion_losses[-1], global_step=epoch+1)
             writer.add_scalar('VACF Loss', vacf_losses[-1], global_step=epoch+1)
             writer.add_scalar('Max Bond Length Deviation', max_bond_len_devs[-1], global_step=epoch+1)
+            writer.add_scalar('Learning Rate', lrs[-1], global_step=epoch+1)
             writer.add_scalar('Energy RMSE', energy_rmses[-1], global_step=epoch+1)
             writer.add_scalar('Force RMSE', force_rmses[-1], global_step=epoch+1)
             writer.add_scalar('Simulation Time', sim_times[-1], global_step=epoch+1)
