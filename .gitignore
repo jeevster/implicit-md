@@ -1,6 +1,7 @@
 results/
 results_polylj/
 results_nnip/
+results_nnip_new/
 *.npy
 log.txt
 test.gsd

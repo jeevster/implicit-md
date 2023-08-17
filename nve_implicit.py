@@ -81,29 +81,29 @@ class ImplicitMDSimulator():
             self.device = "cpu"
 
     
-        self.name = config['dataset']['name']
-        self.molecule = config['dataset']['molecule']
-        self.size = config['dataset']['size']
-        self.model_type = config['dataset']['model']
+        self.name = config['name']
+        self.molecule = config['molecule']
+        self.size = config['size']
+        self.model_type = config['model']
 
         logging.info("Initializing MD simulation environment")
         self.config = config
-        self.data_dir = config['dataset']['src']
-        self.model_dir = os.path.join(config['dataset']["model_dir"], self.model_type, f"{self.name}-{self.molecule}_{self.size}_{self.model_type}")
-        self.save_name = config['dataset']["save_name"]
+        self.data_dir = config['src']
+        self.model_dir = os.path.join(config["model_dir"], self.model_type, f"{self.name}-{self.molecule}_{self.size}_{self.model_type}")
+        self.save_name = config["save_name"]
         self.train = config['mode'] == 'train'
-        self.n_replicas = config["ift"]["n_replicas"]
-        self.minibatch_size = config["ift"]['minibatch_size']
-        self.allow_off_policy_updates = config["ift"]['allow_off_policy_updates']
-        self.shuffle = config["ift"]['shuffle']
-        self.vacf_window = config["ift"]["vacf_window"]
-        self.no_ift = config["ift"]["no_ift"]
-        self.optimizer = config["ift"]["optimizer"]
-        self.use_mse_gradient = config["ift"]["use_mse_gradient"]
+        self.n_replicas = config["n_replicas"]
+        self.minibatch_size = config['minibatch_size']
+        self.allow_off_policy_updates = config['allow_off_policy_updates']
+        self.shuffle = config['shuffle']
+        self.vacf_window = config["vacf_window"]
+        self.no_ift = config["no_ift"]
+        self.optimizer = config["optimizer"]
+        self.use_mse_gradient = config["use_mse_gradient"]
 
         #initialize datasets
         self.train_dataset = LmdbDataset({'src': os.path.join(self.data_dir, self.name, self.molecule, self.size, 'train')})
-        self.valid_dataset = LmdbDataset({'src': os.path.join(config['dataset']['src'], self.name, self.molecule, self.size, 'val')})
+        self.valid_dataset = LmdbDataset({'src': os.path.join(config['src'], self.name, self.molecule, self.size, 'val')})
 
         #get random initial condition from dataset
         length = self.train_dataset.__len__()
@@ -135,21 +135,21 @@ class ImplicitMDSimulator():
                     torch.FloatTensor([30., 30., 30.]).to(self.device)).mean(dim=0)
         
         #Nose-Hoover Thermostat stuff
-        self.dt = config["ift"]['integrator_config']["timestep"] * units.fs
-        self.temp = config["ift"]['integrator_config']["temperature"]
-        self.integrator = self.config['ift']["integrator"]
+        self.dt = config['integrator_config']["timestep"] * units.fs
+        self.temp = config['integrator_config']["temperature"]
+        self.integrator = self.config["integrator"]
         # adjust units.
         if self.integrator in ['NoseHoover', 'NoseHooverChain', 'Langevin']:
             self.temp *= units.kB
         self.targeEkin = 0.5 * (3.0 * self.n_atoms) * self.temp
-        self.ttime = config["ift"]["integrator_config"]["ttime"]
+        self.ttime = config["integrator_config"]["ttime"]
         self.Q = 3.0 * self.n_atoms * self.temp * (self.ttime * self.dt)**2
         self.zeta = torch.zeros((self.n_replicas, 1, 1)).to(self.device)
         self.masses = torch.Tensor(self.atoms.get_masses().reshape(1, -1, 1)).to(self.device)
 
 
         #Langevin thermostat stuff
-        self.gamma = config["ift"]["integrator_config"]["gamma"] / (1000*units.fs)
+        self.gamma = config["integrator_config"]["gamma"] / (1000*units.fs)
         self.noise_f = (2.0 * self.gamma/self.masses * self.temp * self.dt).sqrt().to(self.device)
 
         self.nsteps = params.steps
@@ -204,7 +204,6 @@ class ImplicitMDSimulator():
         
         os.makedirs(self.save_dir, exist_ok = True)
         dump_params_to_yml(self.params, self.save_dir)
-
         #File dump stuff
         self.f = open(f"{self.save_dir}/log.txt", "a+")
         self.t = gsd.hoomd.open(name=f'{self.save_dir}/sim_temp.gsd', mode='w') 
@@ -716,7 +715,7 @@ if __name__ == "__main__":
     parser = flags.get_parser()
     args, override_args = parser.parse_known_args()
     config = build_config(args, override_args)
-    params = types.SimpleNamespace(**config["ift"])
+    params = types.SimpleNamespace(**config)
 
     #Set random seeds
     np.random.seed(seed=params.seed)
@@ -730,20 +729,20 @@ if __name__ == "__main__":
         device = "cpu"
 
     #set up model
-    data_path = config['dataset']['src']
-    name = config['dataset']['name']
-    molecule = config['dataset']['molecule']
-    size = config['dataset']['size']
-    model_type = config['dataset']['model']
+    data_path = config['src']
+    name = config['name']
+    molecule = config['molecule']
+    size = config['size']
+    model_type = config['model']
     
     logging.info(f"Loading pretrained {model_type} model")
-    pretrained_model_path = os.path.join(config["dataset"]['model_dir'], model_type, f"{name}-{molecule}_{size}_{model_type}") 
+    pretrained_model_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{size}_{model_type}") 
 
     if model_type == "nequip":
         model, model_config = Trainer.load_model_from_training_session(pretrained_model_path, \
                         device =  torch.device(device))
     elif model_type == "schnet":
-        model, model_config = load_schnet_model(path = pretrained_model_path, ckpt_epoch = config["dataset"]['checkpoint_epoch'], device = torch.device(device))
+        model, model_config = load_schnet_model(path = pretrained_model_path, ckpt_epoch = config['checkpoint_epoch'], device = torch.device(device))
     #count number of trainable params
     model_parameters = filter(lambda p: p.requires_grad, model.parameters())
     num_params = sum([np.prod(p.size()) for p in model_parameters])
@@ -754,8 +753,8 @@ if __name__ == "__main__":
     
     if params.nn:
         results = 'results_nnip_new'
-        timestep = config['ift']["integrator_config"]["timestep"]
-        ttime = config['ift']["integrator_config"]["ttime"]
+        timestep = config["integrator_config"]["timestep"]
+        ttime = config["integrator_config"]["ttime"]
         results_dir = os.path.join(results, f"IMPLICIT_{molecule}_{params.exp_name}")
         os.makedirs(results_dir, exist_ok = True)
     # #load ground truth rdf and VACF

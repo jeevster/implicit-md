@@ -463,10 +463,13 @@ def create_dict_from_args(args: list, sep: str = "."):
     return_dict = {}
     for arg in args:
         arg = arg.strip("--")
-        keys_concat, val = arg.split("=")
-        val = parse_value(val)
-        key_sequence = keys_concat.split(sep)
-        dict_set_recursively(return_dict, key_sequence, val)
+        try:
+            keys_concat, val = arg.split("=")
+            val = parse_value(val)
+            key_sequence = keys_concat.split(sep)
+            dict_set_recursively(return_dict, key_sequence, val)
+        except:
+            pass
     return return_dict
 
 
@@ -530,12 +533,11 @@ def build_config(args, args_override):
     if args_override != []:
         overrides = create_dict_from_args(args_override)
         config, _ = merge_dicts(config, overrides)
-    
     if args.molecule is not None:
-        assert config['dataset']['name'] == 'md17', 'only MD17 datasets admit specification of the molecule.'
-        config['dataset']['molecule'] = args.molecule
+        assert config['name'] == 'md17', 'only MD17 datasets admit specification of the molecule.'
+        config['molecule'] = args.molecule
     if args.size is not None:
-        config['dataset']['size'] = args.size
+        config['size'] = args.size
         
     # Some other flags.
     config["mode"] = args.mode
