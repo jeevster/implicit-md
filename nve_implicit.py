@@ -100,6 +100,7 @@ class ImplicitMDSimulator():
         self.no_ift = config["no_ift"]
         self.optimizer = config["optimizer"]
         self.use_mse_gradient = config["use_mse_gradient"]
+        self.bond_dev_tol = config["bond_dev_tol"]
 
         #initialize datasets
         self.train_dataset = LmdbDataset({'src': os.path.join(self.data_dir, self.name, self.molecule, self.size, 'train')})
@@ -246,9 +247,16 @@ class ImplicitMDSimulator():
             self.register_parameter(name, None)
         return last_radii, last_velocities
 
-    def reset(self, radii, velocities):
-        self.radii = nn.Parameter(radii.detach_().clone(), requires_grad=True).to(self.device)
-        self.velocities = nn.Parameter(velocities.detach_().clone(), requires_grad=True).to(self.device)
+    def resume(self):
+        #reset replicas which exceeded the max bond dev criteria
+        reset_replicas = self.max_bond_dev_per_replica > self.bond_dev_tol
+        exp_reset_replicas = (reset_replicas).unsqueeze(-1).unsqueeze(-1).expand_as(self.radii)
+        self.radii = torch.where(exp_reset_replicas, self.original_radii.detach().clone(), self.radii.detach().clone()).requires_grad_(True)
+        self.velocities = torch.where(exp_reset_replicas, self.original_velocities.detach().clone(), self.velocities.detach().clone()).requires_grad_(True)
+        self.zeta = torch.where(reset_replicas.unsqueeze(-1).unsqueeze(-1), 0, self.zeta.detach().clone()).requires_grad_(True)
+        num_resets = reset_replicas.count_nonzero().item()
+        return num_resets / self.n_replicas
+        
         # self.diff_coeff = nn.Parameter(torch.zeros((self.n_replicas,)), requires_grad=True).to(self.device)
         # self.vacf = nn.Parameter(torch.zeros((self.n_replicas,self.vacf_window)), requires_grad=True).to(self.device)
 
@@ -335,6 +343,8 @@ class ImplicitMDSimulator():
         self.running_radii = []
         self.running_noise = []
         self.running_energy = []
+        self.original_radii = self.radii
+        self.original_velocities = self.velocities
         #Initialize forces/potential of starting configuration
         with torch.enable_grad() if self.no_ift else torch.no_grad():
             self.step = -1
@@ -374,9 +384,11 @@ class ImplicitMDSimulator():
             self.forces = forces
 
             #compute bond length deviation
-            self.stacked_radii = torch.cat(self.running_radii)
-            bond_lens = distance_pbc(self.stacked_radii[:, self.bonds[:, 0]], self.stacked_radii[:, self.bonds[:, 1]], torch.FloatTensor([30., 30., 30.]).to(self.device))
-            self.max_dev = (bond_lens - self.mean_bond_lens).abs().max(dim=-1)[0].mean().detach()
+            self.stacked_radii = torch.stack(self.running_radii)
+            bond_lens = distance_pbc(self.stacked_radii[:, :, self.bonds[:, 0]], self.stacked_radii[:,:, self.bonds[:, 1]], torch.FloatTensor([30., 30., 30.]).to(self.device))
+            
+            self.max_bond_dev_per_replica = (bond_lens - self.mean_bond_lens).abs().max(dim=-1)[0].mean(dim=0).detach()
+            self.max_dev = self.max_bond_dev_per_replica.mean()
             self.stacked_vels = torch.cat(self.running_vels)
          
             energies = torch.cat(self.running_energy)
@@ -786,6 +798,7 @@ if __name__ == "__main__":
     sim_times = []
     grad_norms = []
     lrs = []
+    resets = []
     best_outer_loss = 100
     if params.nn:
         writer = SummaryWriter(log_dir = results_dir)
@@ -808,9 +821,9 @@ if __name__ == "__main__":
             #initialize simulator parameterized by a NN model
             simulator = ImplicitMDSimulator(config, params, model, model_config)
             print(f"Initialize {simulator.n_replicas} random ICs in parallel")
+            num_resets = 0
         else: #continue from where we left off in the last epoch/batch
-            simulator.reset(last_radii, last_velocities)
-            simulator.zeta = equilibriated_simulator.zeta
+            num_resets = simulator.resume()
         simulator.epoch = epoch
 
         start = time.time()
@@ -904,6 +917,7 @@ if __name__ == "__main__":
             #diffusion_losses.append((diffusion_loss.sqrt()/gt_diff_coeff).item())
             vacf_losses.append(vacf_loss.item())
             max_bond_len_devs.append(equilibriated_simulator.max_dev)
+            resets.append(num_resets)
             lrs.append(optimizer.param_groups[0]['lr'])
             #energy/force error
             print("Logging energy/force error")
@@ -923,6 +937,7 @@ if __name__ == "__main__":
             #writer.add_scalar('Relative Diffusion Loss', diffusion_losses[-1], global_step=epoch+1)
             writer.add_scalar('VACF Loss', vacf_losses[-1], global_step=epoch+1)
             writer.add_scalar('Max Bond Length Deviation', max_bond_len_devs[-1], global_step=epoch+1)
+            writer.add_scalar('Fraction of Unstable Replicas', resets[-1], global_step=epoch+1)
             writer.add_scalar('Learning Rate', lrs[-1], global_step=epoch+1)
             writer.add_scalar('Energy RMSE', energy_rmses[-1], global_step=epoch+1)
             writer.add_scalar('Force RMSE', force_rmses[-1], global_step=epoch+1)
