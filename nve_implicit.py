@@ -512,17 +512,27 @@ class Stochastic_IFT(torch.autograd.Function):
             #get continuous trajectories (permute to make replica dimension come first)
             radii_traj = torch.stack(equilibriated_simulator.running_radii)
             stacked_radii = radii_traj[::simulator.n_dump] #take i.i.d samples for RDF loss
-            radii_traj = radii_traj.permute(1,0,2,3)
             velocities_traj = torch.stack(equilibriated_simulator.running_vels).permute(1,0,2,3)
-            accel_traj = torch.stack(equilibriated_simulator.running_accs).permute(1,0,2,3)
-            if simulator.integrator == "Langevin":
-                noise_traj = torch.stack(equilibriated_simulator.running_noise).permute(1,0,2,3)
+            vacfs = vmap(diff_vacf)(velocities_traj)
+            mean_vacf = vacfs.mean(dim = 0)
+            if simulator.vacf_loss_weight !=0:
+                radii_traj = radii_traj.permute(1,0,2,3)
+                accel_traj = torch.stack(equilibriated_simulator.running_accs).permute(1,0,2,3)
+                if simulator.integrator == "Langevin":
+                    noise_traj = torch.stack(equilibriated_simulator.running_noise).permute(1,0,2,3)
+                with torch.enable_grad():
+                    velocities_traj.requires_grad = True
+                    vacfs = vmap(diff_vacf)(velocities_traj)
+                    mean_vacf = vacfs.mean(dim = 0)
+                    mean_vacf_loss = vacf_loss(mean_vacf)
             
-            with torch.enable_grad():
-                velocities_traj.requires_grad = True
-                vacfs = vmap(diff_vacf)(velocities_traj)
-                mean_vacf = vacfs.mean(dim = 0)
-                mean_vacf_loss = vacf_loss(mean_vacf)
+            else:
+                del radii_traj
+                del velocities_traj
+                del simulator.running_radii
+                del simulator.running_accs
+                del simulator.running_noise
+                del simulator.running_vels
                 
             
             if params.vacf_loss_weight == 0:
@@ -691,7 +701,7 @@ class Stochastic_IFT(torch.autograd.Function):
                         #compute VJP with MSE gradient
                         rdf_batch = rdfs[start:end]
                         gradient_estimator = (grads_flattened.mean(0).unsqueeze(0)*rdf_batch.mean(0).unsqueeze(-1) - grads_flattened.unsqueeze(1) * rdf_batch.unsqueeze(-1)).mean(dim=0)
-                        grad_outputs = 2*(mean_rdf - gt_rdf).unsqueeze(0) #MSE Loss
+                        grad_outputs = 2*(mean_rdf - gt_rdf).unsqueeze(0) #MSE  gradient
                         final_vjp = torch.mm(grad_outputs, gradient_estimator)[0]
                     else:
                         #use loss directly

@@ -39,7 +39,7 @@ use_mse_gradient: True
 test_batch_size: 1000
 shuffle: True
 optimizer: SGD
-restart_probability: 0.0
+restart_probability: 1.0
 n_epochs: 100
 lr: 0.001
 diameter_viz: 0.08
