@@ -95,12 +95,15 @@ class ImplicitMDSimulator():
         self.n_replicas = config["n_replicas"]
         self.minibatch_size = config['minibatch_size']
         self.allow_off_policy_updates = config['allow_off_policy_updates']
+        self.gradient_clipping = config["gradient_clipping"]
         self.shuffle = config['shuffle']
+        self.restart_probability = config["restart_probability"]
         self.vacf_window = config["vacf_window"]
         self.no_ift = config["no_ift"]
         self.optimizer = config["optimizer"]
         self.use_mse_gradient = config["use_mse_gradient"]
         self.bond_dev_tol = config["bond_dev_tol"]
+        self.results_dir = config["results_dir"]
 
         #initialize datasets
         self.train_dataset = LmdbDataset({'src': os.path.join(self.data_dir, self.name, self.molecule, self.size, 'train')})
@@ -199,7 +202,7 @@ class ImplicitMDSimulator():
         # self.diffusion_coefficient = vmap(DiffusionCoefficient(params, self.device) , 1)
     
         if self.nn:
-            results = 'results_nnip'
+            results = self.results_dir
             name = f"{self.molecule}_{params.exp_name}" if self.no_ift else f"IMPLICIT_{self.molecule}_{params.exp_name}"
             self.save_dir = os.path.join(results, name)
         
@@ -248,8 +251,11 @@ class ImplicitMDSimulator():
         return last_radii, last_velocities
 
     def resume(self):
+        
+        random_reset = torch.rand(size=(self.n_replicas,)).to(self.device) <= params.restart_probability
         #reset replicas which exceeded the max bond dev criteria
-        reset_replicas = self.max_bond_dev_per_replica > self.bond_dev_tol
+        stability_reset = self.max_bond_dev_per_replica > self.bond_dev_tol
+        reset_replicas = torch.logical_or(random_reset, stability_reset)
         exp_reset_replicas = (reset_replicas).unsqueeze(-1).unsqueeze(-1).expand_as(self.radii)
         self.radii = torch.where(exp_reset_replicas, self.original_radii.detach().clone(), self.radii.detach().clone()).requires_grad_(True)
         self.velocities = torch.where(exp_reset_replicas, self.original_velocities.detach().clone(), self.velocities.detach().clone()).requires_grad_(True)
@@ -565,7 +571,8 @@ class Stochastic_IFT(torch.autograd.Function):
                     f_tp1 = get_forces(radii_traj[:, :, 1:].reshape(-1, simulator.n_atoms, 3)).reshape(v_t.shape)
                     a_tp1 = f_tp1/simulator.masses.unsqueeze(1).unsqueeze(1)
                     diff = (v_tp1 - v_t - a_tp1*simulator.dt + simulator.gamma*v_t*simulator.dt)
-                    om_action = diff**2 / simulator.noise_f.unsqueeze(1).unsqueeze(1) #this is exponentially distributed
+                    #pre-divide by auxiliary temperature (noise_f**2)
+                    om_action = diff**2 / (simulator.noise_f**2.unsqueeze(1).unsqueeze(1)) #this is exponentially distributed
                     #sum over euclidean dimensions, atoms, and vacf window: TODO: this ruins the exponential property
                     return (diff/simulator.noise_f.unsqueeze(1).unsqueeze(1)).detach(), om_action.sum((-3, -2, -1))
                 
@@ -576,6 +583,7 @@ class Stochastic_IFT(torch.autograd.Function):
                 diffs = []
                 om_acts = []
                 grads = []
+                quick_grads = []
                 
                 with torch.enable_grad():
                     velocities_traj = velocities_traj.detach().requires_grad_(True)
@@ -586,18 +594,30 @@ class Stochastic_IFT(torch.autograd.Function):
                         velocities = velocities_traj[start:end]
                         radii = radii_traj[start:end]
                         diff, om_act = om_action(velocities, radii)
+                        #noises = noise_traj[start:end].reshape(-1, simulator.vacf_window, simulator.n_atoms, 3)
+                        # with torch.enable_grad():
+                        #     forces = get_forces(radii.reshape(-1, simulator.n_atoms, 3)).reshape(-1, simulator.vacf_window, simulator.n_atoms, 3)
+                        
                         #make sure the diffs match the stored noises along the trajectory
                         assert(torch.allclose(diff, noise_traj[start:end, :, 1:], atol = 1e-3))
-                        def get_grads(v):
-                            return compute_grad(inputs = list(model.parameters()), output = om_act.flatten(), \
-                                    grad_outputs = v, retain_graph = True, create_graph = False, allow_unused = True)
-                        get_grads_vmaped = vmap(get_grads)
-                        I_N = torch.eye(om_act.flatten().shape[0]).to(simulator.device)
+                        
+                        #doesn't work because vmap detaches the force tensor before doing the vectorization
+                        def get_grads(forces_, noises_):
+                            return torch.autograd.grad(-1*forces_, list(model.parameters()), noises_, allow_unused = True)
+                       
+                        #loop over samples
+                        #VJP between df/dtheta and noise - thought this method would be faster but it's the same
+                        #verified that gradients match the OM action way
+                        # for i in tqdm(range(forces.shape[0])):
+                        #     grad = [simulator.process_gradient(g) for g in torch.autograd.grad(-1*forces[i], list(model.parameters()), 2*simulator.dt/simulator.masses* simulator.noise_f * noises[i], retain_graph = True, allow_unused = True)]
+                        #     quick_grads.append(grad)
+                        # I_N = torch.eye(om_act.flatten().shape[0]).to(simulator.device)
                         #the vmap leads to a seg fault for some reason
                         #grad = get_grads_vmaped(I_N)
                         #grad = [[simulator.process_gradient(g) for g in get_grads(v)] for v in I_N]
                         #this explicit loop is very slow though (10 seconds per iteration)
-                        grad = [[simulator.process_gradient(g) for g in torch.autograd.grad(o, model.parameters(), create_graph = False, retain_graph = True, allow_unused = True)] for o in om_act.flatten()]
+                        #OM-action method
+                        grad = [[simulator.process_gradient(g) for g in torch.autograd.grad(o, model.parameters(), create_graph = False, retain_graph = True, allow_unused = True)] for o in tqdm(om_act.flatten())]
                         
                         om_act = om_act.detach()
                         diffs.append(diff)
@@ -617,7 +637,6 @@ class Stochastic_IFT(torch.autograd.Function):
                 num_samples = len(grads)
 
                 vacf_grads_flattened = torch.stack([torch.cat([grads[i][j].flatten().detach() for j in range(num_params)]) for i in range(num_samples)])
-              
                 if simulator.shuffle:   
                     shuffle_idx = torch.randperm(vacf_grads_flattened.shape[0])
                     vacf_grads_flattened = vacf_grads_flattened[shuffle_idx]
@@ -639,7 +658,6 @@ class Stochastic_IFT(torch.autograd.Function):
                     end = vacf_minibatch_size*(i+1)
                     vacf_grads_batch = vacf_grads_flattened[start:end]
                     if simulator.use_mse_gradient:
-                        import pdb; pdb.set_trace()
                         #compute VJP with MSE gradient
                         vacf_batch = vacfs[start:end]
                         gradient_estimator = (vacf_grads_batch.mean(0).unsqueeze(0)*vacf_batch.mean(0).unsqueeze(-1) - vacf_grads_batch.unsqueeze(1) * vacf_batch.unsqueeze(-1)).mean(dim=0)
@@ -784,7 +802,7 @@ if __name__ == "__main__":
     diff_rdf = DifferentiableRDF(params, device)#, sample_frac = params.rdf_sample_frac)
     
     if params.nn:
-        results = 'results_nnip_new'
+        results = params.results_dir
         timestep = config["integrator_config"]["timestep"]
         ttime = config["integrator_config"]["ttime"]
         results_dir = os.path.join(results, f"IMPLICIT_{molecule}_{params.exp_name}")
@@ -800,7 +818,13 @@ if __name__ == "__main__":
     np.save(os.path.join(results_dir, 'gt_rdf.npy'), gt_rdf.cpu())
     np.save(os.path.join(results_dir, 'gt_vacf.npy'), gt_vacf.cpu())
     #initialize outer loop optimizer/scheduler
-    optimizer = torch.optim.Adam(list(model.parameters()), lr=params.lr)
+    if params.optimizer == 'Adam':
+        optimizer = torch.optim.Adam(list(model.parameters()), lr=params.lr)
+    elif params.optimizer == 'SGD':
+        optimizer = torch.optim.SGD(list(model.parameters()), lr=params.lr)
+    else:
+        raise RuntimeError("Optimizer must be either Adam or SGD")
+
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=10)
 
     if not params.nn:
@@ -833,11 +857,8 @@ if __name__ == "__main__":
         diffusion_loss = torch.Tensor([0]).to(device)
         best = False
         print(f"Epoch {epoch+1}")
-        restart= epoch==0 or (torch.rand(size=(1,)) <= params.restart_probability).item()
         
-        optimizer.zero_grad()
-
-        if restart: #draw IC from dataset
+        if epoch==0: #draw IC from dataset
             #initialize simulator parameterized by a NN model
             simulator = ImplicitMDSimulator(config, params, model, model_config)
             print(f"Initialize {simulator.n_replicas} random ICs in parallel")
@@ -880,16 +901,15 @@ if __name__ == "__main__":
             if vacf_grad_batches is None:
                 vacf_grad_batches = rdf_grad_batches
             
-            #manual SGD for now
+            #manual gradient updates for now
             for rdf_grads, vacf_grads in zip(rdf_grad_batches, vacf_grad_batches): #loop through minibatches
                 optimizer.zero_grad()
                 for param, rdf_grad, vacf_grad in zip(model.parameters(), rdf_grads, vacf_grads):
                     grad = params.rdf_loss_weight*rdf_grad + params.vacf_loss_weight*vacf_grad
-                    param.grad = grad#for grad norm tracking
-                    if params.optimizer == 'SGD':
-                        param.data -= optimizer.param_groups[0]['lr']*grad
-                if params.optimizer == 'Adam':
-                    optimizer.step()
+                    param.grad = grad
+                if params.gradient_clipping: #gradient clipping
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
                     
             
         end = time.time()

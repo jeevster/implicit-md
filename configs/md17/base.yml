@@ -10,8 +10,9 @@ name: md17
 size: 1k
 molecule: naphthalene
 normalize_labels: False
-checkpoint_epoch: 10 #which model to start from
+checkpoint_epoch: 500 #which model to start from
 model: schnet
+results_dir: 'results_nnip'
 model_dir: '/data/ishan-amin/MODELPATH/' #'/home/sanjeevr/MDsim/MODELPATH'
 save_name: 'nnip-ift'
 seed: 123
@@ -27,21 +28,22 @@ vacf_loss_weight: 1
 rdf_loss_weight: 0
 diffusion_window: 1000
 vacf_window: 100
-ic_stddev: 0.05
+ic_stddev: 0.0
+bond_dev_tol: 0.2
 eq_steps: 100
-steps: 1000
+steps: 400
 n_dump: 50
-n_replicas: 128
+n_replicas: 16
 minibatch_size: 80
-bond_dev_tol: 1.0
 allow_off_policy_updates: False
+gradient_clipping: True
 use_mse_gradient: True
 test_batch_size: 1000
 shuffle: True
 optimizer: SGD
-restart_probability: 1.0
-n_epochs: 100
-lr: 0.001
+restart_probability: 0.0
+n_epochs: 50
+lr: 0.0
 diameter_viz: 0.08
 save_intermediate_rdf: False
 nn: True
