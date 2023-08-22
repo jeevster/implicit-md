@@ -20,20 +20,20 @@ dr: 0.02
 max_rdf_dist: 10
 dv: 0.1
 no_ift: False
-exp_name: "TEST_dyn"
-integrator: Langevin
+exp_name: "TEST_resumestrategy0.5"
+integrator: NoseHoover
 integrator_config: {"timestep": 0.5, "temperature": 500., "ttime": 20., "gamma": 0.1} ##ttime is only used for NVT setup - it's not the total time
 diffusion_loss_weight: 0
-vacf_loss_weight: 1
-rdf_loss_weight: 0
+vacf_loss_weight: 0
+rdf_loss_weight: 1
 diffusion_window: 1000
 vacf_window: 100
 ic_stddev: 0.0
-bond_dev_tol: 0.2
+bond_dev_tol: 0.5
 eq_steps: 100
-steps: 400
-n_dump: 50
-n_replicas: 16
+steps: 2000 # 1 femtosecond
+n_dump: 500
+n_replicas: 128
 minibatch_size: 80
 allow_off_policy_updates: False
 gradient_clipping: True

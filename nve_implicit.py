@@ -259,7 +259,7 @@ class ImplicitMDSimulator():
         exp_reset_replicas = (reset_replicas).unsqueeze(-1).unsqueeze(-1).expand_as(self.radii)
         self.radii = torch.where(exp_reset_replicas, self.original_radii.detach().clone(), self.radii.detach().clone()).requires_grad_(True)
         self.velocities = torch.where(exp_reset_replicas, self.original_velocities.detach().clone(), self.velocities.detach().clone()).requires_grad_(True)
-        self.zeta = torch.where(reset_replicas.unsqueeze(-1).unsqueeze(-1), 0, self.zeta.detach().clone()).requires_grad_(True)
+        self.zeta = torch.where(reset_replicas.unsqueeze(-1).unsqueeze(-1), self.original_zeta.detach().clone(), self.zeta.detach().clone()).requires_grad_(True)
         num_resets = reset_replicas.count_nonzero().item()
         return num_resets / self.n_replicas
         
@@ -351,8 +351,9 @@ class ImplicitMDSimulator():
         self.running_radii = []
         self.running_noise = []
         self.running_energy = []
-        self.original_radii = self.radii
-        self.original_velocities = self.velocities
+        self.original_radii = self.radii.clone()
+        self.original_velocities = self.velocities.clone()
+        self.original_zeta = self.zeta.clone()
         #Initialize forces/potential of starting configuration
         with torch.enable_grad() if self.no_ift else torch.no_grad():
             self.step = -1
@@ -395,7 +396,8 @@ class ImplicitMDSimulator():
             self.stacked_radii = torch.stack(self.running_radii)
             bond_lens = distance_pbc(self.stacked_radii[:, :, self.bonds[:, 0]], self.stacked_radii[:,:, self.bonds[:, 1]], torch.FloatTensor([30., 30., 30.]).to(self.device))
             
-            self.max_bond_dev_per_replica = (bond_lens - self.mean_bond_lens).abs().max(dim=-1)[0].mean(dim=0).detach()
+            #max over bonds and timesteps
+            self.max_bond_dev_per_replica = (bond_lens - self.mean_bond_lens).abs().max(dim=-1)[0].max(dim=0)[0].detach()
             self.max_dev = self.max_bond_dev_per_replica.mean()
             self.stacked_vels = torch.cat(self.running_vels)
          
@@ -572,7 +574,7 @@ class Stochastic_IFT(torch.autograd.Function):
                     a_tp1 = f_tp1/simulator.masses.unsqueeze(1).unsqueeze(1)
                     diff = (v_tp1 - v_t - a_tp1*simulator.dt + simulator.gamma*v_t*simulator.dt)
                     #pre-divide by auxiliary temperature (noise_f**2)
-                    om_action = diff**2 / (simulator.noise_f**2.unsqueeze(1).unsqueeze(1)) #this is exponentially distributed
+                    om_action = diff**2 / (simulator.noise_f**2).unsqueeze(1).unsqueeze(1) #this is exponentially distributed
                     #sum over euclidean dimensions, atoms, and vacf window: TODO: this ruins the exponential property
                     return (diff/simulator.noise_f.unsqueeze(1).unsqueeze(1)).detach(), om_action.sum((-3, -2, -1))
                 
