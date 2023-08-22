@@ -202,15 +202,15 @@ def distance_pbc(x0, x1, lattices):
     return torch.sqrt((delta ** 2).sum(dim=-1))
 
 
-def atoms_to_state_dict(atoms, r_max, zeta):
+def atoms_to_state_dict(atoms, r_max):#, zeta):
     data = AtomicData.from_ase(atoms=atoms, r_max= r_max)
     for k in AtomicDataDict.ALL_ENERGY_KEYS:
         if k in data:
             del data[k]
     data = AtomicData.to_AtomicDataDict(data)
-    data = {k: v.numpy() for k, v in data.items()}
-    data['velocities'] = atoms.get_velocities()
-    data['zeta'] = np.expand_dims(np.array(zeta), -1)
+    #data = {k: v for k, v in data.items()}
+    #data['velocities'] = atoms.get_velocities()
+    #data['zeta'] = np.expand_dims(np.array(zeta), -1)
     return data
 
     

@@ -176,12 +176,23 @@ class ImplicitMDSimulator():
 
         #Register inner parameters
         samples = np.random.choice(np.arange(self.train_dataset.__len__()), self.n_replicas)
-        actual_atoms = [self.train_dataset.__getitem__(i) for i in samples]
-        radii = torch.stack([torch.Tensor(data_to_atoms(atoms).get_positions()) for atoms in actual_atoms])
+        actual_atoms = [data_to_atoms(self.train_dataset.__getitem__(i)) for i in samples]
+        radii = torch.stack([torch.Tensor(atoms.get_positions()) for atoms in actual_atoms])
         self.dummy_param = nn.Parameter(torch.Tensor([0.]))
         self.radii = (radii + torch.normal(torch.zeros_like(radii), self.ic_stddev)).to(self.device)
         self.velocities = torch.Tensor(initialize_velocities(self.n_atoms, self.masses, self.temp, self.n_replicas)).to(self.device)
-
+        if self.model_type == 'nequip':
+            #for some reason Nequip doesn't like accepting batches
+            self.atoms_batch = atoms_to_batch(actual_atoms, device = self.device)
+            self.atoms_batch['atom_types'] = self.atoms_batch['atomic_numbers'].to(torch.long)
+            self.atoms_batch['velocities'] = self.velocities
+            # atomic_dict = {}
+            # for k in self.atoms_batch.keys:
+            #     atomic_dict[k] = self.atoms_batch[k]
+            #need edge cell index/edge cell shift keys which are computed by atoms_to_state_dict
+            #but then still want to do it in batched fashion - (e.g not explicitly loop over batch dimension - how to do this?)
+            test = self.model(self.atoms_batch)
+        
         self.diameter_viz = params.diameter_viz
         
         self.nn = params.nn
@@ -274,8 +285,12 @@ class ImplicitMDSimulator():
         with torch.enable_grad():
             if not radii.requires_grad:
                     radii.requires_grad = True
-            energy = self.model(pos = radii.reshape(-1,3), z = atomic_numbers, batch = batch)
-
+            import pdb; pdb.set_trace()
+            if self.model_type == "nequip":
+                out = self.force_network(atoms)
+            else:
+                energy = self.model(pos = radii.reshape(-1,3), z = atomic_numbers, batch = batch)
+            
             forces = -compute_grad(inputs = radii, output = energy) if retain_grad else -compute_grad(inputs = radii, output = energy).detach()
             assert(not torch.any(torch.isnan(forces)))
             return energy, forces
@@ -791,6 +806,10 @@ if __name__ == "__main__":
     pretrained_model_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{size}_{model_type}") 
 
     if model_type == "nequip":
+        ckpt_epoch = config['checkpoint_epoch']
+        cname = 'best_ckpt.pt' if ckpt_epoch == -1 else f"ckpt{ckpt_epoch}.pt"
+        #ckpt_and_config_path = os.path.join(pretrained_model_path)
+        #only can read in the last checkpoint right now?
         model, model_config = Trainer.load_model_from_training_session(pretrained_model_path, \
                         device =  torch.device(device))
     elif model_type == "schnet":
