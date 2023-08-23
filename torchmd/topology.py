@@ -27,19 +27,13 @@ def generate_pair_index(N, index_tuple):
     return mask_sel
 
 
-def generate_nbr_list(xyz, cutoff, cell, index_tuple=None, ex_pairs=None, get_dis=False):
+def generate_nbr_list(xyz, cutoff, cell, mask_sel, ex_pairs=None, get_dis=False):
     
     # todo: topology should be a class to handle some initialization 
     device = xyz.device
 
     dis_mat = (xyz[..., None, :, :] - xyz[..., :, None, :])
-
-    if index_tuple is not None:
-        N = xyz.shape[-2] # the 2nd dim is the atoms dim
-
-        mask_sel = generate_pair_index(N, index_tuple).to(device)
-        # todo handle this calculation like a sparse tensor 
-        dis_mat =  dis_mat * mask_sel[..., None]
+    dis_mat =  dis_mat * mask_sel[..., None]
 
     if ex_pairs is not None:
 
@@ -74,8 +68,8 @@ def generate_nbr_list(xyz, cutoff, cell, index_tuple=None, ex_pairs=None, get_di
 
 def get_offsets(vecs, cell, device):
     
-    offsets = -vecs.ge(0.5 *  cell).to(torch.float).to(device) + \
-                vecs.lt(-0.5 *  cell).to(torch.float).to(device)
+    offsets = -vecs.ge(0.5 *  torch.diag(cell)).to(torch.float).to(device) + \
+                vecs.lt(-0.5 *  torch.diag(cell)).to(torch.float).to(device)
     
     return offsets
 

@@ -20,7 +20,24 @@ def generate_vol_bins(start, end, nbins, dim):
         
     return V, torch.Tensor(Vbins), bins
 
-'''Sanjeev's DiffRDF implementation - doesn't use system stuff'''
+
+def compute_angle(xyz, angle_list, cell, N):
+    
+    
+    device = xyz.device
+    xyz = xyz.reshape(-1, N, 3)
+    bond_vec1 = xyz[angle_list[:,0], angle_list[:,1]] - xyz[angle_list[:,0], angle_list[:, 2]]
+    bond_vec2 = xyz[angle_list[:,0], angle_list[:,3]] - xyz[angle_list[:,0], angle_list[:, 2]]
+    #issue here with shape of cell
+    bond_vec1 = bond_vec1 + get_offsets(bond_vec1, cell, device) * cell
+    bond_vec2 = bond_vec2 + get_offsets(bond_vec2, cell, device) * cell  
+    
+    angle_dot = (bond_vec1 * bond_vec2).sum(-1)
+    norm = ( bond_vec1.pow(2).sum(-1) * bond_vec2.pow(2).sum(-1) ).sqrt()
+    cos = angle_dot / norm
+    
+    return cos
+
 class DifferentiableRDF(torch.nn.Module):
     def __init__(self, params, device):
         super(DifferentiableRDF, self).__init__()
@@ -64,7 +81,53 @@ class DifferentiableRDF(torch.nn.Module):
         # return gr #to match with MD17 RDF computation
         return 100*count
 
-'''Sanjeev's differentiable velocity histogram implementation - doesn't use system stuff'''
+#differentiable angular distribution function
+class DifferentiableADF(torch.nn.Module):
+    def __init__(self, n_atoms, bonds, cell, params, device):
+        #nbins, angle_range, cutoff=3.0,index_tuple=None, width=None):
+        super(DifferentiableADF, self).__init__()
+        #GPU
+        self.device = device
+        self.n_atoms = n_atoms
+        self.bonds = bonds
+        #create bond mask
+        self.bonds_mask = torch.zeros(self.n_atoms, self.n_atoms).to(self.device)
+        self.bonds_mask[self.bonds[:, 0], self.bonds[:, 1]] = 1
+        self.bonds_mask[self.bonds[:, 1], self.bonds[:, 0]] = 1
+        start = params.angle_range[0]
+        end = params.angle_range[1]
+        self.nbins = 500
+        self.bins = torch.linspace(start, end, self.nbins + 1).to(self.device)
+        self.smear = GaussianSmearing(
+            start=start,
+            stop=self.bins[-1],
+            n_gaussians=self.nbins,
+            width=params.gaussian_width,
+            trainable=False
+        ).to(self.device)
+        self.width = (self.smear.width[0]).item()
+        self.cutoff = 3.0
+        self.cell = cell
+        
+    def forward(self, xyz):
+        xyz = xyz.reshape(-1, self.n_atoms, 3)
+
+        nbr_list, _ = generate_nbr_list(xyz, self.cutoff,
+                                           self.cell, 
+                                           self.bonds_mask, 
+                                           get_dis=False)
+        nbr_list = nbr_list.to("cpu")
+        
+        angle_list = generate_angle_list(nbr_list).to(self.device)
+        cos_angles = compute_angle(xyz, angle_list, self.cell, N=self.n_atoms)
+        import pdb; pdb.set_trace()
+        angles = cos_angles.acos()
+        count = self.smear(angles.reshape(-1).squeeze()[..., None]).sum(0) 
+        norm = count.sum()   # normalization factor for histogram 
+        count = count / (norm)  # normalize 
+        
+        return angles
+
 class DifferentiableVelHist(torch.nn.Module):
     def __init__(self, params, device):
         super(DifferentiableVelHist, self).__init__()
@@ -97,7 +160,6 @@ class DifferentiableVelHist(torch.nn.Module):
         velhist =  count# / (self.vol_bins / self.V )  
         return 100*velhist
 
-'''Sanjeev's differentiable VACF implementation - doesn't use system stuff'''
 class DifferentiableVACF(torch.nn.Module):
     def __init__(self, params, device):
         super(DifferentiableVACF, self).__init__()
@@ -135,7 +197,6 @@ def msd(positions, box):
     return msd
 
 
-'''Sanjeev's Diffusion Coefficient implementation - doesn't use system stuff'''
 class DiffusionCoefficient(torch.nn.Module):
     def __init__(self, params, device):
         super(DiffusionCoefficient, self).__init__()
@@ -157,3 +218,5 @@ class DiffusionCoefficient(torch.nn.Module):
 
         #Einstein relation
         return 1/6 * theta[0]
+
+

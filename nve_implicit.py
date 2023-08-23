@@ -21,7 +21,7 @@ import pdb
 import random
 from torchmd.interface import GNNPotentials, PairPotentials, Stack
 from torchmd.potentials import ExcludedVolume, LennardJones, LJFamily,  pairMLP
-from torchmd.observable import generate_vol_bins, DifferentiableRDF, DifferentiableVelHist, DifferentiableVACF, msd, DiffusionCoefficient
+from torchmd.observable import generate_vol_bins, DifferentiableRDF, DifferentiableADF, DifferentiableVelHist, DifferentiableVACF, msd, DiffusionCoefficient
 import torchopt
 from torchopt.nn import ImplicitMetaGradientModule
 from contextlib import nullcontext
@@ -85,6 +85,7 @@ class ImplicitMDSimulator():
         self.molecule = config['molecule']
         self.size = config['size']
         self.model_type = config['model']
+        self.all_unstable = False
 
         logging.info("Initializing MD simulation environment")
         self.config = config
@@ -103,6 +104,8 @@ class ImplicitMDSimulator():
         self.optimizer = config["optimizer"]
         self.use_mse_gradient = config["use_mse_gradient"]
         self.bond_dev_tol = config["bond_dev_tol"]
+        self.max_frac_unstable_threshold = config["max_frac_unstable_threshold"]
+        self.min_frac_unstable_threshold = config["min_frac_unstable_threshold"]
         self.results_dir = config["results_dir"]
 
         #initialize datasets
@@ -177,6 +180,7 @@ class ImplicitMDSimulator():
         #Register inner parameters
         samples = np.random.choice(np.arange(self.train_dataset.__len__()), self.n_replicas)
         actual_atoms = [data_to_atoms(self.train_dataset.__getitem__(i)) for i in samples]
+        self.cell = torch.Tensor(actual_atoms[0].cell).to(self.device)
         radii = torch.stack([torch.Tensor(atoms.get_positions()) for atoms in actual_atoms])
         self.dummy_param = nn.Parameter(torch.Tensor([0.]))
         self.radii = (radii + torch.normal(torch.zeros_like(radii), self.ic_stddev)).to(self.device)
@@ -195,7 +199,6 @@ class ImplicitMDSimulator():
         
         self.diameter_viz = params.diameter_viz
         
-        self.nn = params.nn
         self.save_intermediate_rdf = params.save_intermediate_rdf
         self.exp_name = params.exp_name
 
@@ -212,17 +215,16 @@ class ImplicitMDSimulator():
         # #vectorize over dim 1 (the input will be of shape [diffusion_window , n_replicas])
         # self.diffusion_coefficient = vmap(DiffusionCoefficient(params, self.device) , 1)
     
-        if self.nn:
-            results = self.results_dir
-            name = f"{self.molecule}_{params.exp_name}" if self.no_ift else f"IMPLICIT_{self.molecule}_{params.exp_name}"
-            self.save_dir = os.path.join(results, name)
+        results = self.results_dir
+        name = f"{self.molecule}_{params.exp_name}" if self.no_ift else f"IMPLICIT_{self.molecule}_{params.exp_name}"
+        self.save_dir = os.path.join(results, name)
         
         os.makedirs(self.save_dir, exist_ok = True)
         dump_params_to_yml(self.params, self.save_dir)
         #File dump stuff
         self.f = open(f"{self.save_dir}/log.txt", "a+")
         self.t = gsd.hoomd.open(name=f'{self.save_dir}/sim_temp.gsd', mode='w') 
-        self.n_dump = params.n_dump # dump for configuration
+        self.n_dump = 5000 #initialize to large value to save time when not learning
 
     '''compute energy/force error on held-out test set'''
     def energy_force_error(self, batch_size):
@@ -262,20 +264,28 @@ class ImplicitMDSimulator():
         return last_radii, last_velocities
 
     def resume(self):
-        
         random_reset = torch.rand(size=(self.n_replicas,)).to(self.device) <= params.restart_probability
         #reset replicas which exceeded the max bond dev criteria
         stability_reset = self.max_bond_dev_per_replica > self.bond_dev_tol
         reset_replicas = torch.logical_or(random_reset, stability_reset)
-        exp_reset_replicas = (reset_replicas).unsqueeze(-1).unsqueeze(-1).expand_as(self.radii)
-        self.radii = torch.where(exp_reset_replicas, self.original_radii.detach().clone(), self.radii.detach().clone()).requires_grad_(True)
-        self.velocities = torch.where(exp_reset_replicas, self.original_velocities.detach().clone(), self.velocities.detach().clone()).requires_grad_(True)
-        self.zeta = torch.where(reset_replicas.unsqueeze(-1).unsqueeze(-1), self.original_zeta.detach().clone(), self.zeta.detach().clone()).requires_grad_(True)
         num_resets = reset_replicas.count_nonzero().item()
-        return num_resets / self.n_replicas
+        if num_resets / self.n_replicas > self.max_frac_unstable_threshold: #threshold of unstable replicas reached
+            if not self.all_unstable:
+                logging.info("Threshold of unstable replicas has been reached... Start Learning")
+            self.all_unstable = True
         
-        # self.diff_coeff = nn.Parameter(torch.zeros((self.n_replicas,)), requires_grad=True).to(self.device)
-        # self.vacf = nn.Parameter(torch.zeros((self.n_replicas,self.vacf_window)), requires_grad=True).to(self.device)
+
+        if self.all_unstable: #reset all replicas to the initial values
+            self.radii = self.original_radii
+            self.velocities = self.original_velocities
+            self.zeta = self.original_zeta
+
+        else: #reset only the replicas which are unstable
+            exp_reset_replicas = (reset_replicas).unsqueeze(-1).unsqueeze(-1).expand_as(self.radii)
+            self.radii = torch.where(exp_reset_replicas, self.original_radii.detach().clone(), self.radii.detach().clone()).requires_grad_(True)
+            self.velocities = torch.where(exp_reset_replicas, self.original_velocities.detach().clone(), self.velocities.detach().clone()).requires_grad_(True)
+            self.zeta = torch.where(reset_replicas.unsqueeze(-1).unsqueeze(-1), self.original_zeta.detach().clone(), self.zeta.detach().clone()).requires_grad_(True)
+        return num_resets / self.n_replicas
 
     def force_calc(self, radii, atomic_numbers = None, batch = None, retain_grad = False):
         if atomic_numbers is None:
@@ -284,13 +294,9 @@ class ImplicitMDSimulator():
             batch = self.batch
         with torch.enable_grad():
             if not radii.requires_grad:
-                    radii.requires_grad = True
-            import pdb; pdb.set_trace()
-            if self.model_type == "nequip":
-                out = self.force_network(atoms)
-            else:
-                energy = self.model(pos = radii.reshape(-1,3), z = atomic_numbers, batch = batch)
+                radii.requires_grad = True
             
+            energy = self.model(pos = radii.reshape(-1,3), z = atomic_numbers, batch = batch)
             forces = -compute_grad(inputs = radii, output = energy) if retain_grad else -compute_grad(inputs = radii, output = energy).detach()
             assert(not torch.any(torch.isnan(forces)))
             return energy, forces
@@ -339,14 +345,11 @@ class ImplicitMDSimulator():
         
         #full step in position
         radii = radii.detach() + self.dt*velocities
-
         #calculate force at new position
         energy, forces = self.force_calc(radii, retain_grad=retain_grad)
-
         noise = torch.randn_like(velocities)
         #full step in velocities
         velocities = velocities + self.dt*(forces/self.masses - self.gamma * velocities) + self.noise_f * noise
-
         # # dump frames
         if self.step%self.n_dump == 0:
             print(self.step, self.calc_properties(energy), file=self.f)
@@ -369,6 +372,8 @@ class ImplicitMDSimulator():
         self.original_radii = self.radii.clone()
         self.original_velocities = self.velocities.clone()
         self.original_zeta = self.zeta.clone()
+        if self.all_unstable:
+            self.n_dump = self.params.n_dump #set to the true n_dump
         #Initialize forces/potential of starting configuration
         with torch.enable_grad() if self.no_ift else torch.no_grad():
             self.step = -1
@@ -519,9 +524,13 @@ class Stochastic_IFT(torch.autograd.Function):
             
             MINIBATCH_SIZE = simulator.minibatch_size #how many structures to include at a time (match rare events sampling paper for now)
             diff_rdf = DifferentiableRDF(params, simulator.device)
+            diff_adf = DifferentiableADF(simulator.n_atoms, simulator.bonds, simulator.cell, params, simulator.device)
             diff_vacf = DifferentiableVACF(params, simulator.device)
+            
             def rdf_loss(rdf):
                 return (rdf - gt_rdf).pow(2).mean()
+            def adf_loss(adf):
+                return (adf - gt_adf).pow(2).mean()
             def vacf_loss(vacf):    
                 return (vacf - gt_vacf).pow(2).mean()
 
@@ -537,6 +546,7 @@ class Stochastic_IFT(torch.autograd.Function):
             #get continuous trajectories (permute to make replica dimension come first)
             radii_traj = torch.stack(equilibriated_simulator.running_radii)
             stacked_radii = radii_traj[::simulator.n_dump] #take i.i.d samples for RDF loss
+            test_adf = diff_adf(stacked_radii[0])
             velocities_traj = torch.stack(equilibriated_simulator.running_vels).permute(1,0,2,3)
             #split into sub-trajectories of length = vacf_window
             velocities_traj = velocities_traj.reshape(velocities_traj.shape[0], -1, simulator.vacf_window, simulator.n_atoms, 3)
@@ -822,12 +832,12 @@ if __name__ == "__main__":
     # #initialize RDF calculator
     diff_rdf = DifferentiableRDF(params, device)#, sample_frac = params.rdf_sample_frac)
     
-    if params.nn:
-        results = params.results_dir
-        timestep = config["integrator_config"]["timestep"]
-        ttime = config["integrator_config"]["ttime"]
-        results_dir = os.path.join(results, f"IMPLICIT_{molecule}_{params.exp_name}")
-        os.makedirs(results_dir, exist_ok = True)
+    results = params.results_dir
+    timestep = config["integrator_config"]["timestep"]
+    ttime = config["integrator_config"]["ttime"]
+    results_dir = os.path.join(results, f"IMPLICIT_{molecule}_{params.exp_name}")
+    os.makedirs(results_dir, exist_ok = True)
+
     # #load ground truth rdf and VACF
     temp_size = '10k' if name == 'md17' else 'all'
     gt_rdf = torch.Tensor(find_hr_from_file(data_path, name, molecule, temp_size, params, device)).to(device)
@@ -840,17 +850,14 @@ if __name__ == "__main__":
     np.save(os.path.join(results_dir, 'gt_vacf.npy'), gt_vacf.cpu())
     #initialize outer loop optimizer/scheduler
     if params.optimizer == 'Adam':
-        optimizer = torch.optim.Adam(list(model.parameters()), lr=params.lr)
+        optimizer = torch.optim.Adam(list(model.parameters()), lr=0)
     elif params.optimizer == 'SGD':
-        optimizer = torch.optim.SGD(list(model.parameters()), lr=params.lr)
+        optimizer = torch.optim.SGD(list(model.parameters()), lr=0)
     else:
         raise RuntimeError("Optimizer must be either Adam or SGD")
-
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=10)
+    min_lr = params.lr / (5 * params.max_times_reduce_lr)
 
-    if not params.nn:
-        params.n_epochs = 1
-    
     #outer training loop
     losses = []
     rdf_losses = []
@@ -865,12 +872,12 @@ if __name__ == "__main__":
     lrs = []
     resets = []
     best_outer_loss = 100
-    if params.nn:
-        writer = SummaryWriter(log_dir = results_dir)
+    writer = SummaryWriter(log_dir = results_dir)
 
     #top level simulator
     top_level = Stochastic_IFT(params, device)
-    
+    changed_lr = False
+
     for epoch in range(params.n_epochs):
         rdf = torch.zeros_like(gt_rdf).to(device)
         rdf_loss = torch.Tensor([0]).to(device)
@@ -930,9 +937,24 @@ if __name__ == "__main__":
                     param.grad = grad
                 if params.gradient_clipping: #gradient clipping
                     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                optimizer.step()
-                    
+                if simulator.all_unstable and not changed_lr: #start learning
+                    optimizer.param_groups[0]['lr'] = params.lr
+                    changed_lr = True
+                if optimizer.param_groups[0]['lr'] > 0:
+                    optimizer.step()
             
+            if optimizer.param_groups[0]['lr'] < min_lr or (num_resets < params.min_frac_unstable_threshold and simulator.all_unstable):
+                logging.info(f"Back to data collection")
+                simulator.all_unstable = False
+                changed_lr = False
+                #reinitialize optimizer and scheduler with LR = 0
+                if params.optimizer == 'Adam':
+                    optimizer = torch.optim.Adam(list(model.parameters()), lr=0)
+                elif params.optimizer == 'SGD':
+                    optimizer = torch.optim.SGD(list(model.parameters()), lr=0)
+                scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=10)
+
+                    
         end = time.time()
         sim_time = end - start
 
@@ -945,81 +967,72 @@ if __name__ == "__main__":
         np.save(os.path.join(results_dir, filename), mean_vacf.cpu().detach().numpy())
         
         
-        if params.nn:
-            outer_loss = params.rdf_loss_weight*rdf_loss + diffusion_loss + params.vacf_loss_weight*vacf_loss
-            print(f"Loss: RDF={rdf_loss.item()}+Diffusion={diffusion_loss.item()}+VACF={vacf_loss.item()}={outer_loss.item()}")
+        outer_loss = params.rdf_loss_weight*rdf_loss + diffusion_loss + params.vacf_loss_weight*vacf_loss
+        print(f"Loss: RDF={rdf_loss.item()}+Diffusion={diffusion_loss.item()}+VACF={vacf_loss.item()}={outer_loss.item()}")
 
-            #checkpointing
-            if outer_loss < best_outer_loss:
-                best_outer_loss = outer_loss
-                best = True
-            simulator.save_checkpoint(best = best)
+        #checkpointing
+        if outer_loss < best_outer_loss:
+            best_outer_loss = outer_loss
+            best = True
+        simulator.save_checkpoint(best = best)
 
-            #equilibriated_simulator.cleanup()
+        #equilibriated_simulator.cleanup()
 
-            torch.cuda.empty_cache()
-            gc.collect()
-            max_norm = 0
-            for param in model.parameters():
-                if param.grad is not None:
-                    norm = torch.linalg.vector_norm(param.grad, dim=-1).max()
-                    if  norm > max_norm:
-                        max_norm = norm
-            try:
-                print("Max norm: ", max_norm.item())
-            except AttributeError:
-                print("Max norm: ", max_norm)
+        torch.cuda.empty_cache()
+        gc.collect()
+        max_norm = 0
+        for param in model.parameters():
+            if param.grad is not None:
+                norm = torch.linalg.vector_norm(param.grad, dim=-1).max()
+                if  norm > max_norm:
+                    max_norm = norm
+        
+        scheduler.step(outer_loss)
+        #log stats
+        losses.append(outer_loss.item())
+        rdf_losses.append(rdf_loss.item())
+        #diffusion_losses.append((diffusion_loss.sqrt()/gt_diff_coeff).item())
+        vacf_losses.append(vacf_loss.item())
+        max_bond_len_devs.append(equilibriated_simulator.max_dev)
+        resets.append(num_resets)
+        lrs.append(optimizer.param_groups[0]['lr'])
+        #energy/force error
+        energy_rmse, force_rmse = simulator.energy_force_error(params.test_batch_size)
+        energy_rmses.append(energy_rmse)
+        force_rmses.append(force_rmse)
 
-            
-            scheduler.step(outer_loss)
-            #log stats
-            losses.append(outer_loss.item())
-            rdf_losses.append(rdf_loss.item())
-            #diffusion_losses.append((diffusion_loss.sqrt()/gt_diff_coeff).item())
-            vacf_losses.append(vacf_loss.item())
-            max_bond_len_devs.append(equilibriated_simulator.max_dev)
-            resets.append(num_resets)
-            lrs.append(optimizer.param_groups[0]['lr'])
-            #energy/force error
-            print("Logging energy/force error")
-            energy_rmse, force_rmse = simulator.energy_force_error(params.test_batch_size)
-            energy_rmses.append(energy_rmse)
-            force_rmses.append(force_rmse)
+        sim_times.append(sim_time)
+        #grad_times.append(grad_time)
+        try:
+            grad_norms.append(max_norm.item())
+        except:
+            grad_norms.append(max_norm)
 
-            sim_times.append(sim_time)
-            #grad_times.append(grad_time)
-            try:
-                grad_norms.append(max_norm.item())
-            except:
-                grad_norms.append(max_norm)
-
-            writer.add_scalar('Loss', losses[-1], global_step=epoch+1)
-            writer.add_scalar('RDF Loss', rdf_losses[-1], global_step=epoch+1)
-            #writer.add_scalar('Relative Diffusion Loss', diffusion_losses[-1], global_step=epoch+1)
-            writer.add_scalar('VACF Loss', vacf_losses[-1], global_step=epoch+1)
-            writer.add_scalar('Max Bond Length Deviation', max_bond_len_devs[-1], global_step=epoch+1)
-            writer.add_scalar('Fraction of Unstable Replicas', resets[-1], global_step=epoch+1)
-            writer.add_scalar('Learning Rate', lrs[-1], global_step=epoch+1)
-            writer.add_scalar('Energy RMSE', energy_rmses[-1], global_step=epoch+1)
-            writer.add_scalar('Force RMSE', force_rmses[-1], global_step=epoch+1)
-            writer.add_scalar('Simulation Time', sim_times[-1], global_step=epoch+1)
-            #writer.add_scalar('Gradient Time', grad_times[-1], global_step=epoch+1)
-            writer.add_scalar('Gradient Norm', grad_norms[-1], global_step=epoch+1)
+        writer.add_scalar('Loss', losses[-1], global_step=epoch+1)
+        writer.add_scalar('RDF Loss', rdf_losses[-1], global_step=epoch+1)
+        #writer.add_scalar('Relative Diffusion Loss', diffusion_losses[-1], global_step=epoch+1)
+        writer.add_scalar('VACF Loss', vacf_losses[-1], global_step=epoch+1)
+        writer.add_scalar('Max Bond Length Deviation', max_bond_len_devs[-1], global_step=epoch+1)
+        writer.add_scalar('Fraction of Unstable Replicas', resets[-1], global_step=epoch+1)
+        writer.add_scalar('Learning Rate', lrs[-1], global_step=epoch+1)
+        writer.add_scalar('Energy RMSE', energy_rmses[-1], global_step=epoch+1)
+        writer.add_scalar('Force RMSE', force_rmses[-1], global_step=epoch+1)
+        writer.add_scalar('Simulation Time', sim_times[-1], global_step=epoch+1)
+        #writer.add_scalar('Gradient Time', grad_times[-1], global_step=epoch+1)
+        writer.add_scalar('Gradient Norm', grad_norms[-1], global_step=epoch+1)
         
     simulator.f.close()
     simulator.t.close()
     np.save(os.path.join(results_dir, 'gt_rdf.npy'), gt_rdf.cpu())
 
+    stats_write_file = os.path.join(simulator.save_dir, 'stats.txt')
+    with open(stats_write_file, "w") as output:
+        output.write("Losses: " + str(losses) + "\n")
+        output.write("Simulation times: " +  str(sim_times) + "\n")
+        output.write("Gradient calculation times: " +  str(grad_times) + "\n")
+        output.write("Max gradient norms: " + str(grad_norms))
 
-    if params.nn:
-        stats_write_file = os.path.join(simulator.save_dir, 'stats.txt')
-        with open(stats_write_file, "w") as output:
-            output.write("Losses: " + str(losses) + "\n")
-            output.write("Simulation times: " +  str(sim_times) + "\n")
-            output.write("Gradient calculation times: " +  str(grad_times) + "\n")
-            output.write("Max gradient norms: " + str(grad_norms))
-
-        writer.close()
+    writer.close()
     print('Done!')
     
 
