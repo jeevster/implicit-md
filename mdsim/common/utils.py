@@ -72,6 +72,13 @@ OFFSET_LIST = [
     [1, 1, 1],
 ]
 
+def convert_atomic_numbers_to_types(atomic_numbers):
+    unique_atomic_numbers = torch.unique(atomic_numbers)
+    atomic_number_to_type = {num.item(): idx for idx, num in enumerate(unique_atomic_numbers)}
+    
+    atomic_types = torch.tensor([atomic_number_to_type[num.item()] for num in atomic_numbers])
+    return atomic_types
+    
 def load_schnet_model(path = None, ckpt_epoch = -1, num_interactions = None, device = "cpu", from_pretrained=True):
     
     cname = 'best_checkpoint.pt' if ckpt_epoch == -1 else f"checkpoint{ckpt_epoch}.pt"

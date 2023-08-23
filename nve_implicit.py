@@ -41,6 +41,9 @@ warnings.filterwarnings("ignore")
 from ase import Atoms, units
 from ase.calculators.calculator import Calculator
 from nequip.ase.nequip_calculator import nequip_calculator
+from nequip.data import AtomicData, AtomicDataDict
+from nequip.utils.torch_geometric import Batch, Dataset
+
 
 from ase.calculators.singlepoint import SinglePointCalculator as sp
 from ase.md import MDLogger
@@ -50,7 +53,7 @@ from ase.neighborlist import natural_cutoffs, NeighborList
 
 import mdsim.md.integrator as md_integrator
 from mdsim.common.registry import registry
-from mdsim.common.utils import setup_imports, setup_logging, compute_bond_lengths, load_schnet_model, data_to_atoms, atoms_to_batch, atoms_to_state_dict
+from mdsim.common.utils import setup_imports, setup_logging, compute_bond_lengths, load_schnet_model, data_to_atoms, atoms_to_batch, atoms_to_state_dict, convert_atomic_numbers_to_types
 from mdsim.common.custom_radius_graph import detach_numpy
 from mdsim.datasets import data_list_collater
 from mdsim.datasets.lmdb_dataset import LmdbDataset, data_list_collater
@@ -186,16 +189,14 @@ class ImplicitMDSimulator():
         self.radii = (radii + torch.normal(torch.zeros_like(radii), self.ic_stddev)).to(self.device)
         self.velocities = torch.Tensor(initialize_velocities(self.n_atoms, self.masses, self.temp, self.n_replicas)).to(self.device)
         if self.model_type == 'nequip':
-            #for some reason Nequip doesn't like accepting batches
-            self.atoms_batch = atoms_to_batch(actual_atoms, device = self.device)
-            self.atoms_batch['atom_types'] = self.atoms_batch['atomic_numbers'].to(torch.long)
-            self.atoms_batch['velocities'] = self.velocities
-            # atomic_dict = {}
-            # for k in self.atoms_batch.keys:
-            #     atomic_dict[k] = self.atoms_batch[k]
-            #need edge cell index/edge cell shift keys which are computed by atoms_to_state_dict
-            #but then still want to do it in batched fashion - (e.g not explicitly loop over batch dimension - how to do this?)
-            test = self.model(self.atoms_batch)
+            actual_atoms = [AtomicData.from_ase(atoms=a, r_max= self.model_config["r_max"]) for a in actual_atoms]
+            self.atoms_batch = Batch.from_data_list(actual_atoms)
+            self.atoms_final = AtomicData.to_AtomicDataDict(self.atoms_batch)
+            self.atoms_final['atom_types'] = torch.Tensor(self.typeid).repeat(self.n_replicas).to(self.device).to(torch.long)
+            self.atoms_final['velocities'] = self.velocities
+            #move to GPU
+            self.atoms_final = {k: v.to(self.device) for k, v in self.atoms_final.items()}
+
         
         self.diameter_viz = params.diameter_viz
         
@@ -296,8 +297,13 @@ class ImplicitMDSimulator():
             if not radii.requires_grad:
                 radii.requires_grad = True
             
-            energy = self.model(pos = radii.reshape(-1,3), z = atomic_numbers, batch = batch)
-            forces = -compute_grad(inputs = radii, output = energy) if retain_grad else -compute_grad(inputs = radii, output = energy).detach()
+            if self.model_type == "schnet":
+                energy = self.model(pos = radii.reshape(-1,3), z = atomic_numbers, batch = batch)
+                forces = -compute_grad(inputs = radii, output = energy) if retain_grad else -compute_grad(inputs = radii, output = energy).detach()
+            elif self.model_type == "nequip":
+                atoms_updated = self.model(self.atoms_final)
+                energy = atoms_updated["total_energy"].detach()
+                forces = atoms_updated["forces"].reshape(-1, self.n_atoms, 3) if retain_grad else atoms_updated["forces"].reshape(-1, self.n_atoms, 3).detach()
             assert(not torch.any(torch.isnan(forces)))
             return energy, forces
 
@@ -316,6 +322,10 @@ class ImplicitMDSimulator():
         # make half a step in velocity
         velocities = velocities + 0.5 * self.dt * (accel - zeta * velocities)
 
+        if self.model_type == "nequip":
+            #TODO: have to update the positions and velocities and recompute the edge cell stuff here
+            #TODO: look at existing Nequip code for this, should be easy
+            pass
         # make a full step in accelerations
         energy, forces = self.force_calc(radii, retain_grad=retain_grad)
         accel = forces / self.masses
@@ -546,7 +556,7 @@ class Stochastic_IFT(torch.autograd.Function):
             #get continuous trajectories (permute to make replica dimension come first)
             radii_traj = torch.stack(equilibriated_simulator.running_radii)
             stacked_radii = radii_traj[::simulator.n_dump] #take i.i.d samples for RDF loss
-            test_adf = diff_adf(stacked_radii[0])
+            #test_adf = diff_adf(stacked_radii[0])
             velocities_traj = torch.stack(equilibriated_simulator.running_vels).permute(1,0,2,3)
             #split into sub-trajectories of length = vacf_window
             velocities_traj = velocities_traj.reshape(velocities_traj.shape[0], -1, simulator.vacf_window, simulator.n_atoms, 3)
@@ -943,9 +953,10 @@ if __name__ == "__main__":
                 if optimizer.param_groups[0]['lr'] > 0:
                     optimizer.step()
             
-            if optimizer.param_groups[0]['lr'] < min_lr or (num_resets < params.min_frac_unstable_threshold and simulator.all_unstable):
+            if optimizer.param_groups[0]['lr'] < min_lr or (num_resets <= params.min_frac_unstable_threshold and simulator.all_unstable):
                 logging.info(f"Back to data collection")
                 simulator.all_unstable = False
+                simulator.n_dump = 5000
                 changed_lr = False
                 #reinitialize optimizer and scheduler with LR = 0
                 if params.optimizer == 'Adam':
