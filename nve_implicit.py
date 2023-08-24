@@ -130,7 +130,9 @@ class ImplicitMDSimulator():
         type_to_index = {value: index for index, value in enumerate(self.atom_types_list)}
         self.typeid = np.zeros(self.n_atoms, dtype=int)
         for i, _type in enumerate(self.atom_types):
-            self.typeid[i] = type_to_index[_type]    
+            self.typeid[i] = type_to_index[_type]  
+        self.final_atom_types = torch.Tensor(self.typeid).repeat(self.n_replicas).to(self.device).to(torch.long)
+
 
         #bond length deviation
         DATAPATH = f'{self.data_dir}/{self.name}/{self.molecule}/{self.size}/test/nequip_npz.npz'
@@ -182,22 +184,18 @@ class ImplicitMDSimulator():
 
         #Register inner parameters
         samples = np.random.choice(np.arange(self.train_dataset.__len__()), self.n_replicas)
-        actual_atoms = [data_to_atoms(self.train_dataset.__getitem__(i)) for i in samples]
-        self.cell = torch.Tensor(actual_atoms[0].cell).to(self.device)
-        radii = torch.stack([torch.Tensor(atoms.get_positions()) for atoms in actual_atoms])
+        self.raw_atoms = [data_to_atoms(self.train_dataset.__getitem__(i)) for i in samples]
+        self.cell = torch.Tensor(self.raw_atoms[0].cell).to(self.device)
+        radii = torch.stack([torch.Tensor(atoms.get_positions()) for atoms in self.raw_atoms])
         self.dummy_param = nn.Parameter(torch.Tensor([0.]))
         self.radii = (radii + torch.normal(torch.zeros_like(radii), self.ic_stddev)).to(self.device)
         self.velocities = torch.Tensor(initialize_velocities(self.n_atoms, self.masses, self.temp, self.n_replicas)).to(self.device)
         if self.model_type == 'nequip':
-            actual_atoms = [AtomicData.from_ase(atoms=a, r_max= self.model_config["r_max"]) for a in actual_atoms]
-            self.atoms_batch = Batch.from_data_list(actual_atoms)
-            self.atoms_final = AtomicData.to_AtomicDataDict(self.atoms_batch)
-            self.atoms_final['atom_types'] = torch.Tensor(self.typeid).repeat(self.n_replicas).to(self.device).to(torch.long)
-            self.atoms_final['velocities'] = self.velocities
-            #move to GPU
-            self.atoms_final = {k: v.to(self.device) for k, v in self.atoms_final.items()}
+            #assign velocities to atoms
+            for i in range(len(self.raw_atoms)):
+                self.raw_atoms[i].set_velocities(self.velocities[i].cpu().numpy())
+            
 
-        
         self.diameter_viz = params.diameter_viz
         
         self.save_intermediate_rdf = params.save_intermediate_rdf
@@ -288,6 +286,13 @@ class ImplicitMDSimulator():
             self.zeta = torch.where(reset_replicas.unsqueeze(-1).unsqueeze(-1), self.original_zeta.detach().clone(), self.zeta.detach().clone()).requires_grad_(True)
         return num_resets / self.n_replicas
 
+    def nequip_batch_provider(self):
+        atoms_batch = [AtomicData.from_ase(atoms=a, r_max= self.model_config["r_max"]) for a in self.raw_atoms]
+        atoms_batch = AtomicData.to_AtomicDataDict(Batch.from_data_list(atoms_batch))
+        atoms_batch['atom_types'] = self.final_atom_types
+        atoms_batch = {k: v.to(self.device) for k, v in atoms_batch.items()}
+        return atoms_batch
+
     def force_calc(self, radii, atomic_numbers = None, batch = None, retain_grad = False):
         if atomic_numbers is None:
             atomic_numbers = self.atomic_numbers
@@ -301,9 +306,10 @@ class ImplicitMDSimulator():
                 energy = self.model(pos = radii.reshape(-1,3), z = atomic_numbers, batch = batch)
                 forces = -compute_grad(inputs = radii, output = energy) if retain_grad else -compute_grad(inputs = radii, output = energy).detach()
             elif self.model_type == "nequip":
-                atoms_updated = self.model(self.atoms_final)
-                energy = atoms_updated["total_energy"].detach()
-                forces = atoms_updated["forces"].reshape(-1, self.n_atoms, 3) if retain_grad else atoms_updated["forces"].reshape(-1, self.n_atoms, 3).detach()
+                atoms_batch = self.nequip_batch_provider()
+                atoms_updated = self.model(atoms_batch)
+                energy = atoms_updated[AtomicDataDict.TOTAL_ENERGY_KEY].detach()
+                forces = atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.n_atoms, 3) if retain_grad else atoms_updated["forces"].reshape(-1, self.n_atoms, 3).detach()
             assert(not torch.any(torch.isnan(forces)))
             return energy, forces
 
@@ -316,6 +322,7 @@ class ImplicitMDSimulator():
         radii = radii + velocities * self.dt + \
             (accel - zeta * velocities) * (0.5 * self.dt ** 2)
 
+
         # record current KE
         KE_0 = 1/2 * (self.masses*torch.square(velocities)).sum(axis = (1,2), keepdims=True)
         
@@ -323,9 +330,10 @@ class ImplicitMDSimulator():
         velocities = velocities + 0.5 * self.dt * (accel - zeta * velocities)
 
         if self.model_type == "nequip":
-            #TODO: have to update the positions and velocities and recompute the edge cell stuff here
-            #TODO: look at existing Nequip code for this, should be easy
-            pass
+            for i in range(len(self.raw_atoms)):
+                self.raw_atoms[i].set_positions(radii[i].cpu().numpy())
+                self.raw_atoms[i].set_velocities(velocities[i].cpu().numpy())
+
         # make a full step in accelerations
         energy, forces = self.force_calc(radii, retain_grad=retain_grad)
         accel = forces / self.masses
@@ -344,6 +352,10 @@ class ImplicitMDSimulator():
         velocities = (velocities + 0.5 * self.dt * accel) / \
             (1 + 0.5 * self.dt * zeta)
 
+        if self.model_type == "nequip":
+            for i in range(len(self.raw_atoms)):
+                self.raw_atoms[i].set_velocities(velocities[i].cpu().numpy())
+        
         # dump frames
         if self.step%self.n_dump == 0:
             print(self.step, self.calc_properties(energy), file=self.f)
