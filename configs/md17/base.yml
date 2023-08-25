@@ -1,16 +1,9 @@
-# trainer: trainer
-
-# logger: 
-#   log_to_wandb: False
-#   wandb_api_key: f7892f37dd96b5f1da5c85a410300bb661f3c4de
-#   project: nnip-rl-gail
-  
 src: /data/sanjeevr
 name: md17
 size: 1k
-molecule: benzene
+molecule: aspirin
 normalize_labels: False
-checkpoint_epoch: -1 #which model to start from
+checkpoint_epoch: 500 #which model to start from
 model: schnet
 results_dir: 'results_nnip'
 model_dir: '/data/ishan-amin/MODELPATH/' #'/home/sanjeevr/MDsim/MODELPATH'
@@ -21,17 +14,19 @@ max_rdf_dist: 10
 dv: 0.1
 angle_range: [0, 360]
 no_ift: False
-exp_name: "TEST_benzene_stability"
+exp_name: "TEST_resumestrategy0.25_learn_continuous"
 integrator: NoseHoover
-integrator_config: {"timestep": 0.5, "temperature": 500., "ttime": 20., "gamma": 0.1} ##ttime is only used for NVT setup - it's not the total time
+integrator_config: {"timestep": 0.5, "temperature": 500., "ttime": 20., "gamma": 0.1}
+train: False
+eval_model: post
 diffusion_loss_weight: 0
 vacf_loss_weight: 0
 rdf_loss_weight: 1
 diffusion_window: 1000
-vacf_window: 10
+vacf_window: 100
 ic_stddev: 0.0
-bond_dev_tol: 0.25 #decay this?
-max_frac_unstable_threshold: 0.75 #decay this?
+bond_dev_tol: 0.5 #decay this?
+max_frac_unstable_threshold: 1.0 #decay this?
 min_frac_unstable_threshold: 0.0 #increase this?
 eq_steps: 0
 steps: 2000 # 1 femtosecond per epoch
@@ -44,7 +39,7 @@ use_mse_gradient: True
 shuffle: True
 optimizer: SGD
 restart_probability: 0.0
-n_epochs: 100
+n_epochs: 1000
 lr: 0.001
 max_times_reduce_lr: 2 
 diameter_viz: 0.08

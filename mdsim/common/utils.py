@@ -79,11 +79,18 @@ def convert_atomic_numbers_to_types(atomic_numbers):
     atomic_types = torch.tensor([atomic_number_to_type[num.item()] for num in atomic_numbers])
     return atomic_types
     
-def load_schnet_model(path = None, ckpt_epoch = -1, num_interactions = None, device = "cpu", from_pretrained=True):
+def load_schnet_model(path = None, ckpt_epoch = -1, num_interactions = None, device = "cpu", from_pretrained=True, train = True):
     
-    cname = 'best_checkpoint.pt' if ckpt_epoch == -1 else f"checkpoint{ckpt_epoch}.pt"
-    ckpt_and_config_path = os.path.join(path, "checkpoints", cname)
-    schnet_config = torch.load(ckpt_and_config_path, map_location=torch.device("cpu"))["config"]
+    if train:
+        cname = 'best_checkpoint.pt' if ckpt_epoch == -1 else f"checkpoint{ckpt_epoch}.pt"
+        ckpt_and_config_path = os.path.join(path, "checkpoints", cname)
+        schnet_config = torch.load(ckpt_and_config_path, map_location=torch.device("cpu"))["config"]
+    else:
+        ckpt_and_config_path = os.path.join(path, "best_ckpt.pt")
+        #temp hardcoded path since we haven't been saving the model config
+        schnet_config = torch.load('/data/ishan-amin/MODELPATH/schnet/md17-ethanol_1k_schnet/checkpoints/best_checkpoint.pt', \
+                            map_location=torch.device("cpu"))["config"]
+    
     if num_interactions: #manual override
         schnet_config["model_attributes"]["num_interactions"] = num_interactions
     keep = list(schnet_config["model_attributes"].keys())[0:5]
