@@ -7,11 +7,11 @@
   
 src: /data/sanjeevr
 name: md17
-size: 10k
-molecule: aspirin
+size: 1k
+molecule: benzene
 normalize_labels: False
-checkpoint_epoch: 440 #which model to start from
-model: nequip
+checkpoint_epoch: -1 #which model to start from
+model: schnet
 results_dir: 'results_nnip'
 model_dir: '/data/ishan-amin/MODELPATH/' #'/home/sanjeevr/MDsim/MODELPATH'
 save_name: 'nnip-ift'
@@ -21,19 +21,19 @@ max_rdf_dist: 10
 dv: 0.1
 angle_range: [0, 360]
 no_ift: False
-exp_name: "TEST_nequip"
+exp_name: "TEST_benzene_stability"
 integrator: NoseHoover
 integrator_config: {"timestep": 0.5, "temperature": 500., "ttime": 20., "gamma": 0.1} ##ttime is only used for NVT setup - it's not the total time
 diffusion_loss_weight: 0
 vacf_loss_weight: 0
 rdf_loss_weight: 1
 diffusion_window: 1000
-vacf_window: 100
+vacf_window: 10
 ic_stddev: 0.0
 bond_dev_tol: 0.25 #decay this?
 max_frac_unstable_threshold: 0.75 #decay this?
 min_frac_unstable_threshold: 0.0 #increase this?
-eq_steps: 100
+eq_steps: 0
 steps: 2000 # 1 femtosecond per epoch
 n_dump: 50
 n_replicas: 128
@@ -44,7 +44,7 @@ use_mse_gradient: True
 shuffle: True
 optimizer: SGD
 restart_probability: 0.0
-n_epochs: 1000
+n_epochs: 100
 lr: 0.001
 max_times_reduce_lr: 2 
 diameter_viz: 0.08

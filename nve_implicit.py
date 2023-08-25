@@ -287,6 +287,8 @@ class ImplicitMDSimulator():
         return num_resets / self.n_replicas
 
     def nequip_batch_provider(self):
+        #this line is the slow one because of computing the neighbor list in an explicit - can we vectorize over replicas?
+        #inference on a single replica is as fast as Forces are Not Enough: around 6-7 fps
         atoms_batch = [AtomicData.from_ase(atoms=a, r_max= self.model_config["r_max"]) for a in self.raw_atoms]
         atoms_batch = AtomicData.to_AtomicDataDict(Batch.from_data_list(atoms_batch))
         atoms_batch['atom_types'] = self.final_atom_types
@@ -451,7 +453,7 @@ class ImplicitMDSimulator():
     def save_checkpoint(self, best=False):
         name = "best_ckpt.pt" if best else "ckpt.pt"
         checkpoint_path = os.path.join(self.save_dir, name)
-        torch.save({'model_state': self.model.state_dict()}, checkpoint_path)
+        torch.save({'model_state': self.model.state_dict(), 'config': self.model_config}, checkpoint_path)
 
     def restore_checkpoint(self, best=False):
         name = "best_ckpt.pt" if best else "ckpt.pt"
