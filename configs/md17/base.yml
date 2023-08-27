@@ -3,7 +3,7 @@ name: md17
 size: 1k
 molecule: aspirin
 normalize_labels: False
-checkpoint_epoch: 500 #which model to start from
+checkpoint_epoch: -1 #which model to start from
 model: schnet
 results_dir: 'results_nnip'
 model_dir: '/data/ishan-amin/MODELPATH/' #'/home/sanjeevr/MDsim/MODELPATH'
@@ -29,7 +29,7 @@ bond_dev_tol: 0.5 #decay this?
 max_frac_unstable_threshold: 1.0 #decay this?
 min_frac_unstable_threshold: 0.0 #increase this?
 eq_steps: 0
-steps: 2000 # 1 femtosecond per epoch
+steps: 2000 # 1 picosecond per epoch
 n_dump: 50
 n_replicas: 128
 minibatch_size: 80
@@ -39,7 +39,7 @@ use_mse_gradient: True
 shuffle: True
 optimizer: SGD
 restart_probability: 0.0
-n_epochs: 1000
+n_epochs: 300 #corresponding to 300 ps
 lr: 0.001
 max_times_reduce_lr: 2 
 diameter_viz: 0.08

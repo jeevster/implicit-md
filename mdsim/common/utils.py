@@ -86,7 +86,8 @@ def load_schnet_model(path = None, ckpt_epoch = -1, num_interactions = None, dev
         ckpt_and_config_path = os.path.join(path, "checkpoints", cname)
         schnet_config = torch.load(ckpt_and_config_path, map_location=torch.device("cpu"))["config"]
     else:
-        ckpt_and_config_path = os.path.join(path, "best_ckpt.pt")
+        ckpt_and_config_path = os.path.join(path, "best_ckpt.pt") if \
+                os.path.exists(os.path.join(path, "best_ckpt.pt")) else os.path.join(path, "checkpoints", "best_checkpoint.pt")
         #temp hardcoded path since we haven't been saving the model config
         schnet_config = torch.load('/data/ishan-amin/MODELPATH/schnet/md17-ethanol_1k_schnet/checkpoints/best_checkpoint.pt', \
                             map_location=torch.device("cpu"))["config"]

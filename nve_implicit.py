@@ -243,7 +243,7 @@ class ImplicitMDSimulator():
         stability_reset = self.max_bond_dev_per_replica > self.bond_dev_tol
         reset_replicas = torch.logical_or(random_reset, stability_reset)
         num_resets = reset_replicas.count_nonzero().item()
-        if num_resets / self.n_replicas > self.max_frac_unstable_threshold: #threshold of unstable replicas reached
+        if num_resets / self.n_replicas >= self.max_frac_unstable_threshold: #threshold of unstable replicas reached
             if not self.all_unstable:
                 logging.info("Threshold of unstable replicas has been reached... Start Learning")
             self.all_unstable = True
@@ -809,6 +809,11 @@ if __name__ == "__main__":
     #load the correct checkpoint based on whether we're doing train or val
     if params.train or config["eval_model"] == 'pre': #load energies/forces trained model
         pretrained_model_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{size}_{model_type}") 
+    
+    elif 'k' in config["eval_model"]:#load energies/forces model trained on a different dataset size
+        new_size = config["eval_model"]
+        pretrained_model_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{new_size}_{model_type}") 
+
     else: #load observable-finetuned model
         pretrained_model_path = os.path.join(params.results_dir, f"IMPLICIT_{molecule}_{params.exp_name}")
 
@@ -826,7 +831,7 @@ if __name__ == "__main__":
     print(f"{num_params} trainable parameters in {model_type} model")
 
     # #initialize RDF calculator
-    diff_rdf = DifferentiableRDF(params, device)#, sample_frac = params.rdf_sample_frac)
+    diff_rdf = DifferentiableRDF(params, device)
 
     
     timestep = config["integrator_config"]["timestep"]
@@ -1007,8 +1012,9 @@ if __name__ == "__main__":
         except:
             grad_norms.append(max_norm)
 
-        if not params.train and num_resets <= params.min_frac_unstable_threshold and simulator.all_unstable:
-            exit
+        if simulator.all_unstable and not params.train:
+            #reached instability point, can stop
+            break
         writer.add_scalar('Loss', losses[-1], global_step=epoch+1)
         writer.add_scalar('RDF Loss', rdf_losses[-1], global_step=epoch+1)
         writer.add_scalar('VACF Loss', vacf_losses[-1], global_step=epoch+1)
