@@ -18,6 +18,7 @@ from tqdm import tqdm
 import pstats
 import pdb
 import random
+from torch_geometric.nn import MessagePassing, radius_graph
 from torchmd.interface import GNNPotentials, PairPotentials, Stack
 from torchmd.potentials import ExcludedVolume, LennardJones, LJFamily,  pairMLP
 from torchmd.observable import generate_vol_bins, DifferentiableRDF, DifferentiableADF, DifferentiableVelHist, DifferentiableVACF, msd, DiffusionCoefficient
@@ -39,6 +40,7 @@ from ase import Atoms, units
 from ase.calculators.calculator import Calculator
 from nequip.ase.nequip_calculator import nequip_calculator
 from nequip.data import AtomicData, AtomicDataDict
+from nequip.data.AtomicData import neighbor_list_and_relative_vec
 from nequip.utils.torch_geometric import Batch, Dataset
 from ase.calculators.singlepoint import SinglePointCalculator as sp
 from ase.md import MDLogger
@@ -186,6 +188,15 @@ class ImplicitMDSimulator():
             #assign velocities to atoms
             for i in range(len(self.raw_atoms)):
                 self.raw_atoms[i].set_velocities(self.velocities[i].cpu().numpy())
+            #create batch of atoms to be operated on
+            self.atoms_batch = [AtomicData.from_ase(atoms=a, r_max= self.model_config["r_max"]) for a in self.raw_atoms]
+            self.atoms_batch = AtomicData.to_AtomicDataDict(Batch.from_data_list(self.atoms_batch))
+            self.atoms_batch['atom_types'] = self.final_atom_types
+            self.atoms_batch = {k: v.to(self.device) for k, v in self.atoms_batch.items()}
+            # import pdb; pdb.set_trace()
+            # del self.atoms_batch['cell']
+            # del self.atoms_batch['pbc']
+            # del self.atoms_batch['edge_cell_shift']
             
         self.diameter_viz = params.diameter_viz
         self.save_intermediate_rdf = params.save_intermediate_rdf
@@ -208,7 +219,7 @@ class ImplicitMDSimulator():
         #File dump stuff
         self.f = open(f"{self.save_dir}/log.txt", "a+")
         self.t = gsd.hoomd.open(name=f'{self.save_dir}/sim_temp.gsd', mode='w') 
-        self.n_dump = 5000 #initialize to large value to save time when not learning
+        self.n_dump = 10 #initialize to large value to save time when not learning
 
     '''compute energy/force error on held-out test set'''
     def energy_force_error(self, batch_size):
@@ -263,14 +274,6 @@ class ImplicitMDSimulator():
                 self.stable_time = torch.where(reset_replicas, self.stable_time, self.stable_time + self.ps_per_epoch)
         return num_resets / self.n_replicas
 
-    def nequip_batch_provider(self):
-        #this line is the slow one because of computing the neighbor list in an explicit - can we vectorize over replicas?
-        #inference on a single replica is as fast as Forces are Not Enough: around 6-7 fps
-        atoms_batch = [AtomicData.from_ase(atoms=a, r_max= self.model_config["r_max"]) for a in self.raw_atoms]
-        atoms_batch = AtomicData.to_AtomicDataDict(Batch.from_data_list(atoms_batch))
-        atoms_batch['atom_types'] = self.final_atom_types
-        atoms_batch = {k: v.to(self.device) for k, v in atoms_batch.items()}
-        return atoms_batch
 
     def force_calc(self, radii, atomic_numbers = None, batch = None, retain_grad = False):
         if atomic_numbers is None:
@@ -285,8 +288,9 @@ class ImplicitMDSimulator():
                 energy = self.model(pos = radii.reshape(-1,3), z = atomic_numbers, batch = batch)
                 forces = -compute_grad(inputs = radii, output = energy) if retain_grad else -compute_grad(inputs = radii, output = energy).detach()
             elif self.model_type == "nequip":
-                atoms_batch = self.nequip_batch_provider()
-                atoms_updated = self.model(atoms_batch)
+                self.atoms_batch['edge_index'] = radius_graph(radii.reshape(-1, 3), r=self.model_config["r_max"], batch=self.batch, max_num_neighbors=32)
+                self.atoms_batch['edge_cell_shift'] = torch.zeros((self.atoms_batch['edge_index'].shape[1], 3)).to(self.device)
+                atoms_updated = self.model(self.atoms_batch)
                 energy = atoms_updated[AtomicDataDict.TOTAL_ENERGY_KEY].detach()
                 forces = atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.n_atoms, 3) if retain_grad else atoms_updated["forces"].reshape(-1, self.n_atoms, 3).detach()
             assert(not torch.any(torch.isnan(forces)))
@@ -308,9 +312,9 @@ class ImplicitMDSimulator():
         velocities = velocities + 0.5 * self.dt * (accel - zeta * velocities)
 
         if self.model_type == "nequip":
-            for i in range(len(self.raw_atoms)):
-                self.raw_atoms[i].set_positions(radii[i].cpu().numpy())
-                self.raw_atoms[i].set_velocities(velocities[i].cpu().numpy())
+            self.atoms_batch['pos'] = radii.reshape(-1, 3)
+            self.atoms_batch['velocities'] = velocities.reshape(-1, 3)
+
 
         # make a full step in accelerations
         energy, forces = self.force_calc(radii, retain_grad=retain_grad)
@@ -331,8 +335,7 @@ class ImplicitMDSimulator():
             (1 + 0.5 * self.dt * zeta)
 
         if self.model_type == "nequip":
-            for i in range(len(self.raw_atoms)):
-                self.raw_atoms[i].set_velocities(velocities[i].cpu().numpy())
+            self.atoms_batch['velocities'] = velocities.reshape(-1, 3)
         
         # dump frames
         if self.step%self.n_dump == 0:
@@ -420,6 +423,8 @@ class ImplicitMDSimulator():
             self.max_dev = self.max_bond_dev_per_replica.mean()
             self.stacked_vels = torch.cat(self.running_vels)
         
+        self.f.close()
+        self.t.close()
         return self 
 
     def save_checkpoint(self, best=False):

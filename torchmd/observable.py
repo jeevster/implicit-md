@@ -22,8 +22,6 @@ def generate_vol_bins(start, end, nbins, dim):
 
 
 def compute_angle(xyz, angle_list, cell, N):
-    
-    
     device = xyz.device
     xyz = xyz.reshape(-1, N, 3)
     bond_vec1 = xyz[angle_list[:,0], angle_list[:,1]] - xyz[angle_list[:,0], angle_list[:, 2]]
