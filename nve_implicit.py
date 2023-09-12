@@ -219,7 +219,7 @@ class ImplicitMDSimulator():
         #File dump stuff
         self.f = open(f"{self.save_dir}/log.txt", "a+")
         self.t = gsd.hoomd.open(name=f'{self.save_dir}/sim_temp.gsd', mode='w') 
-        self.n_dump = 10 #initialize to large value to save time when not learning
+        self.n_dump = 5000 #initialize to large value to save time when not learning
 
     '''compute energy/force error on held-out test set'''
     def energy_force_error(self, batch_size):
@@ -233,7 +233,22 @@ class ImplicitMDSimulator():
                 actual_batch_size = min(end, self.gt_traj.shape[0]) - start        
                 atomic_numbers = torch.Tensor(self.atoms.get_atomic_numbers()).to(torch.long).to(self.device).repeat(actual_batch_size)
                 batch = torch.arange(actual_batch_size).repeat_interleave(self.n_atoms).to(self.device)
-                energy, force = self.force_calc(self.gt_traj[start:end], atomic_numbers, batch) 
+                if self.model_type == "schnet":
+                    energy, force = self.force_calc(self.gt_traj[start:end], atomic_numbers, batch)
+                elif self.model_type == "nequip":
+                    #placeholder, TODO: fix
+                    energy = torch.zeros((actual_batch_size,)).to(self.device)
+                    force = torch.zeros((actual_batch_size, self.n_atoms, 3)).to(self.device)
+                    #recompute neighbor list
+                    # self.atoms_batch['edge_index'] = radius_graph(radii.reshape(-1, 3), r=self.model_config["r_max"], batch=batch, max_num_neighbors=32)
+                    # self.atoms_batch['edge_cell_shift'] = torch.zeros((self.atoms_batch['edge_index'].shape[1], 3)).to(self.device)
+                    # for k in AtomicDataDict.ALL_ENERGY_KEYS:
+                    #     if k in self.atoms_batch:
+                    #         del self.atoms_batch[k]
+                    # atoms_updated = self.model(self.atoms_batch)
+                    # energy = atoms_updated[AtomicDataDict.TOTAL_ENERGY_KEY].detach()
+                    # forces = atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.n_atoms, 3) if retain_grad else atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.n_atoms, 3).detach()
+
                 energies.append(energy.detach())
                 forces.append(force.detach())
             energies = torch.cat(energies)
@@ -254,7 +269,7 @@ class ImplicitMDSimulator():
         stability_reset = self.max_bond_dev_per_replica > self.bond_dev_tol
         reset_replicas = torch.logical_or(random_reset, stability_reset)
         num_resets = reset_replicas.count_nonzero().item()
-        if num_resets / self.n_replicas >= self.max_frac_unstable_threshold: #threshold of unstable replicas reached
+        if num_resets // self.n_replicas >= self.max_frac_unstable_threshold: #threshold of unstable replicas reached
             if not self.all_unstable:
                 logging.info("Threshold of unstable replicas has been reached... Start Learning")
             self.all_unstable = True
@@ -288,11 +303,17 @@ class ImplicitMDSimulator():
                 energy = self.model(pos = radii.reshape(-1,3), z = atomic_numbers, batch = batch)
                 forces = -compute_grad(inputs = radii, output = energy) if retain_grad else -compute_grad(inputs = radii, output = energy).detach()
             elif self.model_type == "nequip":
-                self.atoms_batch['edge_index'] = radius_graph(radii.reshape(-1, 3), r=self.model_config["r_max"], batch=self.batch, max_num_neighbors=32)
+                #assign radii
+                self.atoms_batch['pos'] = radii.reshape(-1, 3)
+                #recompute neighbor list
+                self.atoms_batch['edge_index'] = radius_graph(radii.reshape(-1, 3), r=self.model_config["r_max"], batch=batch, max_num_neighbors=32)
                 self.atoms_batch['edge_cell_shift'] = torch.zeros((self.atoms_batch['edge_index'].shape[1], 3)).to(self.device)
+                for k in AtomicDataDict.ALL_ENERGY_KEYS:
+                    if k in self.atoms_batch:
+                        del self.atoms_batch[k]
                 atoms_updated = self.model(self.atoms_batch)
                 energy = atoms_updated[AtomicDataDict.TOTAL_ENERGY_KEY].detach()
-                forces = atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.n_atoms, 3) if retain_grad else atoms_updated["forces"].reshape(-1, self.n_atoms, 3).detach()
+                forces = atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.n_atoms, 3) if retain_grad else atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.n_atoms, 3).detach()
             assert(not torch.any(torch.isnan(forces)))
             return energy, forces
 
@@ -423,15 +444,17 @@ class ImplicitMDSimulator():
             self.max_dev = self.max_bond_dev_per_replica.mean()
             self.stacked_vels = torch.cat(self.running_vels)
         
-        self.f.close()
-        self.t.close()
+        # self.f.close()
+        # self.t.close()
         return self 
 
     def save_checkpoint(self, best=False):
         name = "best_ckpt.pt" if best else "ckpt.pt"
         checkpoint_path = os.path.join(self.save_dir, name)
-        torch.save({'model_state': self.model.state_dict(), 'config': self.model_config}, checkpoint_path)
-
+        try:
+            torch.save({'model_state': self.model.state_dict(), 'config': self.model_config}, checkpoint_path)
+        except:
+            pass
     def restore_checkpoint(self, best=False):
         name = "best_ckpt.pt" if best else "ckpt.pt"
         checkpoint_path = os.path.join(self.save_dir, name)
@@ -536,6 +559,7 @@ class Stochastic_IFT(torch.autograd.Function):
             print('Collect MD Simulation Data')
             equilibriated_simulator = simulator.solve()
             ctx.save_for_backward(equilibriated_simulator)
+            num_resets = simulator.resume() #reset stuff based on stability
             
             model = equilibriated_simulator.model
             #store original shapes of model parameters
@@ -584,10 +608,22 @@ class Stochastic_IFT(torch.autograd.Function):
                     batch_size = radii.shape[0]
                     batch = torch.arange(batch_size).repeat_interleave(simulator.n_atoms).to(simulator.device)
                     atomic_numbers = torch.Tensor(simulator.atoms.get_atomic_numbers()).to(torch.long).to(simulator.device).repeat(batch_size)
-                    energy = model(pos = radii.reshape(-1,3), z = atomic_numbers, batch = batch)
-                    grad = compute_grad(inputs = radii, output = energy)
-                    assert(not grad.is_leaf)
-                    return -grad
+                    if simulator.model_type == "schnet":
+                        energy = model(pos = radii.reshape(-1,3), z = atomic_numbers, batch = batch)
+                        grad = compute_grad(inputs = radii, output = energy)
+                        assert(not grad.is_leaf)
+                        return -grad
+                    elif simulator.model_type == "nequip":
+                        #recompute neighbor list
+                        self.atoms_batch['edge_index'] = radius_graph(radii.reshape(-1, 3), r=self.model_config["r_max"], batch=batch, max_num_neighbors=32)
+                        self.atoms_batch['edge_cell_shift'] = torch.zeros((self.atoms_batch['edge_index'].shape[1], 3)).to(self.device)
+                        for k in AtomicDataDict.ALL_ENERGY_KEYS:
+                            if k in self.atoms_batch:
+                                del self.atoms_batch[k]
+                        atoms_updated = self.model(self.atoms_batch)
+                        energy = atoms_updated[AtomicDataDict.TOTAL_ENERGY_KEY].detach()
+                        forces = atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.n_atoms, 3) if retain_grad else atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.n_atoms, 3).detach()
+                        return forces
 
                 #define Onsager-Machlup Action ("energy" of each trajectory)
                 #TODO: make this a torch.nn.Module in observable.py
@@ -686,7 +722,7 @@ class Stochastic_IFT(torch.autograd.Function):
                         #compute VJP with MSE gradient
                         vacf_batch = vacfs[start:end]
                         gradient_estimator = (vacf_grads_batch.mean(0).unsqueeze(0)*vacf_batch.mean(0).unsqueeze(-1) - vacf_grads_batch.unsqueeze(1) * vacf_batch.unsqueeze(-1)).mean(dim=0)
-                        grad_outputs = 2*(mean_vacf - gt_vacf).unsqueeze(0) #MSE  gradient
+                        grad_outputs = 2*(mean_vacf - gt_vacf).unsqueeze(0) #MSE gradient
                         final_vjp = torch.mm(grad_outputs, gradient_estimator)[0]
                     else:
                         #use loss directly
@@ -711,6 +747,7 @@ class Stochastic_IFT(torch.autograd.Function):
             dists = vmap(r2d)(stacked_radii).reshape(1, -1, simulator.n_atoms, simulator.n_atoms-1, 1)
             rdfs = vmap(diff_rdf)(tuple(dists))
             mean_rdf = rdfs.mean(dim=0)
+            
             if params.rdf_loss_weight ==0 or not simulator.train or not simulator.all_unstable:
                 rdf_gradient_estimators = None
                 rdf_package = (rdf_gradient_estimators, mean_rdf, rdf_loss(mean_rdf).to(simulator.device))              
@@ -734,6 +771,7 @@ class Stochastic_IFT(torch.autograd.Function):
                 print(f"Computing RDF gradients from {stacked_radii.shape[0]} structures in minibatches of size {MINIBATCH_SIZE}")
                 
                 for i in tqdm(range(num_blocks)):
+                    temp_atoms_batch = simulator.atoms_batch
                     start = MINIBATCH_SIZE*i
                     end = MINIBATCH_SIZE*(i+1)
                     actual_batch_size = min(end, stacked_radii.shape[0]) - start
@@ -742,17 +780,29 @@ class Stochastic_IFT(torch.autograd.Function):
                     with torch.enable_grad():
                         radii_in = stacked_radii[start:end].reshape(-1, 3)
                         radii_in.requires_grad = True
-                        energy = model(pos = radii_in, z = atomic_numbers, batch = batch)
+                        if simulator.model_type == "schnet":
+                            energy = model(pos = radii_in, z = atomic_numbers, batch = batch)
+                        elif simulator.model_type == "nequip":
+                            #assign radii
+                            temp_atoms_batch['pos'] = radii_in
+                            temp_atoms_batch['batch'] = batch
+                            temp_atoms_batch['atom_types'] = torch.Tensor(simulator.typeid).repeat(actual_batch_size).to(simulator.device).to(torch.long)
+                            temp_atoms_batch['edge_index'] = radius_graph(radii_in, r=simulator.model_config["r_max"], batch=batch, max_num_neighbors=32)
+                            temp_atoms_batch['edge_cell_shift'] = torch.zeros((temp_atoms_batch['edge_index'].shape[1], 3)).to(simulator.device)
+                            for k in AtomicDataDict.ALL_ENERGY_KEYS:
+                                if k in temp_atoms_batch:
+                                    del temp_atoms_batch[k]
+                            energy = model(temp_atoms_batch)[AtomicDataDict.TOTAL_ENERGY_KEY]
+
                     def get_vjp(v):
                         return compute_grad(inputs = list(model.parameters()), output = energy, grad_outputs = v, create_graph = False)
                     vectorized_vjp = vmap(get_vjp)
                     I_N = torch.eye(energy.shape[0]).unsqueeze(-1).to(simulator.device)
                     grads_vectorized = vectorized_vjp(I_N)
                     #flatten the gradients for vectorization
-                    num_params = len(list(model.parameters()))
                     num_samples = energy.shape[0]
+                    num_params = len(list(model.parameters()))
                     grads_flattened= torch.stack([torch.cat([grads_vectorized[i][j].flatten().detach() for i in range(num_params)]) for j in range(num_samples)])
-                    # grad_diffs = grads_flattened.unsqueeze(0) - grads_flattened.unsqueeze(1)
                     
                     if simulator.use_mse_gradient:
                         #compute VJP with MSE gradient
@@ -899,8 +949,8 @@ if __name__ == "__main__":
             simulator = ImplicitMDSimulator(config, params, model, model_config)
             print(f"Initialize {simulator.n_replicas} random ICs in parallel")
             num_resets = 0
-        else: #continue from where we left off in the last epoch/batch
-            num_resets = simulator.resume()
+        # else: #continue from where we left off in the last epoch/batch
+        #     num_resets = simulator.resume()
         simulator.epoch = epoch
 
         start = time.time()
