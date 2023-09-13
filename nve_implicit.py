@@ -808,7 +808,7 @@ class Stochastic_IFT(torch.autograd.Function):
                         #compute VJP with MSE gradient
                         rdf_batch = rdfs[start:end]
                         gradient_estimator = (grads_flattened.mean(0).unsqueeze(0)*rdf_batch.mean(0).unsqueeze(-1) - grads_flattened.unsqueeze(1) * rdf_batch.unsqueeze(-1)).mean(dim=0)
-                        grad_outputs = 2*(mean_rdf - gt_rdf).unsqueeze(0) #MSE  gradient
+                        grad_outputs = 2*(mean_rdf - gt_rdf).unsqueeze(0) #MSE  gradient #TODO: use the within-batch mean RDF instead of a global one
                         final_vjp = torch.mm(grad_outputs, gradient_estimator)[0]
                     else:
                         #use loss directly
@@ -833,7 +833,7 @@ class Stochastic_IFT(torch.autograd.Function):
                 #print(f"gradient calculation time: {end_time-start_time} seconds")
                 rdf_package = (rdf_gradient_estimators, mean_rdf, rdf_loss(mean_rdf).to(simulator.device))
             
-            return equilibriated_simulator, rdf_package, vacf_package
+            return equilibriated_simulator, rdf_package, vacf_package, num_resets
 
 if __name__ == "__main__":
     setup_logging() 
@@ -976,7 +976,7 @@ if __name__ == "__main__":
 
         else:
             #run simulation and get gradients via Fabian method/adjoint
-            equilibriated_simulator, rdf_package, vacf_package = top_level.apply(simulator, gt_rdf, gt_vacf, params)
+            equilibriated_simulator, rdf_package, vacf_package, num_resets = top_level.apply(simulator, gt_rdf, gt_vacf, params)
             #unpack results
             rdf_grad_batches, mean_rdf, rdf_loss = rdf_package
             vacf_grad_batches, mean_vacf, vacf_loss = vacf_package
@@ -1038,7 +1038,10 @@ if __name__ == "__main__":
             best_outer_loss = outer_loss
             best = True
         simulator.save_checkpoint(best = best)
-
+        #nequip re-deploy with updated weights
+        # simulator.model, _ = Trainer.load_model_from_training_session(simulator.save_dir, \
+        #                         model_name = 'best_ckpt.pt' if best else 'ckpt.pt', config_dictionary = simulator.model_config, device = device)
+        
         torch.cuda.empty_cache()
         gc.collect()
         max_norm = 0

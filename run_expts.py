@@ -8,7 +8,7 @@ molecules3 = ['benzene', 'uracil']
 
 
 config_yml = '/home/sanjeevr/implicit-md/configs/md17/base.yml'
-for mol in molecules3:
+for mol in molecules1:
     command = f"python nve_implicit.py --config-yml {config_yml} \
                  --molecule={mol}"
                 
