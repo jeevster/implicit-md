@@ -220,7 +220,7 @@ class ImplicitMDSimulator():
         #File dump stuff
         self.f = open(f"{self.save_dir}/log.txt", "a+")
         self.t = gsd.hoomd.open(name=f'{self.save_dir}/sim_temp.gsd', mode='w') 
-        self.n_dump = 5000 #initialize to large value to save time when not learning
+        self.n_dump = 50 #initialize to large value to save time when not learning
 
     '''compute energy/force error on held-out test set'''
     def energy_force_error(self, batch_size):
@@ -773,7 +773,8 @@ class Stochastic_IFT(torch.autograd.Function):
                 print(f"Computing RDF gradients from {stacked_radii.shape[0]} structures in minibatches of size {MINIBATCH_SIZE}")
                 
                 for i in tqdm(range(num_blocks)):
-                    temp_atoms_batch = simulator.atoms_batch
+                    if simulator.model_type == "nequip":
+                        temp_atoms_batch = simulator.atoms_batch
                     start = MINIBATCH_SIZE*i
                     end = MINIBATCH_SIZE*(i+1)
                     actual_batch_size = min(end, stacked_radii.shape[0]) - start
@@ -810,7 +811,7 @@ class Stochastic_IFT(torch.autograd.Function):
                         #compute VJP with MSE gradient
                         rdf_batch = rdfs[start:end]
                         gradient_estimator = (grads_flattened.mean(0).unsqueeze(0)*rdf_batch.mean(0).unsqueeze(-1) - grads_flattened.unsqueeze(1) * rdf_batch.unsqueeze(-1)).mean(dim=0)
-                        grad_outputs = 2*(mean_rdf - gt_rdf).unsqueeze(0) #MSE  gradient #TODO: use the within-batch mean RDF instead of a global one
+                        grad_outputs = 2*(rdf_batch.mean(0) - gt_rdf).unsqueeze(0) #MSE  gradient
                         final_vjp = torch.mm(grad_outputs, gradient_estimator)[0]
                     else:
                         #use loss directly
@@ -1004,15 +1005,12 @@ if __name__ == "__main__":
                             np.save(os.path.join(results_dir, f'replicas_stable_time.npy'), simulator.stable_time.cpu().numpy())
                             simulator.stable_time = torch.zeros((simulator.n_replicas,)).to(simulator.device)
                     if optimizer.param_groups[0]['lr'] > 0:
-                        if params.optimizer == 'SGD':
-                            param.data -= optimizer.param_groups[0]['lr']*param.grad
-                        else:
-                            optimizer.step()
+                        optimizer.step()
             
             if optimizer.param_groups[0]['lr'] < min_lr or (num_resets <= params.min_frac_unstable_threshold and simulator.all_unstable):
                 logging.info(f"Back to data collection")
                 simulator.all_unstable = False
-                simulator.n_dump = 5000
+                simulator.n_dump = 50
                 changed_lr = False
                 #reinitialize optimizer and scheduler with LR = 0
                 if params.optimizer == 'Adam':
@@ -1064,9 +1062,11 @@ if __name__ == "__main__":
         resets.append(num_resets)
         lrs.append(optimizer.param_groups[0]['lr'])
         #energy/force error
-        energy_rmse, force_rmse = simulator.energy_force_error(params.test_batch_size)
-        energy_rmses.append(energy_rmse)
-        force_rmses.append(force_rmse)
+        # energy_rmse, force_rmse = simulator.energy_force_error(params.test_batch_size)
+        # energy_rmses.append(energy_rmse)
+        # force_rmses.append(force_rmse)
+        energy_rmses.append(0)
+        force_rmses.append(0)
 
         sim_times.append(sim_time)
         try:

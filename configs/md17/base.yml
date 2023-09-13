@@ -1,10 +1,10 @@
 src: /data/sanjeevr
-name: md22
-size: all
-molecule: DHA
+name: md17
+size: 1k
+molecule: aspirin
 normalize_labels: False
-checkpoint_epoch: 500 #which model to start from
-model: nequip
+checkpoint_epoch: -1 #which model to start from
+model: schnet
 results_dir: 'results_nnip_continuous'
 model_dir: '/data/ishan-amin/MODELPATH/' #'/home/sanjeevr/MDsim/MODELPATH'
 save_name: 'nnip-ift'
@@ -29,9 +29,9 @@ bond_dev_tol: 0.25 #decay this?
 max_frac_unstable_threshold: 0 #decay this?
 min_frac_unstable_threshold: 0.25 #increase this?
 eq_steps: 0
-steps: 100 # 1 picosecond per epoch
-n_dump: 10
-n_replicas: 16
+steps: 500 # 1 picosecond per epoch
+n_dump: 50
+n_replicas: 1
 minibatch_size: 10
 allow_off_policy_updates: False
 gradient_clipping: True
@@ -39,7 +39,7 @@ use_mse_gradient: True
 shuffle: True
 optimizer: SGD
 restart_probability: 0.0
-n_epochs: 1000 #corresponding to 300 ps
+n_epochs: 1 #corresponding to 300 ps
 lr: 0.001
 max_times_reduce_lr: 2 
 diameter_viz: 0.08
