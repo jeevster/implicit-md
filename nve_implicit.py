@@ -41,6 +41,7 @@ from ase.calculators.calculator import Calculator
 from nequip.ase.nequip_calculator import nequip_calculator
 from nequip.data import AtomicData, AtomicDataDict
 from nequip.data.AtomicData import neighbor_list_and_relative_vec
+from nequip.utils import atomic_write
 from nequip.utils.torch_geometric import Batch, Dataset
 from ase.calculators.singlepoint import SinglePointCalculator as sp
 from ase.md import MDLogger
@@ -298,13 +299,14 @@ class ImplicitMDSimulator():
         with torch.enable_grad():
             if not radii.requires_grad:
                 radii.requires_grad = True
-            
             if self.model_type == "schnet":
                 energy = self.model(pos = radii.reshape(-1,3), z = atomic_numbers, batch = batch)
                 forces = -compute_grad(inputs = radii, output = energy) if retain_grad else -compute_grad(inputs = radii, output = energy).detach()
             elif self.model_type == "nequip":
                 #assign radii
                 self.atoms_batch['pos'] = radii.reshape(-1, 3)
+                self.atoms_batch['batch'] = batch
+                self.atoms_batch['atom_types'] = self.final_atom_types
                 #recompute neighbor list
                 self.atoms_batch['edge_index'] = radius_graph(radii.reshape(-1, 3), r=self.model_config["r_max"], batch=batch, max_num_neighbors=32)
                 self.atoms_batch['edge_cell_shift'] = torch.zeros((self.atoms_batch['edge_index'].shape[1], 3)).to(self.device)
@@ -449,7 +451,7 @@ class ImplicitMDSimulator():
         return self 
 
     def save_checkpoint(self, best=False):
-        name = "best_ckpt.pt" if best else "ckpt.pt"
+        name = "best_ckpt.pth" if best else "ckpt.pth"
         checkpoint_path = os.path.join(self.save_dir, name)
         try:
             torch.save({'model_state': self.model.state_dict(), 'config': self.model_config}, checkpoint_path)
@@ -874,10 +876,9 @@ if __name__ == "__main__":
 
     if model_type == "nequip":
         ckpt_epoch = config['checkpoint_epoch']
-        cname = 'best_ckpt.pt' if ckpt_epoch == -1 else f"ckpt{ckpt_epoch}.pt"
-        #only can read in the last checkpoint right now?
+        cname = 'best_model.pth' if ckpt_epoch == -1 else f"ckpt{ckpt_epoch}.pth"
         model, model_config = Trainer.load_model_from_training_session(pretrained_model_path, \
-                        device =  torch.device(device))
+                                model_name = cname, device =  torch.device(device))
     elif model_type == "schnet":
         model, model_config = load_schnet_model(path = pretrained_model_path, ckpt_epoch = config['checkpoint_epoch'], device = torch.device(device), train = params.train or params.eval_model == 'pre')
     #count number of trainable params
@@ -1003,7 +1004,10 @@ if __name__ == "__main__":
                             np.save(os.path.join(results_dir, f'replicas_stable_time.npy'), simulator.stable_time.cpu().numpy())
                             simulator.stable_time = torch.zeros((simulator.n_replicas,)).to(simulator.device)
                     if optimizer.param_groups[0]['lr'] > 0:
-                        optimizer.step()
+                        if params.optimizer == 'SGD':
+                            param.data -= optimizer.param_groups[0]['lr']*param.grad
+                        else:
+                            optimizer.step()
             
             if optimizer.param_groups[0]['lr'] < min_lr or (num_resets <= params.min_frac_unstable_threshold and simulator.all_unstable):
                 logging.info(f"Back to data collection")
