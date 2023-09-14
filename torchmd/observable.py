@@ -27,8 +27,8 @@ def compute_angle(xyz, angle_list, cell, N):
     bond_vec1 = xyz[angle_list[:,0], angle_list[:,1]] - xyz[angle_list[:,0], angle_list[:, 2]]
     bond_vec2 = xyz[angle_list[:,0], angle_list[:,3]] - xyz[angle_list[:,0], angle_list[:, 2]]
     #issue here with shape of cell
-    bond_vec1 = bond_vec1 + get_offsets(bond_vec1, cell, device) * cell
-    bond_vec2 = bond_vec2 + get_offsets(bond_vec2, cell, device) * cell  
+    # bond_vec1 = bond_vec1 + get_offsets(bond_vec1, cell, device) * cell
+    # bond_vec2 = bond_vec2 + get_offsets(bond_vec2, cell, device) * cell  
     
     angle_dot = (bond_vec1 * bond_vec2).sum(-1)
     norm = ( bond_vec1.pow(2).sum(-1) * bond_vec2.pow(2).sum(-1) ).sqrt()
@@ -82,7 +82,6 @@ class DifferentiableRDF(torch.nn.Module):
 #differentiable angular distribution function
 class DifferentiableADF(torch.nn.Module):
     def __init__(self, n_atoms, bonds, cell, params, device):
-        #nbins, angle_range, cutoff=3.0,index_tuple=None, width=None):
         super(DifferentiableADF, self).__init__()
         #GPU
         self.device = device
@@ -94,7 +93,7 @@ class DifferentiableADF(torch.nn.Module):
         self.bonds_mask[self.bonds[:, 1], self.bonds[:, 0]] = 1
         start = params.angle_range[0]
         end = params.angle_range[1]
-        self.nbins = 500
+        self.nbins = 500 # 1 bin for each angle
         self.bins = torch.linspace(start, end, self.nbins + 1).to(self.device)
         self.smear = GaussianSmearing(
             start=start,
@@ -118,13 +117,13 @@ class DifferentiableADF(torch.nn.Module):
         
         angle_list = generate_angle_list(nbr_list).to(self.device)
         cos_angles = compute_angle(xyz, angle_list, self.cell, N=self.n_atoms)
-        import pdb; pdb.set_trace()
-        angles = cos_angles.acos()
+        
+        angles = cos_angles.acos() * 180/np.pi
         count = self.smear(angles.reshape(-1).squeeze()[..., None]).sum(0) 
         norm = count.sum()   # normalization factor for histogram 
         count = count / (norm)  # normalize 
         
-        return angles
+        return count
 
 class DifferentiableVelHist(torch.nn.Module):
     def __init__(self, params, device):

@@ -81,7 +81,7 @@ class ImplicitMDSimulator():
         self.model_type = config['model']
         self.all_unstable = False
 
-        logging.info("Initializing MD simulation environment")
+        print("Initializing MD simulation environment")
         self.config = config
         self.data_dir = config['src']
         self.model_dir = os.path.join(config["model_dir"], self.model_type, f"{self.name}-{self.molecule}_{self.size}_{self.model_type}")
@@ -178,6 +178,8 @@ class ImplicitMDSimulator():
         #Register inner parameters
         dataset = self.train_dataset if self.train else self.valid_dataset
         samples = np.random.choice(np.arange(dataset.__len__()), self.n_replicas)
+        #print(samples)
+        #samples = [0]
         self.raw_atoms = [data_to_atoms(dataset.__getitem__(i)) for i in samples]
         self.cell = torch.Tensor(self.raw_atoms[0].cell).to(self.device)
         radii = torch.stack([torch.Tensor(atoms.get_positions()) for atoms in self.raw_atoms])
@@ -193,6 +195,8 @@ class ImplicitMDSimulator():
             self.atoms_batch = [AtomicData.from_ase(atoms=a, r_max= self.model_config["r_max"]) for a in self.raw_atoms]
             self.atoms_batch = AtomicData.to_AtomicDataDict(Batch.from_data_list(self.atoms_batch))
             self.atoms_batch['atom_types'] = self.final_atom_types
+            del self.atoms_batch['ptr']
+            del self.atoms_batch['atomic_numbers']
             self.atoms_batch = {k: v.to(self.device) for k, v in self.atoms_batch.items()}
             # import pdb; pdb.set_trace()
             # del self.atoms_batch['cell']
@@ -220,7 +224,7 @@ class ImplicitMDSimulator():
         #File dump stuff
         self.f = open(f"{self.save_dir}/log.txt", "a+")
         self.t = gsd.hoomd.open(name=f'{self.save_dir}/sim_temp.gsd', mode='w') 
-        self.n_dump = 50 #initialize to large value to save time when not learning
+        self.n_dump = 5000 #initialize to large value to save time when not learning
 
     '''compute energy/force error on held-out test set'''
     def energy_force_error(self, batch_size):
@@ -265,14 +269,16 @@ class ImplicitMDSimulator():
             return energy_rmse, force_rmse
 
     def resume(self):
+        just_became_unstable = False
         random_reset = torch.rand(size=(self.n_replicas,)).to(self.device) <= params.restart_probability
         #reset replicas which exceeded the max bond dev criteria
         stability_reset = self.max_bond_dev_per_replica > self.bond_dev_tol
         reset_replicas = torch.logical_or(random_reset, stability_reset)
         num_resets = reset_replicas.count_nonzero().item()
-        if num_resets // self.n_replicas >= self.max_frac_unstable_threshold: #threshold of unstable replicas reached
+        if num_resets / self.n_replicas >= self.max_frac_unstable_threshold: #threshold of unstable replicas reached
             if not self.all_unstable:
-                logging.info("Threshold of unstable replicas has been reached... Start Learning")
+                print("Threshold of unstable replicas has been reached... Start Learning")
+                just_became_unstable = True
             self.all_unstable = True
         
         if self.all_unstable: #reset all replicas to the initial values
@@ -288,7 +294,7 @@ class ImplicitMDSimulator():
             #update stability times for each replica
             if not self.train:
                 self.stable_time = torch.where(reset_replicas, self.stable_time, self.stable_time + self.ps_per_epoch)
-        return num_resets / self.n_replicas
+        return num_resets / self.n_replicas, just_became_unstable
 
 
     def force_calc(self, radii, atomic_numbers = None, batch = None, retain_grad = False):
@@ -314,6 +320,8 @@ class ImplicitMDSimulator():
                     if k in self.atoms_batch:
                         del self.atoms_batch[k]
                 atoms_updated = self.model(self.atoms_batch)
+                del self.atoms_batch['node_features']
+                del self.atoms_batch['node_attrs']
                 energy = atoms_updated[AtomicDataDict.TOTAL_ENERGY_KEY].detach()
                 forces = atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.n_atoms, 3) if retain_grad else atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.n_atoms, 3).detach()
             assert(not torch.any(torch.isnan(forces)))
@@ -561,7 +569,7 @@ class Stochastic_IFT(torch.autograd.Function):
             print('Collect MD Simulation Data')
             equilibriated_simulator = simulator.solve()
             ctx.save_for_backward(equilibriated_simulator)
-            num_resets = simulator.resume() #reset stuff based on stability
+            num_resets, just_became_unstable = simulator.resume() #reset stuff based on stability
             
             model = equilibriated_simulator.model
             #store original shapes of model parameters
@@ -571,7 +579,6 @@ class Stochastic_IFT(torch.autograd.Function):
             #get continuous trajectories (permute to make replica dimension come first)
             radii_traj = torch.stack(equilibriated_simulator.running_radii)
             stacked_radii = radii_traj[::simulator.n_dump] #take i.i.d samples for RDF loss
-            #test_adf = diff_adf(stacked_radii[0])
             velocities_traj = torch.stack(equilibriated_simulator.running_vels).permute(1,0,2,3)
             #split into sub-trajectories of length = vacf_window
             velocities_traj = velocities_traj.reshape(velocities_traj.shape[0], -1, simulator.vacf_window, simulator.n_atoms, 3)
@@ -600,7 +607,7 @@ class Stochastic_IFT(torch.autograd.Function):
                 del simulator.running_vels
                 
             
-            if params.vacf_loss_weight == 0 or not simulator.train or not simulator.all_unstable:
+            if params.vacf_loss_weight == 0 or not simulator.train or not simulator.all_unstable or just_became_unstable:
                 vacf_gradient_estimators = None
                 vacf_package = (vacf_gradient_estimators, mean_vacf, vacf_loss(mean_vacf).to(simulator.device))
             else:
@@ -744,13 +751,15 @@ class Stochastic_IFT(torch.autograd.Function):
                     gradient_estimator = tuple([g.reshape(shape) for g, shape in zip(mean_grads.split(original_numel), original_shapes)])
                     vacf_gradient_estimators.append(gradient_estimator)
                 vacf_package = (vacf_gradient_estimators, mean_vacf, vacf_loss(mean_vacf).to(simulator.device))
-            ###RDF Stuff
+            ###RDF/ADF Stuff
+            
             r2d = lambda r: radii_to_dists(r, simulator.params)
             dists = vmap(r2d)(stacked_radii).reshape(1, -1, simulator.n_atoms, simulator.n_atoms-1, 1)
-            rdfs = vmap(diff_rdf)(tuple(dists))
+            rdfs = torch.stack([diff_rdf(tuple(dist)) for dist in dists[0]]) #this way of calculating uses less memory
+            #rdfs = vmap(diff_rdf)(tuple(dists))
             mean_rdf = rdfs.mean(dim=0)
             
-            if params.rdf_loss_weight ==0 or not simulator.train or not simulator.all_unstable:
+            if params.rdf_loss_weight ==0 or not simulator.train or not simulator.all_unstable or just_became_unstable:
                 rdf_gradient_estimators = None
                 rdf_package = (rdf_gradient_estimators, mean_rdf, rdf_loss(mean_rdf).to(simulator.device))              
             else:
@@ -810,6 +819,7 @@ class Stochastic_IFT(torch.autograd.Function):
                     if simulator.use_mse_gradient:
                         #compute VJP with MSE gradient
                         rdf_batch = rdfs[start:end]
+                        import pdb; pdb.set_trace()
                         gradient_estimator = (grads_flattened.mean(0).unsqueeze(0)*rdf_batch.mean(0).unsqueeze(-1) - grads_flattened.unsqueeze(1) * rdf_batch.unsqueeze(-1)).mean(dim=0)
                         grad_outputs = 2*(rdf_batch.mean(0) - gt_rdf).unsqueeze(0) #MSE  gradient
                         final_vjp = torch.mm(grad_outputs, gradient_estimator)[0]
@@ -863,7 +873,7 @@ if __name__ == "__main__":
     size = config['size']
     model_type = config['model']
     
-    logging.info(f"Loading pretrained {model_type} model")
+    print(f"Loading pretrained {model_type} model")
     #load the correct checkpoint based on whether we're doing train or val
     if params.train or config["eval_model"] == 'pre': #load energies/forces trained model
         pretrained_model_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{size}_{model_type}") 
@@ -1008,9 +1018,9 @@ if __name__ == "__main__":
                         optimizer.step()
             
             if optimizer.param_groups[0]['lr'] < min_lr or (num_resets <= params.min_frac_unstable_threshold and simulator.all_unstable):
-                logging.info(f"Back to data collection")
+                print(f"Back to data collection")
                 simulator.all_unstable = False
-                simulator.n_dump = 50
+                simulator.n_dump = 5000
                 changed_lr = False
                 #reinitialize optimizer and scheduler with LR = 0
                 if params.optimizer == 'Adam':

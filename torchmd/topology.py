@@ -31,7 +31,6 @@ def generate_nbr_list(xyz, cutoff, cell, mask_sel, ex_pairs=None, get_dis=False)
     
     # todo: topology should be a class to handle some initialization 
     device = xyz.device
-
     dis_mat = (xyz[..., None, :, :] - xyz[..., :, None, :])
     dis_mat =  dis_mat * mask_sel[..., None]
 

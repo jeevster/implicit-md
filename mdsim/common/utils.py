@@ -553,7 +553,7 @@ def build_config(args, args_override):
         overrides = create_dict_from_args(args_override)
         config, _ = merge_dicts(config, overrides)
     if args.molecule is not None:
-        assert config['name'] == 'md17', 'only MD17 datasets admit specification of the molecule.'
+        assert config['name'] == 'md17' or config['name'] == 'md22', 'only MD17 and MD22 datasets admit specification of the molecule.'
         config['molecule'] = args.molecule
     if args.size is not None:
         config['size'] = args.size
