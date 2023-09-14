@@ -20,8 +20,9 @@ integrator_config: {"timestep": 0.5, "temperature": 500., "ttime": 20., "gamma":
 train: True
 eval_model: post
 diffusion_loss_weight: 0
-vacf_loss_weight: 0
 rdf_loss_weight: 1
+adf_loss_weight: 0
+vacf_loss_weight: 0
 diffusion_window: 1000
 vacf_window: 100
 ic_stddev: 0.0
@@ -29,7 +30,7 @@ bond_dev_tol: 0.25 #decay this?
 max_frac_unstable_threshold: 0.75 #decay this?
 min_frac_unstable_threshold: 0.25 #increase this?
 eq_steps: 0
-steps: 100 # 1 picosecond per epoch
+steps: 2000 # 1 picosecond per epoch
 n_dump: 50
 n_replicas: 128
 minibatch_size: 80

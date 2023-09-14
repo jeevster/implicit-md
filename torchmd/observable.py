@@ -93,7 +93,7 @@ class DifferentiableADF(torch.nn.Module):
         self.bonds_mask[self.bonds[:, 1], self.bonds[:, 0]] = 1
         start = params.angle_range[0]
         end = params.angle_range[1]
-        self.nbins = 500 # 1 bin for each angle
+        self.nbins = 180 # 1 bin for each angle
         self.bins = torch.linspace(start, end, self.nbins + 1).to(self.device)
         self.smear = GaussianSmearing(
             start=start,
