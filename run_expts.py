@@ -2,7 +2,7 @@ import subprocess
 from itertools import product
 
 
-molecules1 =  ['aspirin']#['ac_Ala3_NHMe', 'buckyball_catcher']
+molecules1 =  ['ac_Ala3_NHMe', 'buckyball_catcher']
 molecules2 = ['stachyose', 'AT_AT_CG_CG', 'AT_AT']
 
 

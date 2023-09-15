@@ -220,7 +220,7 @@ class ImplicitMDSimulator():
         dump_params_to_yml(self.params, self.save_dir)
         #File dump stuff
         self.f = open(f"{self.save_dir}/log.txt", "a+")
-        self.t = gsd.hoomd.open(name=f'{self.save_dir}/sim_temp.gsd', mode='w') 
+         
 
     '''compute energy/force error on held-out test set'''
     def energy_force_error(self, batch_size):
@@ -361,7 +361,8 @@ class ImplicitMDSimulator():
         # dump frames
         if self.step%self.n_dump == 0:
             print(self.step, self.calc_properties(energy), file=self.f)
-            self.t.append(self.create_frame(frame = self.step/self.n_dump))
+            step  = self.step if self.train else (self.epoch+1) * self.step #don't overwrite previous epochs at inference time
+            self.t.append(self.create_frame(frame = step/self.n_dump))
 
         return radii, velocities, forces, zeta
     
@@ -395,7 +396,10 @@ class ImplicitMDSimulator():
         self.original_radii = self.radii.clone()
         self.original_velocities = self.velocities.clone()
         self.original_zeta = self.zeta.clone()
-
+        #File dump
+        mode = 'learning' if self.all_unstable else 'simulation'
+        if self.train or self.epoch == 0: #create one long simulation for inference
+            self.t = gsd.hoomd.open(name=f'{self.save_dir}/sim_epoch{self.epoch+1}_{mode}.gsd', mode='w')
         #Initialize forces/potential of starting configuration
         with torch.enable_grad() if self.no_ift else torch.no_grad():
             self.step = -1
@@ -444,7 +448,8 @@ class ImplicitMDSimulator():
             self.stacked_vels = torch.cat(self.running_vels)
         
         # self.f.close()
-        # self.t.close()
+        if self.train:
+            self.t.close()
         return self 
 
     def save_checkpoint(self, best=False):
@@ -558,8 +563,7 @@ class Stochastic_IFT(torch.autograd.Function):
 
             print('Collect MD Simulation Data')
             equilibriated_simulator = simulator.solve()
-            if not simulator.all_unstable: #remove to save time
-                running_radii = simulator.running_radii[0:2]
+            running_radii = simulator.running_radii if simulator.all_unstable else simulator.running_radii[0:2]
             ctx.save_for_backward(equilibriated_simulator)
             
             model = equilibriated_simulator.model
