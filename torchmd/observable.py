@@ -103,7 +103,7 @@ class DifferentiableADF(torch.nn.Module):
             trainable=False
         ).to(self.device)
         self.width = (self.smear.width[0]).item()
-        self.cutoff = 3.0
+        self.cutoff = 1.25 if n_atoms > 100 else 3.0 #heuristic
         self.cell = cell
         
     def forward(self, xyz):
@@ -114,10 +114,8 @@ class DifferentiableADF(torch.nn.Module):
                                            self.bonds_mask, 
                                            get_dis=False)
         nbr_list = nbr_list.to("cpu")
-        
         angle_list = generate_angle_list(nbr_list).to(self.device)
-        cos_angles = compute_angle(xyz, angle_list, self.cell, N=self.n_atoms)
-        
+        cos_angles = compute_angle(xyz, angle_list, self.cell, N=self.n_atoms)  
         angles = cos_angles.acos() * 180/np.pi
         count = self.smear(angles.reshape(-1).squeeze()[..., None]).sum(0) 
         norm = count.sum()   # normalization factor for histogram 

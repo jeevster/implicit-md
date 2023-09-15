@@ -2,8 +2,8 @@ import subprocess
 from itertools import product
 
 
-molecules1 = ['DHA', 'double_walled_nanotube', 'buckyball_catcher']
-molecules2 = ['stachyose', 'AT_AT_CG_CG', 'AT_AT', 'ac_Ala3_NHMe']
+molecules1 =  ['aspirin']#['ac_Ala3_NHMe', 'buckyball_catcher']
+molecules2 = ['stachyose', 'AT_AT_CG_CG', 'AT_AT']
 
 
 config_yml = '/home/sanjeevr/implicit-md/configs/md17/base.yml'

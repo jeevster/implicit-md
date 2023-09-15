@@ -256,12 +256,8 @@ class ImplicitMDSimulator():
             #normalize energies
             energies = (energies - energies.mean()) / energies.std()
             forces = torch.cat(forces)
-            energy_mae = (self.gt_energies - energies).abs().mean()
-            energy_rmse = (self.gt_energies - energies).pow(2).mean().sqrt()
-            force_rmse = (self.gt_forces - forces).pow(2).mean().sqrt()
-            force_mae = (self.gt_forces - forces).abs().mean()
-            energies = 0
-            forces = 0
+            energy_rmse = torch.norm(self.gt_energies - energies, p=2, dim=-1).mean()
+            force_rmse = torch.norm(self.gt_forces - forces, p=2, dim=-1).mean()
             return energy_rmse, force_rmse
 
     def resume(self):
@@ -322,7 +318,7 @@ class ImplicitMDSimulator():
             return energy, forces
 
 
-    def forward_nvt(self, radii, velocities, forces, zeta, retain_grad=False):
+    def forward_nosehoover(self, radii, velocities, forces, zeta, retain_grad=False):
         # get current accelerations
         accel = forces / self.masses
 
@@ -415,7 +411,7 @@ class ImplicitMDSimulator():
                 self.step = step
                 #MD Step
                 if self.integrator == 'NoseHoover':
-                    radii, velocities, forces, zeta = self.forward_nvt(self.radii, self.velocities, forces, zeta, retain_grad = self.no_ift)
+                    radii, velocities, forces, zeta = self.forward_nosehoover(self.radii, self.velocities, forces, zeta, retain_grad = self.no_ift)
                 elif self.integrator == 'Langevin':
                     radii, velocities, forces, noise = self.forward_langevin(self.radii, self.velocities, forces, retain_grad = self.no_ift)
                 else:
@@ -563,7 +559,7 @@ class Stochastic_IFT(torch.autograd.Function):
             print('Collect MD Simulation Data')
             equilibriated_simulator = simulator.solve()
             if not simulator.all_unstable: #remove to save time
-                simulator.running_radii = simulator.running_radii[0:2]
+                running_radii = simulator.running_radii[0:2]
             ctx.save_for_backward(equilibriated_simulator)
             
             model = equilibriated_simulator.model
@@ -572,12 +568,13 @@ class Stochastic_IFT(torch.autograd.Function):
             original_shapes = [param.data.shape for param in model.parameters()]
             
             #get continuous trajectories (permute to make replica dimension come first)
-            radii_traj = torch.stack(equilibriated_simulator.running_radii)
+            radii_traj = torch.stack(running_radii)
             stacked_radii = radii_traj[::simulator.n_dump] #take i.i.d samples for RDF loss
             velocities_traj = torch.stack(equilibriated_simulator.running_vels).permute(1,0,2,3)
             #split into sub-trajectories of length = vacf_window
             velocities_traj = velocities_traj.reshape(velocities_traj.shape[0], -1, simulator.vacf_window, simulator.n_atoms, 3)
             vacfs = vmap(vmap(diff_vacf))(velocities_traj).reshape(-1, simulator.vacf_window)
+            
             mean_vacf = vacfs.mean(dim = 0)
             mean_vacf_loss = vacf_loss(mean_vacf)
 
@@ -1091,11 +1088,11 @@ if __name__ == "__main__":
         resets.append(num_resets)
         lrs.append(optimizer.param_groups[0]['lr'])
         #energy/force error
-        # energy_rmse, force_rmse = simulator.energy_force_error(params.test_batch_size)
-        # energy_rmses.append(energy_rmse)
-        # force_rmses.append(force_rmse)
-        energy_rmses.append(0)
-        force_rmses.append(0)
+        energy_rmse, force_rmse = simulator.energy_force_error(params.test_batch_size)
+        energy_rmses.append(energy_rmse)
+        force_rmses.append(force_rmse)
+        # energy_rmses.append(0)
+        # force_rmses.append(0)
 
         sim_times.append(sim_time)
         try:
