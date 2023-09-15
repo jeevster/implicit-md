@@ -126,16 +126,23 @@ class ImplicitMDSimulator():
             self.typeid[i] = type_to_index[_type]  
         self.final_atom_types = torch.Tensor(self.typeid).repeat(self.n_replicas).to(self.device).to(torch.long)
 
-        #bond length deviation
-        DATAPATH = f'{self.data_dir}/{self.name}/{self.molecule}/{self.size}/test/nequip_npz.npz'
-        gt_data = np.load(DATAPATH)
-        self.gt_traj = torch.FloatTensor(gt_data.f.R).to(self.device)
-        self.gt_energies = torch.FloatTensor(gt_data.f.E).to(self.device)
+        #extract ground truth energies, forces, and bond length deviation
+        DATAPATH_TEST = f'{self.data_dir}/{self.name}/{self.molecule}/{self.size}/test/nequip_npz.npz'
+        gt_data_test = np.load(DATAPATH_TEST)
+        self.gt_traj_test = torch.FloatTensor(gt_data_test.f.R).to(self.device)
+        self.gt_energies_test = torch.FloatTensor(gt_data_test.f.E).to(self.device)
         #normalize
-        self.gt_energies = (self.gt_energies - self.gt_energies.mean()) / self.gt_energies.std()
-        self.gt_forces = torch.FloatTensor(gt_data.f.F).to(self.device)
+        self.gt_energies_test = (self.gt_energies_test - self.gt_energies_test.mean()) / self.gt_energies_test.std()
+        self.gt_forces_test = torch.FloatTensor(gt_data_test.f.F).to(self.device)
+        DATAPATH_TRAIN = f'{self.data_dir}/{self.name}/{self.molecule}/{self.size}/train/nequip_npz.npz'
+        gt_data_train = np.load(DATAPATH_TRAIN)
+        self.gt_traj_train = torch.FloatTensor(gt_data_train.f.R).to(self.device)
+        self.gt_energies_train = torch.FloatTensor(gt_data_train.f.E).to(self.device)
+        #normalize
+        self.gt_energies_train = (self.gt_energies_train - self.gt_energies_train.mean()) / self.gt_energies_train.std()
+        self.gt_forces_train = torch.FloatTensor(gt_data_train.f.F).to(self.device)
         self.mean_bond_lens = distance_pbc(
-        self.gt_traj[:, self.bonds[:, 0]], self.gt_traj[:, self.bonds[:, 1]], \
+        self.gt_traj_train[:, self.bonds[:, 0]], self.gt_traj_train[:, self.bonds[:, 1]], \
                     torch.FloatTensor([30., 30., 30.]).to(self.device)).mean(dim=0)
         self.stable_time = torch.zeros((self.n_replicas,)).to(self.device)
         
@@ -206,6 +213,8 @@ class ImplicitMDSimulator():
         self.rdf_loss_weight = params.rdf_loss_weight
         self.diffusion_loss_weight = params.diffusion_loss_weight
         self.vacf_loss_weight = params.vacf_loss_weight
+        self.energy_loss_weight = params.energy_loss_weight
+        self.force_loss_weight = params.force_loss_weight
         
         #limit CPU usage
         torch.set_num_threads(10)
@@ -225,17 +234,17 @@ class ImplicitMDSimulator():
     '''compute energy/force error on held-out test set'''
     def energy_force_error(self, batch_size):
         with torch.no_grad():
-            num_batches = math.ceil(self.gt_traj.shape[0]/ batch_size)
+            num_batches = math.ceil(self.gt_traj_test.shape[0]/ batch_size)
             energies = []
             forces = []
             for i in range(num_batches):
                 start = batch_size*i
                 end = batch_size*(i+1)
-                actual_batch_size = min(end, self.gt_traj.shape[0]) - start        
+                actual_batch_size = min(end, self.gt_traj_test.shape[0]) - start        
                 atomic_numbers = torch.Tensor(self.atoms.get_atomic_numbers()).to(torch.long).to(self.device).repeat(actual_batch_size)
                 batch = torch.arange(actual_batch_size).repeat_interleave(self.n_atoms).to(self.device)
                 if self.model_type == "schnet":
-                    energy, force = self.force_calc(self.gt_traj[start:end], atomic_numbers, batch)
+                    energy, force = self.force_calc(self.gt_traj_test[start:end], atomic_numbers, batch)
                 elif self.model_type == "nequip":
                     #placeholder, TODO: fix
                     energy = torch.zeros((actual_batch_size,)).to(self.device)
@@ -259,6 +268,53 @@ class ImplicitMDSimulator():
             energy_rmse = torch.norm(self.gt_energies - energies, p=2, dim=-1).mean()
             force_rmse = torch.norm(self.gt_forces - forces, p=2, dim=-1).mean()
             return energy_rmse, force_rmse
+
+    def energy_force_gradient(self, batch_size):
+        num_batches = math.ceil(self.gt_traj_train.shape[0]/ batch_size)
+        gradients = []
+        #store original shapes of model parameters
+        original_numel = [param.data.numel() for param in self.model.parameters()]
+        original_shapes = [param.data.shape for param in self.model.parameters()]
+        with torch.enable_grad():
+            
+            print("Computing energy/force gradients")
+            for i in tqdm(range(num_batches)):
+                start = batch_size*i
+                end = batch_size*(i+1)
+                actual_batch_size = min(end, self.gt_traj_train.shape[0]) - start        
+                atomic_numbers = torch.Tensor(self.atoms.get_atomic_numbers()).to(torch.long).to(self.device).repeat(actual_batch_size)
+                batch = torch.arange(actual_batch_size).repeat_interleave(self.n_atoms).to(self.device)
+                if self.model_type == "schnet":
+                    energy, force = self.force_calc(self.gt_traj_train[start:end], atomic_numbers, batch, retain_grad = True)
+                elif self.model_type == "nequip":
+                    #placeholder, TODO: fix
+                    energy = torch.zeros((actual_batch_size,)).to(self.device)
+                    force = torch.zeros((actual_batch_size, self.n_atoms, 3)).to(self.device)
+                    #recompute neighbor list
+                    # self.atoms_batch['edge_index'] = radius_graph(radii.reshape(-1, 3), r=self.model_config["r_max"], batch=batch, max_num_neighbors=32)
+                    # self.atoms_batch['edge_cell_shift'] = torch.zeros((self.atoms_batch['edge_index'].shape[1], 3)).to(self.device)
+                    # for k in AtomicDataDict.ALL_ENERGY_KEYS:
+                    #     if k in self.atoms_batch:
+                    #         del self.atoms_batch[k]
+                    # atoms_updated = self.model(self.atoms_batch)
+                    # energy = atoms_updated[AtomicDataDict.TOTAL_ENERGY_KEY].detach()
+                    # forces = atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.n_atoms, 3) if retain_grad else atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.n_atoms, 3).detach()
+                
+                energy = (energy - energy.mean()) / energy.std()
+                energy_loss = torch.norm(self.gt_energies_train[start:end] - energy, p=2, dim=-1).mean()
+                force_loss = torch.norm(self.gt_forces_train[start:end] - force, p=2, dim=-1).mean() 
+                loss = self.energy_loss_weight*energy_loss + self.force_loss_weight*force_loss
+                
+                gradients.append(torch.autograd.grad(loss, self.model.parameters()))
+                
+                num_params = len(list(self.model.parameters()))
+            grads_flattened= torch.stack([torch.cat([gradients[j][i].flatten().detach() for i in range(num_params)]) for j in range(num_batches)])
+            mean_grads = grads_flattened.mean(0)
+            #re-assemble flattened gradients into correct shape
+            import pdb; pdb.set_trace()
+            final_grads = tuple([g.reshape(shape) for g, shape in zip(mean_grads.split(original_numel), original_shapes)])
+            return final_grads
+
 
     def resume(self):
         random_reset = torch.rand(size=(self.n_replicas,)).to(self.device) <= params.restart_probability
@@ -297,7 +353,7 @@ class ImplicitMDSimulator():
                 radii.requires_grad = True
             if self.model_type == "schnet":
                 energy = self.model(pos = radii.reshape(-1,3), z = atomic_numbers, batch = batch)
-                forces = -compute_grad(inputs = radii, output = energy) if retain_grad else -compute_grad(inputs = radii, output = energy).detach()
+                forces = -compute_grad(inputs = radii, output = energy, create_graph = retain_grad)
             elif self.model_type == "nequip":
                 #assign radii
                 self.atoms_batch['pos'] = radii.reshape(-1, 3)
@@ -312,7 +368,7 @@ class ImplicitMDSimulator():
                 atoms_updated = self.model(self.atoms_batch)
                 del self.atoms_batch['node_features']
                 del self.atoms_batch['node_attrs']
-                energy = atoms_updated[AtomicDataDict.TOTAL_ENERGY_KEY].detach()
+                energy = atoms_updated[AtomicDataDict.TOTAL_ENERGY_KEY]
                 forces = atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.n_atoms, 3) if retain_grad else atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.n_atoms, 3).detach()
             assert(not torch.any(torch.isnan(forces)))
             return energy, forces
@@ -581,6 +637,10 @@ class Stochastic_IFT(torch.autograd.Function):
             
             mean_vacf = vacfs.mean(dim = 0)
             mean_vacf_loss = vacf_loss(mean_vacf)
+
+            #energy/force loss - TODO: add an option to include this in the training
+            if (simulator.energy_loss_weight != 0 or simulator.force_loss_weight!=0) and simulator.train:
+                energy_force_grads = simulator.energy_force_gradient(batch_size = simulator.n_replicas)
 
             if simulator.vacf_loss_weight !=0 and simulator.train:
                 radii_traj = radii_traj.permute(1,0,2,3)
