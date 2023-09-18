@@ -175,5 +175,17 @@ def distance_pbc(x0, x1, lattices):
     return torch.sqrt((delta ** 2).sum(dim=-1))
 
 
+def compare_gradients(grad1, grad2):
+    '''Compute cosine similarity and ratio between two sets of gradient updates for a given model'''
+    assert(len(grad1) ==  len(grad2))
+    grads1_flattened = torch.cat([grad.flatten() for grad in grad1])
+    grads2_flattened = torch.cat([grad.flatten() for grad in grad2])
+    cosine_similarity = torch.nn.functional.cosine_similarity(grads1_flattened, grads2_flattened, dim=0)
+    ratio = (grads1_flattened / (grads2_flattened + 1e-8)).abs().median()
+    return cosine_similarity, ratio
+
+def process_gradient(grad, device):
+    return [g.detach() if g is not None else torch.Tensor([0.]).to(device) for g in grad]
+
 
         

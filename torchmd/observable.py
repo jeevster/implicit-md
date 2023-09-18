@@ -118,6 +118,9 @@ class DifferentiableADF(torch.nn.Module):
         cos_angles = compute_angle(xyz, angle_list, self.cell, N=self.n_atoms)  
         angles = cos_angles.acos() * 180/np.pi
         count = self.smear(angles.reshape(-1).squeeze()[..., None]).sum(0) 
+        if torch.any(torch.isnan(count)):
+            import pdb; pdb.set_trace()
+            x = 0
         norm = count.sum()   # normalization factor for histogram 
         count = count / (norm)  # normalize 
         

@@ -31,7 +31,7 @@ import shutil
 from torch.utils.tensorboard import SummaryWriter
 from sys import getrefcount
 from functorch import vmap, vjp
-from utils import radii_to_dists, fcc_positions, initialize_velocities, \
+from utils import process_gradient, compare_gradients, radii_to_dists, fcc_positions, initialize_velocities, \
                     dump_params_to_yml, powerlaw_inv_cdf, print_active_torch_tensors, plot_pair, solve_continuity_system, find_hr_adf_from_file, distance_pbc
 import warnings
 warnings.filterwarnings("ignore")
@@ -130,7 +130,7 @@ class ImplicitMDSimulator():
         self.final_atom_types = torch.Tensor(self.typeid).repeat(self.n_replicas).to(self.device).to(torch.long)
 
         #extract ground truth energies, forces, and bond length deviation
-        DATAPATH_TEST = f'{self.data_dir}/{self.name}/{self.molecule}/{self.size}/test/nequip_npz.npz'
+        DATAPATH_TEST = f'{self.data_dir}/{self.name}/{self.molecule}/{self.size}/val/nequip_npz.npz'
         gt_data_test = np.load(DATAPATH_TEST)
         self.gt_traj_test = torch.FloatTensor(gt_data_test.f.R).to(self.device)
         self.gt_energies_test = torch.FloatTensor(gt_data_test.f.E).to(self.device)
@@ -221,6 +221,8 @@ class ImplicitMDSimulator():
 
         #energy/force stuff
         self.evaluator = Evaluator(task="s2ef") #s2ef: structure to energies/forces
+        self.energy_loss = torch.nn.MSELoss()
+        self.force_loss = torch.nn.MSELoss()
         self.energy_loss_weight = params.energy_loss_weight
         self.force_loss_weight = params.force_loss_weight
         
@@ -239,7 +241,7 @@ class ImplicitMDSimulator():
         self.f = open(f"{self.save_dir}/log.txt", "a+")
          
 
-    '''compute energy/force error on held-out test set'''
+    '''compute energy/force error on validation set'''
     def energy_force_error(self, batch_size):
         with torch.no_grad():
             num_batches = math.ceil(self.gt_traj_test.shape[0]/ batch_size)
@@ -274,19 +276,17 @@ class ImplicitMDSimulator():
             prediction = {'energy': self.normalizer_train.denorm(energies), 'forces': forces.reshape(-1, 3), 'natoms': torch.Tensor([self.n_atoms]).repeat(energies.shape[0]).to(self.device)}
             metrics = self.evaluator.eval(prediction, self.target_test)
             metrics = {k: v['metric'] for k, v in metrics.items()}
-                    
-            return metrics['energy_rmse'], metrics['force_rmse']
+            return metrics['energy_rmse'], metrics['forces_rmse']
 
     def energy_force_gradient(self, batch_size):
         num_batches = math.ceil(self.gt_traj_train.shape[0]/ batch_size)
-        gradients = []
+        energy_gradients = []
+        force_gradients = []
         #store original shapes of model parameters
         original_numel = [param.data.numel() for param in self.model.parameters()]
         original_shapes = [param.data.shape for param in self.model.parameters()]
         with torch.enable_grad():
-            
-            print("Computing energy/force gradients")
-            for i in tqdm(range(num_batches)):
+            for i in range(num_batches):
                 start = batch_size*i
                 end = batch_size*(i+1)
                 actual_batch_size = min(end, self.gt_traj_train.shape[0]) - start        
@@ -308,17 +308,20 @@ class ImplicitMDSimulator():
                     # energy = atoms_updated[AtomicDataDict.TOTAL_ENERGY_KEY].detach()
                     # forces = atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.n_atoms, 3) if retain_grad else atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.n_atoms, 3).detach()
                 #compute losses
-                energy_loss = torch.norm(self.normalizer_train.norm(self.gt_energies_train[start:end]) 
-                                                - energy, p=2, dim=-1).mean()
-                force_loss = torch.norm(self.gt_forces_train[start:end] - force, p=2, dim=-1).mean() 
-                loss = self.energy_loss_weight*energy_loss + self.force_loss_weight*force_loss
-                gradients.append(torch.autograd.grad(loss, self.model.parameters()))
+                energy_loss = self.energy_loss(self.normalizer_train.norm(self.gt_energies_train[start:end]), energy).mean()
+                force_loss = self.force_loss(self.gt_forces_train[start:end].reshape(-1, 3), force.reshape(-1, 3)).mean() 
+                energy_gradients.append(process_gradient(torch.autograd.grad(energy_loss, self.model.parameters(), retain_graph = True), self.device))
+                force_gradients.append(process_gradient(torch.autograd.grad(force_loss, self.model.parameters(), allow_unused = True), self.device))
             num_params = len(list(self.model.parameters()))
-            grads_flattened= torch.stack([torch.cat([gradients[j][i].flatten().detach() for i in range(num_params)]) for j in range(num_batches)])
-            mean_grads = grads_flattened.mean(0)
-            #re-assemble flattened gradients into correct shape
-            final_grads = tuple([g.reshape(shape) for g, shape in zip(mean_grads.split(original_numel), original_shapes)])
-            return final_grads
+            #energy
+            energy_grads_flattened = torch.stack([torch.cat([energy_gradients[j][i].flatten().detach() for i in range(num_params)]) for j in range(num_batches)])
+            mean_energy_grads = energy_grads_flattened.mean(0)
+            final_energy_grads = tuple([g.reshape(shape) for g, shape in zip(mean_energy_grads.split(original_numel), original_shapes)])
+            #force
+            force_grads_flattened = torch.stack([torch.cat([force_gradients[j][i].flatten().detach() for i in range(num_params)]) for j in range(num_batches)])
+            mean_force_grads = force_grads_flattened.mean(0)
+            final_force_grads = tuple([g.reshape(shape) for g, shape in zip(mean_force_grads.split(original_numel), original_shapes)])
+            return final_energy_grads, final_force_grads
 
 
     def resume(self):
@@ -442,8 +445,7 @@ class ImplicitMDSimulator():
             self.t.append(self.create_frame(frame = self.step/self.n_dump))
         return radii, velocities, forces, noise
 
-    def process_gradient(self, g):
-        return g.detach() if g is not None else torch.Tensor([0.]).to(self.device)  
+      
     #top level MD simulation code (i.e the "solver") that returns the optimal "parameter" -aka the equilibriated radii
     def solve(self):
         self.running_dists = []
@@ -562,40 +564,6 @@ class ImplicitMDSimulator():
                 "Momentum Magnitude": torch.norm(torch.sum(self.masses*self.velocities, axis =-2)).item(),
                 "Max Bond Length Deviation": max_dev.item()}
 
-    def get_adjoints(self, pos_traj, vel_traj, grad_outputs, force_fn = None):
-        
-        with torch.no_grad():
-            a_dt = self.dt*1 #save frequency = 1 for now
-            M = self.masses
-            adjoints = []
-            adjoint_norms = []
-            testR = []
-    
-            #initial adjoints
-            #grad_outputs *= a_dt**2/M #pre-multiply the grad outputs to make norms closer to naive backprop (still not sure why this is needed)
-            a = grad_outputs[:, -1]
-            for i in tqdm(range(self.vacf_window)):
-                #work backwards from the final state
-                R = pos_traj[:, -i -1].detach().to(self.device)
-                
-                testR.append(R.detach())
-                adjoints.append(a.detach())
-                adjoint_norms.append(a.norm(dim = (-2, -1)).detach())
-                #compute VJP between adjoint (a) and df/dR which is the time-derivative of the adjoint state
-                #verified that this does the same thing as torch.autograd.grad(forces, R, a, create_graph = True)
-                #where forces = force_fn(R)
-                _, vjp_a = torch.autograd.functional.vjp(force_fn, R, a)
-                #update adjoint state
-                a = a + a_dt**2 * vjp_a /M - a_dt*self.gamma * a
-                #adjust in the direction of the next grad outputs
-                if i != self.vacf_window -1:   
-                    a = a + grad_outputs[:, -i - 2]
-                
-            adjoints = torch.stack(adjoints, axis=1)
-            adjoint_norms = torch.stack(adjoint_norms)
-            testR = torch.stack(testR, axis=1)
-        return adjoints, adjoint_norms, testR
-
 class Stochastic_IFT(torch.autograd.Function):
     def __init__(self, params, device):
         super(Stochastic_IFT, self).__init__()
@@ -643,9 +611,12 @@ class Stochastic_IFT(torch.autograd.Function):
             mean_vacf = vacfs.mean(dim = 0)
             mean_vacf_loss = vacf_loss(mean_vacf)
 
-            #energy/force loss - TODO: add an option to include this in the training
+            #energy/force loss
             if (simulator.energy_loss_weight != 0 or simulator.force_loss_weight!=0) and simulator.train:
-                energy_force_grads = simulator.energy_force_gradient(batch_size = simulator.n_replicas)
+                energy_grads, force_grads = simulator.energy_force_gradient(batch_size = simulator.n_replicas)
+                energy_force_package = ([energy_grads], [force_grads])
+            else:
+                energy_force_package = (None, None)
 
             if simulator.vacf_loss_weight !=0 and simulator.train and simulator.all_unstable:
                 radii_traj = radii_traj.permute(1,0,2,3)
@@ -749,7 +720,7 @@ class Stochastic_IFT(torch.autograd.Function):
                         #grad = [[simulator.process_gradient(g) for g in get_grads(v)] for v in I_N]
                         #this explicit loop is very slow though (10 seconds per iteration)
                         #OM-action method
-                        grad = [[simulator.process_gradient(g) for g in torch.autograd.grad(o, model.parameters(), create_graph = False, retain_graph = True, allow_unused = True)] for o in tqdm(om_act.flatten())]
+                        grad = [process_gradient(torch.autograd.grad(o, model.parameters(), create_graph = False, retain_graph = True, allow_unused = True)) for o in tqdm(om_act.flatten())]
                         
                         om_act = om_act.detach()
                         diffs.append(diff)
@@ -923,7 +894,7 @@ class Stochastic_IFT(torch.autograd.Function):
                 #print(f"gradient calculation time: {end_time-start_time} seconds")
                 rdf_package = (rdf_gradient_estimators, mean_rdf, rdf_loss(mean_rdf).to(simulator.device), mean_adf, adf_loss(mean_adf).to(simulator.device))
             
-            return equilibriated_simulator, rdf_package, vacf_package
+            return equilibriated_simulator, rdf_package, vacf_package, energy_force_package
 
 if __name__ == "__main__":
     setup_logging() 
@@ -1022,6 +993,8 @@ if __name__ == "__main__":
     lrs = []
     resets = []
     best_outer_loss = 100
+    grad_cosine_similarity = 0
+    ratios = 0
     writer = SummaryWriter(log_dir = results_dir)
 
     #top level simulator
@@ -1068,26 +1041,41 @@ if __name__ == "__main__":
 
         else:
             #run simulation and get gradients via Fabian method/adjoint
-            equilibriated_simulator, rdf_package, vacf_package = top_level.apply(simulator, gt_rdf, gt_adf, gt_vacf, params)
+            equilibriated_simulator, rdf_package, vacf_package, energy_force_package = top_level.apply(simulator, gt_rdf, gt_adf, gt_vacf, params)
             
 
             #unpack results
             rdf_grad_batches, mean_rdf, rdf_loss, mean_adf, adf_loss = rdf_package
             vacf_grad_batches, mean_vacf, vacf_loss = vacf_package
+            energy_grad_batches, force_grad_batches = energy_force_package
             
             #make lengths match for iteration
             if rdf_grad_batches is None:
                 rdf_grad_batches = vacf_grad_batches
             if vacf_grad_batches is None:
                 vacf_grad_batches = rdf_grad_batches
+            if energy_grad_batches is None and force_grad_batches is None:
+                energy_grad_batches = rdf_grad_batches
+                force_grad_batches = rdf_grad_batches
             
             #manual gradient updates for now
             if vacf_grad_batches or rdf_grad_batches:
-                for rdf_grads, vacf_grads in zip(rdf_grad_batches, vacf_grad_batches): #loop through minibatches
+                grad_cosine_similarity = []
+                ratios = []
+                for rdf_grads, vacf_grads, energy_grads, force_grads in zip(rdf_grad_batches, vacf_grad_batches, energy_grad_batches, force_grad_batches): #loop through minibatches
                     optimizer.zero_grad()
-                    for param, rdf_grad, vacf_grad in zip(model.parameters(), rdf_grads, vacf_grads):
-                        grad = params.rdf_loss_weight*rdf_grad + params.vacf_loss_weight*vacf_grad
-                        param.grad = grad
+                    add_lists = lambda list1, list2, w1, w2: tuple([w1*l1 + w2*l2 \
+                                                        for l1, l2 in zip(list1, list2)])
+                    obs_grads = add_lists(rdf_grads, vacf_grads, params.rdf_loss_weight, params.vacf_loss_weight)
+                    ef_grads = add_lists(energy_grads, force_grads, params.energy_loss_weight, params.force_loss_weight)
+                    cosine_similarity, ratio = compare_gradients(obs_grads, ef_grads)
+                    grad_cosine_similarity.append(cosine_similarity)#compute gradient similarities
+                    ratios.append(ratio)
+                    
+                    #Loop through each group of parameters and set gradients
+                    for param, obs_grad, ef_grad in zip(model.parameters(), obs_grads, ef_grads):
+                        param.grad = obs_grad + ef_grad
+                        
                     if params.gradient_clipping: #gradient clipping
                         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                     if simulator.all_unstable and not changed_lr: #start learning
@@ -1098,6 +1086,8 @@ if __name__ == "__main__":
                             simulator.stable_time = torch.zeros((simulator.n_replicas,)).to(simulator.device)
                     if optimizer.param_groups[0]['lr'] > 0:
                         optimizer.step()
+                grad_cosine_similarity = sum(grad_cosine_similarity) / len(grad_cosine_similarity)
+                ratios = sum(ratios) / len(ratios)
             
             if simulator.all_unstable and (optimizer.param_groups[0]['lr'] < min_lr or num_resets <= params.min_frac_unstable_threshold):
                 print(f"Back to data collection")
@@ -1113,18 +1103,16 @@ if __name__ == "__main__":
                     
         end = time.time()
         sim_time = end - start
-
         
         #save rdf, adf, and vacf at the end of the trajectory
         filename = f"rdf_epoch{epoch+1}.npy"
         np.save(os.path.join(results_dir, filename), mean_rdf.cpu().detach().numpy())
-
         filename = f"adf_epoch{epoch+1}.npy"
         np.save(os.path.join(results_dir, filename), mean_adf.cpu().detach().numpy())
-
         filename = f"vacf_epoch{epoch+1}.npy"
         np.save(os.path.join(results_dir, filename), mean_vacf.cpu().detach().numpy())
         
+        #TODO: figure out why ADF loss is becoming NaN in some cases
         if torch.isnan(adf_loss):
             adf_loss = torch.zeros_like(adf_loss).to(device)
 
@@ -1136,9 +1124,6 @@ if __name__ == "__main__":
             best_outer_loss = outer_loss
             best = True
         simulator.save_checkpoint(best = best)
-        #nequip re-deploy with updated weights
-        # simulator.model, _ = Trainer.load_model_from_training_session(simulator.save_dir, \
-        #                         model_name = 'best_ckpt.pt' if best else 'ckpt.pt', config_dictionary = simulator.model_config, device = device)
         
         torch.cuda.empty_cache()
         gc.collect()
@@ -1185,7 +1170,9 @@ if __name__ == "__main__":
         writer.add_scalar('Force RMSE', force_rmses[-1], global_step=epoch+1)
         writer.add_scalar('Simulation Time', sim_times[-1], global_step=epoch+1)
         writer.add_scalar('Gradient Norm', grad_norms[-1], global_step=epoch+1)
-        
+        writer.add_scalar('Gradient Cosine Similarity (Observable vs Energy-Force)', grad_cosine_similarity, global_step=epoch+1)
+        writer.add_scalar('Gradient Ratios (Observable vs Energy-Force)', ratios, global_step=epoch+1)
+
     simulator.f.close()
     simulator.t.close()
 
