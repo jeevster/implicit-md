@@ -55,6 +55,9 @@ from mdsim.common.custom_radius_graph import detach_numpy
 from mdsim.datasets import data_list_collater
 from mdsim.datasets.lmdb_dataset import LmdbDataset, data_list_collater
 from mdsim.common.utils import load_config
+from mdsim.modules.evaluator import Evaluator
+from mdsim.modules.normalizer import Normalizer
+
 from mdsim.common.utils import (
     build_config,
     create_grid,
@@ -131,16 +134,18 @@ class ImplicitMDSimulator():
         gt_data_test = np.load(DATAPATH_TEST)
         self.gt_traj_test = torch.FloatTensor(gt_data_test.f.R).to(self.device)
         self.gt_energies_test = torch.FloatTensor(gt_data_test.f.E).to(self.device)
-        #normalize
-        self.gt_energies_test = (self.gt_energies_test - self.gt_energies_test.mean()) / self.gt_energies_test.std()
         self.gt_forces_test = torch.FloatTensor(gt_data_test.f.F).to(self.device)
+        self.target_test = {'energy': self.gt_energies_test, 'forces': self.gt_forces_test.reshape(-1, 3), \
+                            'natoms': torch.Tensor([self.n_atoms]).repeat(self.gt_energies_test.shape[0]).to(self.device)}
+        self.normalizer_test = Normalizer(tensor = self.gt_energies_test, device = self.device)
         DATAPATH_TRAIN = f'{self.data_dir}/{self.name}/{self.molecule}/{self.size}/train/nequip_npz.npz'
         gt_data_train = np.load(DATAPATH_TRAIN)
         self.gt_traj_train = torch.FloatTensor(gt_data_train.f.R).to(self.device)
         self.gt_energies_train = torch.FloatTensor(gt_data_train.f.E).to(self.device)
-        #normalize
-        self.gt_energies_train = (self.gt_energies_train - self.gt_energies_train.mean()) / self.gt_energies_train.std()
         self.gt_forces_train = torch.FloatTensor(gt_data_train.f.F).to(self.device)
+        self.target_train = {'energy': self.gt_energies_train, 'forces': self.gt_forces_train.reshape(-1, 3), \
+                                'natoms': torch.Tensor([self.n_atoms]).repeat(self.gt_energies_train.shape[0]).to(self.device)}
+        self.normalizer_train = Normalizer(tensor = self.gt_energies_train, device = self.device)
         self.mean_bond_lens = distance_pbc(
         self.gt_traj_train[:, self.bonds[:, 0]], self.gt_traj_train[:, self.bonds[:, 1]], \
                     torch.FloatTensor([30., 30., 30.]).to(self.device)).mean(dim=0)
@@ -213,6 +218,9 @@ class ImplicitMDSimulator():
         self.rdf_loss_weight = params.rdf_loss_weight
         self.diffusion_loss_weight = params.diffusion_loss_weight
         self.vacf_loss_weight = params.vacf_loss_weight
+
+        #energy/force stuff
+        self.evaluator = Evaluator(task="s2ef") #s2ef: structure to energies/forces
         self.energy_loss_weight = params.energy_loss_weight
         self.force_loss_weight = params.force_loss_weight
         
@@ -262,12 +270,12 @@ class ImplicitMDSimulator():
                 energies.append(energy.detach())
                 forces.append(force.detach())
             energies = torch.cat(energies)
-            #normalize energies
-            energies = (energies - energies.mean()) / energies.std()
             forces = torch.cat(forces)
-            energy_rmse = torch.norm(self.gt_energies - energies, p=2, dim=-1).mean()
-            force_rmse = torch.norm(self.gt_forces - forces, p=2, dim=-1).mean()
-            return energy_rmse, force_rmse
+            prediction = {'energy': self.normalizer_train.denorm(energies), 'forces': forces.reshape(-1, 3), 'natoms': torch.Tensor([self.n_atoms]).repeat(energies.shape[0]).to(self.device)}
+            metrics = self.evaluator.eval(prediction, self.target_test)
+            metrics = {k: v['metric'] for k, v in metrics.items()}
+                    
+            return metrics['energy_rmse'], metrics['force_rmse']
 
     def energy_force_gradient(self, batch_size):
         num_batches = math.ceil(self.gt_traj_train.shape[0]/ batch_size)
@@ -299,19 +307,16 @@ class ImplicitMDSimulator():
                     # atoms_updated = self.model(self.atoms_batch)
                     # energy = atoms_updated[AtomicDataDict.TOTAL_ENERGY_KEY].detach()
                     # forces = atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.n_atoms, 3) if retain_grad else atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.n_atoms, 3).detach()
-                
-                energy = (energy - energy.mean()) / energy.std()
-                energy_loss = torch.norm(self.gt_energies_train[start:end] - energy, p=2, dim=-1).mean()
+                #compute losses
+                energy_loss = torch.norm(self.normalizer_train.norm(self.gt_energies_train[start:end]) 
+                                                - energy, p=2, dim=-1).mean()
                 force_loss = torch.norm(self.gt_forces_train[start:end] - force, p=2, dim=-1).mean() 
                 loss = self.energy_loss_weight*energy_loss + self.force_loss_weight*force_loss
-                
                 gradients.append(torch.autograd.grad(loss, self.model.parameters()))
-                
-                num_params = len(list(self.model.parameters()))
+            num_params = len(list(self.model.parameters()))
             grads_flattened= torch.stack([torch.cat([gradients[j][i].flatten().detach() for i in range(num_params)]) for j in range(num_batches)])
             mean_grads = grads_flattened.mean(0)
             #re-assemble flattened gradients into correct shape
-            import pdb; pdb.set_trace()
             final_grads = tuple([g.reshape(shape) for g, shape in zip(mean_grads.split(original_numel), original_shapes)])
             return final_grads
 
@@ -642,7 +647,7 @@ class Stochastic_IFT(torch.autograd.Function):
             if (simulator.energy_loss_weight != 0 or simulator.force_loss_weight!=0) and simulator.train:
                 energy_force_grads = simulator.energy_force_gradient(batch_size = simulator.n_replicas)
 
-            if simulator.vacf_loss_weight !=0 and simulator.train:
+            if simulator.vacf_loss_weight !=0 and simulator.train and simulator.all_unstable:
                 radii_traj = radii_traj.permute(1,0,2,3)
                 accel_traj = torch.stack(equilibriated_simulator.running_accs).permute(1,0,2,3)
                 if simulator.integrator == "Langevin":
@@ -1120,7 +1125,9 @@ if __name__ == "__main__":
         filename = f"vacf_epoch{epoch+1}.npy"
         np.save(os.path.join(results_dir, filename), mean_vacf.cpu().detach().numpy())
         
-        
+        if torch.isnan(adf_loss):
+            adf_loss = torch.zeros_like(adf_loss).to(device)
+
         outer_loss = params.rdf_loss_weight*rdf_loss + params.adf_loss_weight*adf_loss + diffusion_loss + params.vacf_loss_weight*vacf_loss
         print(f"Loss: RDF={rdf_loss.item()}+ADF={adf_loss.item()}+Diffusion={diffusion_loss.item()}+VACF={vacf_loss.item()}={outer_loss.item()}")
 
@@ -1146,7 +1153,7 @@ if __name__ == "__main__":
         #log stats
         losses.append(outer_loss.item())
         rdf_losses.append(rdf_loss.item())
-        adf_losses.append(rdf_loss.item())
+        adf_losses.append(adf_loss.item())
         vacf_losses.append(vacf_loss.item())
         max_bond_len_devs.append(equilibriated_simulator.max_dev)
         resets.append(num_resets)
