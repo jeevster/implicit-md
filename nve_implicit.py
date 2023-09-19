@@ -968,14 +968,7 @@ if __name__ == "__main__":
         np.save(os.path.join(results_dir, 'gt_rdf.npy'), gt_rdf.cpu())
         np.save(os.path.join(results_dir, 'gt_adf.npy'), gt_adf.cpu())
         np.save(os.path.join(results_dir, 'gt_vacf.npy'), gt_vacf.cpu())
-    #initialize outer loop optimizer/scheduler
-    if params.optimizer == 'Adam':
-        optimizer = torch.optim.Adam(list(model.parameters()), lr=0)
-    elif params.optimizer == 'SGD':
-        optimizer = torch.optim.SGD(list(model.parameters()), lr=0)
-    else:
-        raise RuntimeError("Optimizer must be either Adam or SGD")
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=10)
+    
     min_lr = params.lr / (5 * params.max_times_reduce_lr)
 
     #outer training loop
@@ -993,8 +986,6 @@ if __name__ == "__main__":
     lrs = []
     resets = []
     best_outer_loss = 100
-    grad_cosine_similarity = 0
-    ratios = 0
     writer = SummaryWriter(log_dir = results_dir)
 
     #top level simulator
@@ -1007,11 +998,21 @@ if __name__ == "__main__":
         vacf_loss = torch.Tensor([0]).to(device)
         diffusion_loss = torch.Tensor([0]).to(device)
         best = False
+        grad_cosine_similarity = 0
+        ratios = 0
         print(f"Epoch {epoch+1}")
         
         if epoch==0: #draw IC from dataset
             #initialize simulator parameterized by a NN model
             simulator = ImplicitMDSimulator(config, params, model, model_config)
+            #initialize outer loop optimizer/scheduler
+            if params.optimizer == 'Adam':
+                optimizer = torch.optim.Adam(list(simulator.model.parameters()), lr=0)
+            elif params.optimizer == 'SGD':
+                optimizer = torch.optim.SGD(list(simulator.model.parameters()), lr=0)
+            else:
+                raise RuntimeError("Optimizer must be either Adam or SGD")
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=10)
             print(f"Initialize {simulator.n_replicas} random ICs in parallel")
             num_resets = 0
         else: #continue from where we left off in the last epoch/batch
@@ -1043,7 +1044,6 @@ if __name__ == "__main__":
             #run simulation and get gradients via Fabian method/adjoint
             equilibriated_simulator, rdf_package, vacf_package, energy_force_package = top_level.apply(simulator, gt_rdf, gt_adf, gt_vacf, params)
             
-
             #unpack results
             rdf_grad_batches, mean_rdf, rdf_loss, mean_adf, adf_loss = rdf_package
             vacf_grad_batches, mean_vacf, vacf_loss = vacf_package
@@ -1086,6 +1086,7 @@ if __name__ == "__main__":
                             simulator.stable_time = torch.zeros((simulator.n_replicas,)).to(simulator.device)
                     if optimizer.param_groups[0]['lr'] > 0:
                         optimizer.step()
+                scheduler.step(num_resets) #adjust LR according to number of unstable replicas
                 grad_cosine_similarity = sum(grad_cosine_similarity) / len(grad_cosine_similarity)
                 ratios = sum(ratios) / len(ratios)
             
@@ -1095,9 +1096,9 @@ if __name__ == "__main__":
                 changed_lr = False
                 #reinitialize optimizer and scheduler with LR = 0
                 if params.optimizer == 'Adam':
-                    optimizer = torch.optim.Adam(list(model.parameters()), lr=0)
+                    optimizer = torch.optim.Adam(list(simulator.model.parameters()), lr=0)
                 elif params.optimizer == 'SGD':
-                    optimizer = torch.optim.SGD(list(model.parameters()), lr=0)
+                    optimizer = torch.optim.SGD(list(simulator.model.parameters()), lr=0)
                 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=10)
 
                     
@@ -1134,7 +1135,6 @@ if __name__ == "__main__":
                 if  norm > max_norm:
                     max_norm = norm
         
-        scheduler.step(outer_loss)
         #log stats
         losses.append(outer_loss.item())
         rdf_losses.append(rdf_loss.item())
@@ -1173,8 +1173,8 @@ if __name__ == "__main__":
         writer.add_scalar('Gradient Cosine Similarity (Observable vs Energy-Force)', grad_cosine_similarity, global_step=epoch+1)
         writer.add_scalar('Gradient Ratios (Observable vs Energy-Force)', ratios, global_step=epoch+1)
 
-    simulator.f.close()
-    simulator.t.close()
+    # simulator.f.close()
+    # simulator.t.close()
 
     stats_write_file = os.path.join(simulator.save_dir, 'stats.txt')
     with open(stats_write_file, "w") as output:
