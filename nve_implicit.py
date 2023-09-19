@@ -130,7 +130,7 @@ class ImplicitMDSimulator():
         self.final_atom_types = torch.Tensor(self.typeid).repeat(self.n_replicas).to(self.device).to(torch.long)
 
         #extract ground truth energies, forces, and bond length deviation
-        DATAPATH_TEST = f'{self.data_dir}/{self.name}/{self.molecule}/{self.size}/val/nequip_npz.npz'
+        DATAPATH_TEST = f'{self.data_dir}/{self.name}/{self.molecule}/{self.size}/test/nequip_npz.npz'
         gt_data_test = np.load(DATAPATH_TEST)
         self.gt_traj_test = torch.FloatTensor(gt_data_test.f.R).to(self.device)
         self.gt_energies_test = torch.FloatTensor(gt_data_test.f.E).to(self.device)
@@ -241,7 +241,7 @@ class ImplicitMDSimulator():
         self.f = open(f"{self.save_dir}/log.txt", "a+")
          
 
-    '''compute energy/force error on validation set'''
+    '''compute energy/force error on test set'''
     def energy_force_error(self, batch_size):
         with torch.no_grad():
             num_batches = math.ceil(self.gt_traj_test.shape[0]/ batch_size)
