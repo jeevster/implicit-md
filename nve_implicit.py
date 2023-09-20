@@ -22,8 +22,6 @@ from torch_geometric.nn import MessagePassing, radius_graph
 from torchmd.interface import GNNPotentials, PairPotentials, Stack
 from torchmd.potentials import ExcludedVolume, LennardJones, LJFamily,  pairMLP
 from torchmd.observable import generate_vol_bins, DifferentiableRDF, DifferentiableADF, DifferentiableVelHist, DifferentiableVACF, msd, DiffusionCoefficient
-import torchopt
-from torchopt.nn import ImplicitMetaGradientModule
 from contextlib import nullcontext
 import time
 import gc
@@ -656,14 +654,14 @@ class Stochastic_IFT(torch.autograd.Function):
                         return -grad
                     elif simulator.model_type == "nequip":
                         #recompute neighbor list
-                        self.atoms_batch['edge_index'] = radius_graph(radii.reshape(-1, 3), r=self.model_config["r_max"], batch=batch, max_num_neighbors=32)
-                        self.atoms_batch['edge_cell_shift'] = torch.zeros((self.atoms_batch['edge_index'].shape[1], 3)).to(self.device)
+                        simulator.atoms_batch['edge_index'] = radius_graph(radii.reshape(-1, 3), r=simulator.model_config["r_max"], batch=batch, max_num_neighbors=32)
+                        simulator.atoms_batch['edge_cell_shift'] = torch.zeros((simulator.atoms_batch['edge_index'].shape[1], 3)).to(simulator.device)
                         for k in AtomicDataDict.ALL_ENERGY_KEYS:
-                            if k in self.atoms_batch:
-                                del self.atoms_batch[k]
-                        atoms_updated = self.model(self.atoms_batch)
+                            if k in simulator.atoms_batch:
+                                del simulator.atoms_batch[k]
+                        atoms_updated = simulator.model(simulator.atoms_batch)
                         energy = atoms_updated[AtomicDataDict.TOTAL_ENERGY_KEY].detach()
-                        forces = atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.n_atoms, 3) if retain_grad else atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.n_atoms, 3).detach()
+                        forces = atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, simulator.n_atoms, 3)
                         return forces
 
                 #define Onsager-Machlup Action ("energy" of each trajectory)
