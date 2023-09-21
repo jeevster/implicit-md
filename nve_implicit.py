@@ -814,10 +814,12 @@ class Stochastic_IFT(torch.autograd.Function):
                 rdf_gradient_estimators = None
                 rdf_package = (rdf_gradient_estimators, mean_rdf, rdf_loss(mean_rdf).to(simulator.device), mean_adf, adf_loss(mean_adf).to(simulator.device))              
             else:
-                #now only keep the unstable replicas
-                rdfs = rdfs[:, ~stable_replicas].reshape(-1, rdfs.shape[-1])
-                adfs = adfs[:, ~stable_replicas].reshape(-1, adfs.shape[-1])
-                stacked_radii = stacked_radii[:, ~stable_replicas]
+                #only keep the unstable replicas
+                mask = ~stable_replicas if params.only_train_on_unstable_replicas \
+                        else torch.ones((simulator.n_replicas), dtype=torch.bool).to(simulator.device)
+                rdfs = rdfs[:, mask].reshape(-1, rdfs.shape[-1])
+                adfs = adfs[:, mask].reshape(-1, adfs.shape[-1])
+                stacked_radii = stacked_radii[:, mask]
                 
                 rdf_loss_tensor = vmap(rdf_loss)(rdfs).unsqueeze(-1).unsqueeze(-1)
                 adf_loss_tensor = vmap(adf_loss)(adfs).unsqueeze(-1).unsqueeze(-1)
@@ -1034,7 +1036,7 @@ if __name__ == "__main__":
                 optimizer = torch.optim.SGD(list(simulator.model.parameters()), lr=0)
             else:
                 raise RuntimeError("Optimizer must be either Adam or SGD")
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=10)
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=5)
             print(f"Initialize {simulator.n_replicas} random ICs in parallel")
             num_resets = 0
         else: #continue from where we left off in the last epoch/batch
@@ -1070,6 +1072,13 @@ if __name__ == "__main__":
             rdf_grad_batches, mean_rdf, rdf_loss, mean_adf, adf_loss = rdf_package
             vacf_grad_batches, mean_vacf, vacf_loss = vacf_package
             energy_grad_batches, force_grad_batches = energy_force_package
+
+            #TODO: figure out why ADF loss is becoming NaN in some cases
+            if torch.isnan(adf_loss):
+                adf_loss = torch.zeros_like(adf_loss).to(device)
+
+            outer_loss = params.rdf_loss_weight*rdf_loss + params.adf_loss_weight*adf_loss + diffusion_loss + params.vacf_loss_weight*vacf_loss
+            print(f"Loss: RDF={rdf_loss.item()}+ADF={adf_loss.item()}+Diffusion={diffusion_loss.item()}+VACF={vacf_loss.item()}={outer_loss.item()}")
             
             #make lengths match for iteration
             if rdf_grad_batches is None:
@@ -1108,7 +1117,7 @@ if __name__ == "__main__":
                             simulator.stable_time = torch.zeros((simulator.n_replicas,)).to(simulator.device)
                     if optimizer.param_groups[0]['lr'] > 0:
                         optimizer.step()
-                scheduler.step(num_resets) #adjust LR according to number of unstable replicas
+                scheduler.step(outer_loss) #adjust LR according to observable loss on stable replicas
                 grad_cosine_similarity = sum(grad_cosine_similarity) / len(grad_cosine_similarity)
                 ratios = sum(ratios) / len(ratios)
             
@@ -1121,7 +1130,7 @@ if __name__ == "__main__":
                     optimizer = torch.optim.Adam(list(simulator.model.parameters()), lr=0)
                 elif params.optimizer == 'SGD':
                     optimizer = torch.optim.SGD(list(simulator.model.parameters()), lr=0)
-                scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=10)
+                scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=5)
 
                     
         end = time.time()
@@ -1135,12 +1144,7 @@ if __name__ == "__main__":
         filename = f"vacf_epoch{epoch+1}.npy"
         np.save(os.path.join(results_dir, filename), mean_vacf.cpu().detach().numpy())
         
-        #TODO: figure out why ADF loss is becoming NaN in some cases
-        if torch.isnan(adf_loss):
-            adf_loss = torch.zeros_like(adf_loss).to(device)
-
-        outer_loss = params.rdf_loss_weight*rdf_loss + params.adf_loss_weight*adf_loss + diffusion_loss + params.vacf_loss_weight*vacf_loss
-        print(f"Loss: RDF={rdf_loss.item()}+ADF={adf_loss.item()}+Diffusion={diffusion_loss.item()}+VACF={vacf_loss.item()}={outer_loss.item()}")
+        
 
         #checkpointing
         if outer_loss < best_outer_loss:

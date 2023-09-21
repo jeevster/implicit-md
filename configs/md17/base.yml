@@ -29,13 +29,14 @@ diffusion_window: 1000
 vacf_window: 100
 ic_stddev: 0.0
 bond_dev_tol: 0.25 #decay this?
-max_frac_unstable_threshold: 0.1 #decay this?
+max_frac_unstable_threshold: 0.75 #decay this?
 min_frac_unstable_threshold: 0.0 #increase this?
 eq_steps: 0
 steps: 2000 # 1 picosecond per epoch
 n_dump: 50
 n_replicas: 128
 minibatch_size: 40
+only_train_on_unstable_replicas: False
 allow_off_policy_updates: False
 gradient_clipping: True
 use_mse_gradient: True
