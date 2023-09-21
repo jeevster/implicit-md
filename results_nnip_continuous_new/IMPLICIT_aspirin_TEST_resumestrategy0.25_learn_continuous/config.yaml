@@ -37,14 +37,14 @@ state:
   kcal: false
   local_rank: 0
   lr: 0.001
-  max_frac_unstable_threshold: 0.01
+  max_frac_unstable_threshold: 0.75
   max_rdf_dist: 10
   max_times_reduce_lr: 2
   min_frac_unstable_threshold: 0.0
   minibatch_size: 80
   mode: train
   model: schnet
-  model_dir: /pscratch/sd/s/sanjeevr/MODELPATH
+  model_dir: /data/ishan-amin/MODELPATH/
   molecule: aspirin
   n_dump: 50
   n_epochs: 500
@@ -64,7 +64,7 @@ state:
   seed: 0
   shuffle: true
   size: 1k
-  src: /pscratch/sd/s/sanjeevr
+  src: /data/sanjeevr
   steps: 2000
   submit: false
   summit: false
