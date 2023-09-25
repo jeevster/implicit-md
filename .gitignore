@@ -9,6 +9,10 @@ results_nnip_continuous_dynamics/
 results_nnip_continuous_dynamics_new/
 nnip_continuous_dynamics_new/
 *.npy
+*.png
+logs/
+ground_truth_parallel/
+ground_truth_polylj/
 log.txt
 test.gsd
 ground_truth/

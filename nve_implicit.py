@@ -101,9 +101,10 @@ class ImplicitMDSimulator():
         self.bond_dev_tol = config["bond_dev_tol"]
         self.max_frac_unstable_threshold = config["max_frac_unstable_threshold"]
         self.min_frac_unstable_threshold = config["min_frac_unstable_threshold"]
-        self.results_dir = config["results_dir"]
+        self.results_dir = os.path.join(config["log_dir"], config["results_dir"])
         self.eval_model = config["eval_model"]
         self.n_dump = config["n_dump"]
+        self.n_dump_vacf = config["n_dump_vacf"]
 
         #initialize datasets
         self.train_dataset = LmdbDataset({'src': os.path.join(self.data_dir, self.name, self.molecule, self.size, 'train')})
@@ -587,6 +588,9 @@ class Stochastic_IFT(torch.autograd.Function):
             gt_adf = args[2]
             gt_vacf = args[3]
             params = args[4]
+
+            if simulator.vacf_loss_weight !=0 and simulator.integrator != "Langevin":
+                raise RuntimeError("Must use stochastic (Langevin) dynamics for VACF training")
             
             MINIBATCH_SIZE = simulator.minibatch_size #how many structures to include at a time (match rare events sampling paper for now)
             diff_rdf = DifferentiableRDF(params, simulator.device)
@@ -603,7 +607,7 @@ class Stochastic_IFT(torch.autograd.Function):
             print('Collect MD Simulation Data')
             equilibriated_simulator = simulator.solve()
             running_radii = simulator.running_radii if simulator.all_unstable else simulator.running_radii[0:2]
-            ctx.save_for_backward(equilibriated_simulator)
+            #ctx.save_for_backward(equilibriated_simulator)
             
             model = equilibriated_simulator.model
             #find which replicas are unstable
@@ -619,6 +623,7 @@ class Stochastic_IFT(torch.autograd.Function):
             velocities_traj = torch.stack(equilibriated_simulator.running_vels).permute(1,0,2,3)
             #split into sub-trajectories of length = vacf_window
             velocities_traj = velocities_traj.reshape(velocities_traj.shape[0], -1, simulator.vacf_window, simulator.n_atoms, 3)
+            velocities_traj = velocities_traj[:, ::simulator.n_dump_vacf] #sample i.i.d paths
             vacfs = vmap(vmap(diff_vacf))(velocities_traj)
             mean_vacf = vacfs[stable_replicas].mean(dim = (0,1)) #only compute loss on stable replicas
             vacfs = vacfs.reshape(-1, simulator.vacf_window)
@@ -634,15 +639,12 @@ class Stochastic_IFT(torch.autograd.Function):
             if simulator.vacf_loss_weight !=0 and simulator.train and simulator.all_unstable:
                 radii_traj = radii_traj.permute(1,0,2,3)
                 accel_traj = torch.stack(equilibriated_simulator.running_accs).permute(1,0,2,3)
-                if simulator.integrator == "Langevin":
-                    noise_traj = torch.stack(equilibriated_simulator.running_noise).permute(1,0,2,3)
-                else:
-                    raise RuntimeError("Must use stochastic (Langevin) dynamics for VACF training")
-                
+                noise_traj = torch.stack(equilibriated_simulator.running_noise).permute(1,0,2,3)
                 #split into sub-trajectories of length = vacf_window
                 radii_traj = radii_traj.reshape(radii_traj.shape[0], -1, simulator.vacf_window,simulator.n_atoms, 3)
+                radii_traj = radii_traj[:, ::simulator.n_dump_vacf] #sample i.i.d paths
                 noise_traj = noise_traj.reshape(noise_traj.shape[0], -1, simulator.vacf_window, simulator.n_atoms, 3)
-                
+                noise_traj = noise_traj[:, ::simulator.n_dump_vacf] #sample i.i.d paths
             else:
                 del radii_traj
                 del velocities_traj
@@ -694,7 +696,7 @@ class Stochastic_IFT(torch.autograd.Function):
                 
                 #compute OM action - do it in mini-batches to avoid OOM issues
                 batch_size = 5
-                print(f"Calculate gradients of Onsager-Machlup action of {velocities_traj.shape[0]} replicas in minibatches of size {batch_size}")
+                print(f"Calculate gradients of Onsager-Machlup action of {velocities_traj.shape[0] * velocities_traj.shape[1]} paths in minibatches of size {batch_size*velocities_traj.shape[1]}")
                 num_blocks = math.ceil(velocities_traj.shape[0]/ batch_size)
                 diffs = []
                 om_acts = []
@@ -715,7 +717,7 @@ class Stochastic_IFT(torch.autograd.Function):
                         #     forces = get_forces(radii.reshape(-1, simulator.n_atoms, 3)).reshape(-1, simulator.vacf_window, simulator.n_atoms, 3)
                         
                         #make sure the diffs match the stored noises along the trajectory
-                        assert(torch.allclose(diff, noise_traj[start:end, :, 1:], atol = 1e-3))
+                        #assert(torch.allclose(diff, noise_traj[start:end, :, 1:], atol = 1e-3))
                         
                         #doesn't work because vmap detaches the force tensor before doing the vectorization
                         def get_grads(forces_, noises_):
@@ -733,7 +735,7 @@ class Stochastic_IFT(torch.autograd.Function):
                         #grad = [[simulator.process_gradient(g) for g in get_grads(v)] for v in I_N]
                         #this explicit loop is very slow though (10 seconds per iteration)
                         #OM-action method
-                        grad = [process_gradient(torch.autograd.grad(o, model.parameters(), create_graph = False, retain_graph = True, allow_unused = True), simulator.device) for o in tqdm(om_act.flatten())]
+                        grad = [process_gradient(torch.autograd.grad(o, model.parameters(), create_graph = False, retain_graph = True, allow_unused = True), simulator.device) for o in om_act.flatten()]
                         
                         om_act = om_act.detach()
                         diffs.append(diff)
@@ -926,6 +928,7 @@ if __name__ == "__main__":
     args, override_args = parser.parse_known_args()
     config = build_config(args, override_args)
     params = types.SimpleNamespace(**config)
+    params.results_dir = os.path.join(params.log_dir, params.results_dir)
 
     #Set random seeds
     np.random.seed(seed=params.seed)
@@ -1036,7 +1039,7 @@ if __name__ == "__main__":
                 optimizer = torch.optim.SGD(list(simulator.model.parameters()), lr=0)
             else:
                 raise RuntimeError("Optimizer must be either Adam or SGD")
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=5)
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=10)
             print(f"Initialize {simulator.n_replicas} random ICs in parallel")
             num_resets = 0
         else: #continue from where we left off in the last epoch/batch
@@ -1130,7 +1133,7 @@ if __name__ == "__main__":
                     optimizer = torch.optim.Adam(list(simulator.model.parameters()), lr=0)
                 elif params.optimizer == 'SGD':
                     optimizer = torch.optim.SGD(list(simulator.model.parameters()), lr=0)
-                scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=5)
+                scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=10)
 
                     
         end = time.time()

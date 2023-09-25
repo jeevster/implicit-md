@@ -1,19 +1,21 @@
 #!/bin/bash
 #SBATCH -N 1
-#SBATCH -C gpu
-#SBATCH -G 1
+#SBATCH -C gpu&hbm80g      # Request 80GB GPU
+#SBATCH -G 1               # Request 1 GPU
 #SBATCH -q regular
 #SBATCH -J Test
-#SBATCH --mail-user=sanjeevr@berkeley.edu
+#SBATCH --mail-user=sanjeevr@umich.edu
 #SBATCH --mail-type=ALL
+#SBATCH -o /global/cfs/projectdirs/m4319/sanjeevr/logs/implicit-md-%j.out
 #SBATCH -t 06:00:00
-#SBATCH -A mp4319
+#SBATCH -A m4319_g
 
-#OpenMP settings:
-export OMP_NUM_THREADS=1
-export OMP_PLACES=threads
-export OMP_PROC_BIND=spread
+# Define the path to your Python script
+script="/global/homes/s/sanjeevr/implicit-md/nve_implicit.py"
 
-#run the application:
-#applications may perform better with --gpu-bind=none instead of --gpu-bind=single:1 
-srun -n 1 -c 128 --cpu_bind=cores -G 1 --gpu-bind=single:1  /global/homes/s/sanjeevr/implicit-md/nve_implicit.py
+command="python $script --config-yml /global/homes/s/sanjeevr/implicit-md/configs/md17/base.yml --molecule=$1 --name=$2 --size=1k --rdf_loss_weight=$3 --vacf_loss_weight=$4 --minibatch_size=40 \
+             --energy_loss_weight=$5 --force_loss_weight=$6 --exp_name=$7"
+
+srun $command
+    
+

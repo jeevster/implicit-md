@@ -2,7 +2,7 @@ import subprocess
 from itertools import product
 
 
-molecules_md17 = ['naphthalene']#, 'salicylic_acid', 'aspirin']# 'ethanol', 'toluene', 'benzene', 'salicylic_acid', 'toluene', 'uracil']
+molecules_md17 = ['naphthalene', 'salicylic_acid', 'aspirin']# 'ethanol', 'toluene', 'benzene', 'salicylic_acid', 'toluene', 'uracil']
 
 molecules_md22 = ['DHA', 'ac_Ala3_NHMe', 'AT_AT', 'stachyose', 'AT_AT_CG_CG'] #'buckyball_catcher', 'double_walled_nanotube']
 
