@@ -6,21 +6,16 @@ import numpy as np
 from ase.md.md import MolecularDynamics
 from ase.md.verlet import VelocityVerlet
 from ase.md.langevin import Langevin
-import torch
-from nff.utils.scatter import compute_grad
-
 
 class NoseHoover(MolecularDynamics):
     def __init__(self,
                  atoms,
-                 model,
                  timestep,
                  temperature,
                  ttime,
                  trajectory=None,
                  logfile=None,
                  loginterval=1,
-                 device = "cpu",
                  **kwargs):
 
         super().__init__(
@@ -33,32 +28,22 @@ class NoseHoover(MolecularDynamics):
         # Initialize simulation parameters
 
         # Q is chosen to be 6 N kT
-        self.device = device
         self.dt = timestep
-    
         self.Natom = atoms.get_number_of_atoms()
         self.T = temperature
         self.targeEkin = 0.5 * (3.0 * self.Natom) * self.T
         self.ttime = ttime  # * units.fs
         self.Q = 3.0 * self.Natom * self.T * (self.ttime * self.dt)**2
-        self.zeta = torch.Tensor([0.0]).to(self.device)
-        self.model = model
-        self.z = torch.Tensor(self.atoms.get_atomic_numbers()).to(torch.long).to(self.device)
-        self.masses = torch.Tensor(self.atoms.get_masses().reshape(-1, 1)).to(self.device)
+        self.zeta = 0.0
 
-    def step(self, radii, velocities):
-
-        # get current acceleration and velocity:
-        with torch.enable_grad():
-            energy = self.model(pos = radii, z = self.z)
-        forces = -compute_grad(inputs = radii, output = energy)
-
+    def step(self):
         
-        accel = forces / self.masses
-        import pdb; pdb.set_trace()
+        # get current acceleration and velocity:
+        accel = self.atoms.get_forces() / self.atoms.get_masses().reshape(-1, 1)
+        vel = self.atoms.get_velocities()
 
         # make full step in position
-        radii = radii + vel * self.dt + \
+        x = self.atoms.get_positions() + vel * self.dt + \
             (accel - self.zeta * vel) * (0.5 * self.dt ** 2)
         self.atoms.set_positions(x)
 
@@ -70,11 +55,8 @@ class NoseHoover(MolecularDynamics):
         self.atoms.set_velocities(vel_half)
 
         # make a full step in accelerations
-        with torch.enable_grad():
-            pos = torch.Tensor(self.atoms.get_positions()).to(self.device).requires_grad_(True)
-            energy = self.model(pos = pos, z = self.z)
-        forces = -compute_grad(inputs = pos, output = energy)
-        accel = forces / self.atoms.get_masses().reshape(-1, 1)
+        f = self.atoms.get_forces()
+        accel = f / self.atoms.get_masses().reshape(-1, 1)
 
         # make a half step in self.zeta
         self.zeta = self.zeta + 0.5 * self.dt * \
@@ -89,8 +71,7 @@ class NoseHoover(MolecularDynamics):
             (1 + 0.5 * self.dt * self.zeta)
         self.atoms.set_velocities(vel)
 
-
-        return self.atoms.get_positions(), self.atoms.get_velocities()
+        return f
 
 
 class NoseHooverChain(MolecularDynamics):

@@ -24,6 +24,7 @@ from torchmd.potentials import ExcludedVolume, LennardJones, LJFamily,  pairMLP
 from torchmd.observable import generate_vol_bins, DifferentiableRDF, DifferentiableADF, DifferentiableVelHist, DifferentiableVACF, msd, DiffusionCoefficient
 import torchopt
 from torchopt.nn import ImplicitMetaGradientModule
+from mdsim.md.ase_utils import Simulator
 from contextlib import nullcontext
 import time
 import gc
@@ -108,14 +109,15 @@ class ImplicitMDSimulator():
         self.n_dump = config["n_dump"]
 
         #initialize datasets
-        self.train_dataset = LmdbDataset({'src': os.path.join(self.data_dir, self.name, self.molecule, self.size, 'train')})
-        self.valid_dataset = LmdbDataset({'src': os.path.join(self.data_dir, self.name, self.molecule, self.size, 'val')})
+        self.train_dataset = LmdbDataset({'src': os.path.join(self.data_dir, self.name, self.molecule, self.size, 'test')})
+        self.valid_dataset = LmdbDataset({'src': os.path.join(self.data_dir, self.name, self.molecule, '10k', 'val')})
 
         #get random initial condition from dataset
         length = self.train_dataset.__len__()
         init_data = self.train_dataset.__getitem__(10)
         self.n_atoms = init_data['pos'].shape[0]
         self.atoms = data_to_atoms(init_data)
+        
 
         #extract bond and atom type information
         NL = NeighborList(natural_cutoffs(self.atoms), self_interaction=False)
@@ -165,7 +167,6 @@ class ImplicitMDSimulator():
         self.zeta = torch.zeros((self.n_replicas, 1, 1)).to(self.device)
         self.masses = torch.Tensor(self.atoms.get_masses().reshape(1, -1, 1)).to(self.device)
 
-
         #Langevin thermostat stuff
         self.gamma = config["integrator_config"]["gamma"] / (1000*units.fs)
         self.noise_f = (2.0 * self.gamma/self.masses * self.temp * self.dt).sqrt().to(self.device)
@@ -189,24 +190,31 @@ class ImplicitMDSimulator():
         self.ic_stddev = params.ic_stddev
 
         dataset = self.train_dataset if self.train else self.valid_dataset
-        samples = np.random.choice(np.arange(dataset.__len__()), self.n_replicas)
+        #samples = np.random.choice(np.arange(dataset.__len__()), self.n_replicas, replace=False)
+        samples = [857]
         self.raw_atoms = [data_to_atoms(dataset.__getitem__(i)) for i in samples]
         self.cell = torch.Tensor(self.raw_atoms[0].cell).to(self.device)
         radii = torch.stack([torch.Tensor(atoms.get_positions()) for atoms in self.raw_atoms])
         self.radii = (radii + torch.normal(torch.zeros_like(radii), self.ic_stddev)).to(self.device)
         self.velocities = torch.Tensor(initialize_velocities(self.n_atoms, self.masses, self.temp, self.n_replicas)).to(self.device)
+        #save initial conditions
+        self.ic_radii = self.radii.clone()
+        self.ic_velocities = self.velocities.clone()
+        self.ic_zeta = self.zeta.clone()
         
         if self.model_type == 'nequip':
             #assign velocities to atoms
-            for i in range(len(self.raw_atoms)):
-                self.raw_atoms[i].set_velocities(self.velocities[i].cpu().numpy())
+            # for i in range(len(self.raw_atoms)):
+            #     self.raw_atoms[i].set_velocities(self.velocities[i].cpu().numpy())
             #create batch of atoms to be operated on
             self.atoms_batch = [AtomicData.from_ase(atoms=a, r_max= self.model_config["r_max"]) for a in self.raw_atoms]
             self.atoms_batch = AtomicData.to_AtomicDataDict(Batch.from_data_list(self.atoms_batch))
-            self.atoms_batch['atom_types'] = self.final_atom_types
+            self.atoms_batch['atom_types'] = self.final_atom_types.unsqueeze(-1)
             del self.atoms_batch['ptr']
             del self.atoms_batch['atomic_numbers']
             self.atoms_batch = {k: v.to(self.device) for k, v in self.atoms_batch.items()}
+            self.atoms_batch['pbc'] = self.atoms_batch['pbc'][0]
+            del self.atoms_batch['batch']
             # import pdb; pdb.set_trace()
             # del self.atoms_batch['cell']
             # del self.atoms_batch['pbc']
@@ -239,7 +247,30 @@ class ImplicitMDSimulator():
         dump_params_to_yml(self.params, self.save_dir)
         #File dump stuff
         self.f = open(f"{self.save_dir}/log.txt", "a+")
-         
+
+        
+        calculator = nequip_calculator(Path(self.model_dir) / 'deployed_model.pth', device='cuda',
+                                       energy_units_to_eV=1.)
+        self.raw_atoms[0].set_calculator(calculator)
+        # adjust units.
+        
+        config["integrator_config"]["timestep"] *= units.fs
+        if config["integrator"] in ['NoseHoover', 'NoseHooverChain']:
+            config["integrator_config"]["temperature"] *= units.kB
+        # set up simulator.
+        
+        integrator = getattr(md_integrator, config["integrator"])(self.raw_atoms[0], **config["integrator_config"])
+        
+        #now this simulation produces good outputs
+        simulator = Simulator(self.raw_atoms[0], integrator, config["integrator_config"]["temperature"] / units.kB, 
+                        restart=False,
+                        start_time=0,
+                        save_dir=self.save_dir, 
+                        save_frequency=10)
+        
+        # early_stop, step = simulator.run(config["steps"])
+        # import pdb; pdb.set_trace()
+        
 
     '''compute energy/force error on test set'''
     def energy_force_error(self, batch_size):
@@ -325,10 +356,11 @@ class ImplicitMDSimulator():
 
 
     def resume(self):
-        random_reset = torch.rand(size=(self.n_replicas,)).to(self.device) <= params.restart_probability
+        
         #reset replicas which exceeded the max bond dev criteria
-        stability_reset = self.max_bond_dev_per_replica > self.bond_dev_tol
-        reset_replicas = torch.logical_or(random_reset, stability_reset)
+        reset_replicas = self.max_bond_dev_per_replica > self.bond_dev_tol
+        #randomly reset some replicas to a random earlier point
+        random_reset = torch.rand(size=(self.n_replicas,)).to(self.device) <= params.restart_probability
         num_resets = reset_replicas.count_nonzero().item()
         if num_resets / self.n_replicas >= self.max_frac_unstable_threshold: #threshold of unstable replicas reached
             if not self.all_unstable:
@@ -365,17 +397,16 @@ class ImplicitMDSimulator():
             elif self.model_type == "nequip":
                 #assign radii
                 self.atoms_batch['pos'] = radii.reshape(-1, 3)
-                self.atoms_batch['batch'] = batch
-                self.atoms_batch['atom_types'] = self.final_atom_types
+                #self.atoms_batch['batch'] = batch
+                self.atoms_batch['atom_types'] = self.final_atom_types.unsqueeze(-1)
                 #recompute neighbor list
                 self.atoms_batch['edge_index'] = radius_graph(radii.reshape(-1, 3), r=self.model_config["r_max"], batch=batch, max_num_neighbors=32)
                 self.atoms_batch['edge_cell_shift'] = torch.zeros((self.atoms_batch['edge_index'].shape[1], 3)).to(self.device)
                 for k in AtomicDataDict.ALL_ENERGY_KEYS:
                     if k in self.atoms_batch:
                         del self.atoms_batch[k]
+                import pdb; pdb.set_trace()
                 atoms_updated = self.model(self.atoms_batch)
-                del self.atoms_batch['node_features']
-                del self.atoms_batch['node_attrs']
                 energy = atoms_updated[AtomicDataDict.TOTAL_ENERGY_KEY]
                 forces = atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.n_atoms, 3) if retain_grad else atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.n_atoms, 3).detach()
             assert(not torch.any(torch.isnan(forces)))
@@ -396,11 +427,6 @@ class ImplicitMDSimulator():
         # make half a step in velocity
         velocities = velocities + 0.5 * self.dt * (accel - zeta * velocities)
 
-        if self.model_type == "nequip":
-            self.atoms_batch['pos'] = radii.reshape(-1, 3)
-            self.atoms_batch['velocities'] = velocities.reshape(-1, 3)
-
-
         # make a full step in accelerations
         energy, forces = self.force_calc(radii, retain_grad=retain_grad)
         accel = forces / self.masses
@@ -418,9 +444,6 @@ class ImplicitMDSimulator():
         # make another half step in velocity
         velocities = (velocities + 0.5 * self.dt * accel) / \
             (1 + 0.5 * self.dt * zeta)
-
-        if self.model_type == "nequip":
-            self.atoms_batch['velocities'] = velocities.reshape(-1, 3)
         
         # dump frames
         if self.step%self.n_dump == 0:
@@ -433,7 +456,7 @@ class ImplicitMDSimulator():
     def forward_langevin(self, radii, velocities, forces, retain_grad = False):
         
         #full step in position
-        radii = radii.detach() + self.dt*velocities
+        radii = radii + self.dt*velocities
         #calculate force at new position
         energy, forces = self.force_calc(radii, retain_grad=retain_grad)
         noise = torch.randn_like(velocities)
@@ -720,7 +743,7 @@ class Stochastic_IFT(torch.autograd.Function):
                         #grad = [[simulator.process_gradient(g) for g in get_grads(v)] for v in I_N]
                         #this explicit loop is very slow though (10 seconds per iteration)
                         #OM-action method
-                        grad = [process_gradient(torch.autograd.grad(o, model.parameters(), create_graph = False, retain_graph = True, allow_unused = True)) for o in tqdm(om_act.flatten())]
+                        grad = [process_gradient(torch.autograd.grad(o, model.parameters(), create_graph = False, retain_graph = True, allow_unused = True), device = simulator.device) for o in tqdm(om_act.flatten())]
                         
                         om_act = om_act.detach()
                         diffs.append(diff)
@@ -935,9 +958,11 @@ if __name__ == "__main__":
 
     if model_type == "nequip":
         ckpt_epoch = config['checkpoint_epoch']
-        cname = 'best_model.pth' if ckpt_epoch == -1 else f"ckpt{ckpt_epoch}.pth"
-        model, model_config = Trainer.load_model_from_training_session(pretrained_model_path, \
-                                model_name = cname, device =  torch.device(device))
+        cname = 'deployed_model.pth' if ckpt_epoch == -1 else f"ckpt{ckpt_epoch}.pth"
+        model = torch.jit.load(os.path.join(pretrained_model_path, cname)).to(device)
+        _, model_config = Trainer.load_model_from_training_session(pretrained_model_path, \
+                                model_name = 'best_model.pth', device =  torch.device(device))
+        
     elif model_type == "schnet":
         model, model_config = load_schnet_model(path = pretrained_model_path, ckpt_epoch = config['checkpoint_epoch'], device = torch.device(device), train = params.train or params.eval_model == 'pre')
     #count number of trainable params
@@ -1144,11 +1169,11 @@ if __name__ == "__main__":
         resets.append(num_resets)
         lrs.append(optimizer.param_groups[0]['lr'])
         #energy/force error
-        energy_rmse, force_rmse = simulator.energy_force_error(params.test_batch_size)
-        energy_rmses.append(energy_rmse)
-        force_rmses.append(force_rmse)
-        # energy_rmses.append(0)
-        # force_rmses.append(0)
+        # energy_rmse, force_rmse = simulator.energy_force_error(params.test_batch_size)
+        # energy_rmses.append(energy_rmse)
+        # force_rmses.append(force_rmse)
+        energy_rmses.append(0)
+        force_rmses.append(0)
 
         sim_times.append(sim_time)
         try:

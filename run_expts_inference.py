@@ -2,7 +2,7 @@ import subprocess
 from itertools import product
 
 
-molecules1 = ['naphthalene', 'salicylic_acid', 'toluene']
+molecules_md17 = ['aspirin', 'naphthalene', 'salicylic_acid']
 molecules2 = ['aspirin', 'uracil', 'ethanol', 'benzene']
 
 config_yml = '/home/sanjeevr/implicit-md/configs/md17/base.yml'

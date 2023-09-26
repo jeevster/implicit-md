@@ -1,0 +1,27 @@
+T_init: 500.0
+config_yml: !!python/object/apply:pathlib.PosixPath
+- configs
+- simulate
+- aspirin.yml
+dataset_src: /data/sanjeevr/md17/aspirin/10k/test
+deepmd: false
+dp_data_path: /data/sanjeevr/md17/aspirin/10k/test
+identifier: currentcommit
+integrator: NoseHoover
+integrator_config:
+  temperature: 500.0
+  timestep: 0.5
+  ttime: 20.0
+kcal: false
+max_test_points: 1000
+model_dir: /home/sanjeevr/MDsim/MODELPATH/nequip/md17-aspirin_10k_nequip
+nequip: true
+nequip_data_config: configs/simulate/nequip_data_cfg/aspirin.yml
+no_evaluate: true
+plumed: false
+purge: false
+save_freq: 100
+save_name: md_currentcommit_123
+seed: 123
+sim_type: nequip
+steps: 500

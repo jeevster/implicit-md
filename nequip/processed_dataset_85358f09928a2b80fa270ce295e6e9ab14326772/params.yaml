@@ -1,0 +1,17 @@
+dtype: torch.float32
+extra_fixed_fields:
+  r_max: 4.0
+file_name: /data/sanjeevr/md17/aspirin/10k/val/nequip_npz.npz
+force_fixed_keys: !!set {}
+include_frames: null
+include_keys: []
+key_mapping:
+  E: total_energy
+  F: forces
+  R: pos
+  z: atomic_numbers
+nequip_version: 0.5.4
+npz_fixed_field_keys:
+- atomic_numbers
+root: MODELPATH/nequip
+url: null
