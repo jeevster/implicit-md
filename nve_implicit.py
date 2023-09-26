@@ -108,7 +108,7 @@ class ImplicitMDSimulator():
 
         #initialize datasets
         self.train_dataset = LmdbDataset({'src': os.path.join(self.data_dir, self.name, self.molecule, self.size, 'train')})
-        self.valid_dataset = LmdbDataset({'src': os.path.join(self.data_dir, self.name, self.molecule, self.size, 'val')})
+        self.valid_dataset = LmdbDataset({'src': os.path.join(self.data_dir, self.name, self.molecule, '50k' if self.name == 'md17' else 'all', 'val')})
 
         #get random initial condition from dataset
         length = self.train_dataset.__len__()
@@ -188,7 +188,7 @@ class ImplicitMDSimulator():
         self.ic_stddev = params.ic_stddev
 
         dataset = self.train_dataset if self.train else self.valid_dataset
-        samples = np.random.choice(np.arange(dataset.__len__()), self.n_replicas)
+        samples = np.random.choice(np.arange(dataset.__len__()), self.n_replicas, replace=False)
         self.raw_atoms = [data_to_atoms(dataset.__getitem__(i)) for i in samples]
         self.cell = torch.Tensor(self.raw_atoms[0].cell).to(self.device)
         radii = torch.stack([torch.Tensor(atoms.get_positions()) for atoms in self.raw_atoms])
