@@ -32,7 +32,7 @@ bond_dev_tol: 0.25 #decay this?
 max_frac_unstable_threshold: 0.75 #decay this?
 min_frac_unstable_threshold: 0.0 #increase this?
 eq_steps: 0
-steps: 500 # 1 picosecond per epoch
+steps: 200 # 1 picosecond per epoch
 n_dump: 50
 n_replicas: 1
 minibatch_size: 40

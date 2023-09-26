@@ -39,6 +39,7 @@ warnings.filterwarnings("ignore")
 #NNIP stuff:
 from ase import Atoms, units
 from ase.calculators.calculator import Calculator
+import nequip.scripts.deploy
 from nequip.ase.nequip_calculator import nequip_calculator
 from nequip.data import AtomicData, AtomicDataDict
 from nequip.data.AtomicData import neighbor_list_and_relative_vec
@@ -181,7 +182,7 @@ class ImplicitMDSimulator():
             self.nsteps += self.vacf_window
         self.ps_per_epoch = self.nsteps * config['integrator_config']["timestep"] // 1000.
         #Initialize model
-        self.model = model
+        #self.model = model
     
         self.model_config = model_config
 
@@ -251,6 +252,8 @@ class ImplicitMDSimulator():
         
         calculator = nequip_calculator(Path(self.model_dir) / 'deployed_model.pth', device='cuda',
                                        energy_units_to_eV=1.)
+        self.model = calculator.model
+        self.transform = calculator.transform
         self.raw_atoms[0].set_calculator(calculator)
         # adjust units.
         
@@ -268,8 +271,8 @@ class ImplicitMDSimulator():
                         save_dir=self.save_dir, 
                         save_frequency=10)
         
-        # early_stop, step = simulator.run(config["steps"])
-        # import pdb; pdb.set_trace()
+        #early_stop, step = simulator.run(config["steps"])
+        #import pdb; pdb.set_trace()
         
 
     '''compute energy/force error on test set'''
@@ -400,15 +403,17 @@ class ImplicitMDSimulator():
                 #self.atoms_batch['batch'] = batch
                 self.atoms_batch['atom_types'] = self.final_atom_types.unsqueeze(-1)
                 #recompute neighbor list
-                self.atoms_batch['edge_index'] = radius_graph(radii.reshape(-1, 3), r=self.model_config["r_max"], batch=batch, max_num_neighbors=32)
+    
+                self.atoms_batch['edge_index'] = radius_graph(radii.reshape(-1, 3), r=float(self.model_config["r_max"]), batch=batch, max_num_neighbors=32)
                 self.atoms_batch['edge_cell_shift'] = torch.zeros((self.atoms_batch['edge_index'].shape[1], 3)).to(self.device)
                 for k in AtomicDataDict.ALL_ENERGY_KEYS:
                     if k in self.atoms_batch:
                         del self.atoms_batch[k]
                 import pdb; pdb.set_trace()
-                atoms_updated = self.model(self.atoms_batch)
+                atoms_updated = self.model(self.transform(self.atoms_batch))
                 energy = atoms_updated[AtomicDataDict.TOTAL_ENERGY_KEY]
                 forces = atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.n_atoms, 3) if retain_grad else atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.n_atoms, 3).detach()
+            print(energy.item())
             assert(not torch.any(torch.isnan(forces)))
             return energy, forces
 
@@ -959,9 +964,15 @@ if __name__ == "__main__":
     if model_type == "nequip":
         ckpt_epoch = config['checkpoint_epoch']
         cname = 'deployed_model.pth' if ckpt_epoch == -1 else f"ckpt{ckpt_epoch}.pth"
-        model = torch.jit.load(os.path.join(pretrained_model_path, cname)).to(device)
-        _, model_config = Trainer.load_model_from_training_session(pretrained_model_path, \
-                                model_name = 'best_model.pth', device =  torch.device(device))
+        # load model - try loading it the way they do it in the NequIP calculator - still giving non-deterministic results
+        model, model_config = nequip.scripts.deploy.load_deployed_model(
+            model_path= os.path.join(pretrained_model_path, cname),
+            device= torch.device(device),
+            set_global_options="warn",
+        )
+        # model = torch.jit.load(os.path.join(pretrained_model_path, cname)).to(device)
+        # _, model_config = Trainer.load_model_from_training_session(pretrained_model_path, \
+        #                         model_name = 'best_model.pth', device =  torch.device(device))
         
     elif model_type == "schnet":
         model, model_config = load_schnet_model(path = pretrained_model_path, ckpt_epoch = config['checkpoint_epoch'], device = torch.device(device), train = params.train or params.eval_model == 'pre')
@@ -1031,13 +1042,13 @@ if __name__ == "__main__":
             #initialize simulator parameterized by a NN model
             simulator = ImplicitMDSimulator(config, params, model, model_config)
             #initialize outer loop optimizer/scheduler
-            if params.optimizer == 'Adam':
-                optimizer = torch.optim.Adam(list(simulator.model.parameters()), lr=0)
-            elif params.optimizer == 'SGD':
-                optimizer = torch.optim.SGD(list(simulator.model.parameters()), lr=0)
-            else:
-                raise RuntimeError("Optimizer must be either Adam or SGD")
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=10)
+            # if params.optimizer == 'Adam':
+            #     optimizer = torch.optim.Adam(list(simulator.model.parameters()), lr=0)
+            # elif params.optimizer == 'SGD':
+            #     optimizer = torch.optim.SGD(list(simulator.model.parameters()), lr=0)
+            # else:
+            #     raise RuntimeError("Optimizer must be either Adam or SGD")
+            # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=10)
             print(f"Initialize {simulator.n_replicas} random ICs in parallel")
             num_resets = 0
         else: #continue from where we left off in the last epoch/batch
