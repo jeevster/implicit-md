@@ -109,6 +109,9 @@ class ImplicitMDSimulator():
         self.results_dir = config["results_dir"]
         self.eval_model = config["eval_model"]
         self.n_dump = config["n_dump"]
+
+        #Initialize model
+        self.model = model
         self.model_config = model_config
 
         #initialize datasets
@@ -128,7 +131,7 @@ class ImplicitMDSimulator():
         self.bonds = torch.tensor(NL.get_connectivity_matrix().todense().nonzero()).to(self.device).T
         self.atom_types = self.atoms.get_chemical_symbols()
         #atom type mapping
-        type_names = self.model_config[nequip.scripts.deploy.TYPE_NAMES_KEY].split(" ")
+        type_names = self.model_config[nequip.scripts.deploy.TYPE_NAMES_KEY]
         species_to_type_name = {s: s for s in ase.data.chemical_symbols}
         type_name_to_index = {n: i for i, n in enumerate(type_names)}
         chemical_symbol_to_type = {
@@ -189,9 +192,6 @@ class ImplicitMDSimulator():
         while self.nsteps < params.steps: #nsteps should be at least as long as what was requested
             self.nsteps += self.vacf_window
         self.ps_per_epoch = self.nsteps * config['integrator_config']["timestep"] // 1000.
-        #Initialize model
-        #self.model = model
-    
         
 
         self.atomic_numbers = torch.Tensor(self.atoms.get_atomic_numbers()).to(torch.long).to(self.device).repeat(self.n_replicas)
@@ -199,8 +199,7 @@ class ImplicitMDSimulator():
         self.ic_stddev = params.ic_stddev
 
         dataset = self.train_dataset if self.train else self.valid_dataset
-        #samples = np.random.choice(np.arange(dataset.__len__()), self.n_replicas, replace=False)
-        samples = [857]
+        samples = np.random.choice(np.arange(dataset.__len__()), self.n_replicas, replace=False)
         self.raw_atoms = [data_to_atoms(dataset.__getitem__(i)) for i in samples]
         self.cell = torch.Tensor(self.raw_atoms[0].cell).to(self.device)
         radii = torch.stack([torch.Tensor(atoms.get_positions()) for atoms in self.raw_atoms])
@@ -222,9 +221,8 @@ class ImplicitMDSimulator():
             del self.atoms_batch['ptr']
             del self.atoms_batch['atomic_numbers']
             self.atoms_batch = {k: v.to(self.device) for k, v in self.atoms_batch.items()}
-            self.atoms_batch['pbc'] = self.atoms_batch['pbc'][0]
-            self.atoms_batch['cell'] = self.atoms_batch['cell'][0]
-            del self.atoms_batch['batch']
+            self.atoms_batch['pbc'] = self.atoms_batch['pbc']
+            self.atoms_batch['cell'] = self.atoms_batch['cell']
             # import pdb; pdb.set_trace()
             # del self.atoms_batch['cell']
             # del self.atoms_batch['pbc']
@@ -258,31 +256,7 @@ class ImplicitMDSimulator():
         #File dump stuff
         self.f = open(f"{self.save_dir}/log.txt", "a+")
 
-        
-        calculator = nequip_calculator(Path(self.model_dir) / 'deployed_model.pth', device='cuda',
-                                       energy_units_to_eV=1.)
-        self.model = calculator.model
-        self.transform = calculator.transform
-        self.raw_atoms[0].set_calculator(calculator)
-        # adjust units.
-        
-        config["integrator_config"]["timestep"] *= units.fs
-        if config["integrator"] in ['NoseHoover', 'NoseHooverChain']:
-            config["integrator_config"]["temperature"] *= units.kB
-        # set up simulator.
-        
-        integrator = getattr(md_integrator, config["integrator"])(self.raw_atoms[0], **config["integrator_config"])
-        
-        #now this simulation produces good outputs
-        simulator = Simulator(self.raw_atoms[0], integrator, config["integrator_config"]["temperature"] / units.kB, 
-                        restart=False,
-                        start_time=0,
-                        save_dir=self.save_dir, 
-                        save_frequency=10)
-        
-        #early_stop, step = simulator.run(config["steps"])
-        #import pdb; pdb.set_trace()
-        
+    
 
     '''compute energy/force error on test set'''
     def energy_force_error(self, batch_size):
@@ -409,7 +383,7 @@ class ImplicitMDSimulator():
             elif self.model_type == "nequip":
                 #assign radii
                 self.atoms_batch['pos'] = radii.reshape(-1, 3)
-                #self.atoms_batch['batch'] = batch
+                self.atoms_batch['batch'] = batch
                 self.atoms_batch['atom_types'] = self.final_atom_types.unsqueeze(-1)
                 #recompute neighbor list
     
@@ -419,23 +393,10 @@ class ImplicitMDSimulator():
                     if k in self.atoms_batch:
                         del self.atoms_batch[k]
                 
-                
-                self.atoms_batch = self.transform(self.atoms_batch)
                 atoms_updated = self.model(self.atoms_batch)
                 energy = atoms_updated[AtomicDataDict.TOTAL_ENERGY_KEY]
                 forces = atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.n_atoms, 3) if retain_grad else atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.n_atoms, 3).detach()
-                if self.step ==-1:
-                    assert(torch.allclose(self.atoms_batch['pos'], torch.Tensor(np.load('pos.npy')).to(self.device)))
-                    assert(torch.allclose(self.atoms_batch['cell'], torch.Tensor(np.load('cell.npy')).to(self.device)))
-                    assert(torch.allclose(self.atoms_batch['atom_types'], torch.Tensor(np.load('atom_types.npy')).to(torch.long).to(self.device)))
-                    assert(torch.allclose(energy, torch.Tensor(np.load('energy.npy')).to(self.device), atol=1e-4))
-                    assert(torch.allclose(forces, torch.Tensor(np.load('forces.npy')).to(self.device), atol=1e-4))
-                else:
-                    assert(torch.allclose(self.atoms_batch['pos'], torch.Tensor(np.load('pos2.npy')).to(self.device)))
-                    assert(torch.allclose(energy, torch.Tensor(np.load('energy2.npy')).to(self.device), atol=1e-4))
-                    assert(torch.allclose(forces, torch.Tensor(np.load('forces2.npy')).to(self.device), atol=1e-4))
-
-            print(energy.item())
+                
             assert(not torch.any(torch.isnan(forces)))
             return energy, forces
 
@@ -985,16 +946,16 @@ if __name__ == "__main__":
 
     if model_type == "nequip":
         ckpt_epoch = config['checkpoint_epoch']
-        cname = 'deployed_model.pth' if ckpt_epoch == -1 else f"ckpt{ckpt_epoch}.pth"
+        cname = 'best_model.pth' if ckpt_epoch == -1 else f"ckpt{ckpt_epoch}.pth"
         # load model - try loading it the way they do it in the NequIP calculator - still giving non-deterministic results
-        model, model_config = nequip.scripts.deploy.load_deployed_model(
-            model_path= os.path.join(pretrained_model_path, cname),
-            device= torch.device(device),
-            set_global_options="warn",
-        )
+        # model, model_config = nequip.scripts.deploy.load_deployed_model(
+        #     model_path= os.path.join(pretrained_model_path, cname),
+        #     device= torch.device(device),
+        #     set_global_options="warn",
+        # )
         # model = torch.jit.load(os.path.join(pretrained_model_path, cname)).to(device)
-        # _, model_config = Trainer.load_model_from_training_session(pretrained_model_path, \
-        #                         model_name = 'best_model.pth', device =  torch.device(device))
+        model, model_config = Trainer.load_model_from_training_session(pretrained_model_path, \
+                                model_name = cname, device =  torch.device(device))
         
     elif model_type == "schnet":
         model, model_config = load_schnet_model(path = pretrained_model_path, ckpt_epoch = config['checkpoint_epoch'], device = torch.device(device), train = params.train or params.eval_model == 'pre')
@@ -1064,13 +1025,13 @@ if __name__ == "__main__":
             #initialize simulator parameterized by a NN model
             simulator = ImplicitMDSimulator(config, params, model, model_config)
             #initialize outer loop optimizer/scheduler
-            # if params.optimizer == 'Adam':
-            #     optimizer = torch.optim.Adam(list(simulator.model.parameters()), lr=0)
-            # elif params.optimizer == 'SGD':
-            #     optimizer = torch.optim.SGD(list(simulator.model.parameters()), lr=0)
-            # else:
-            #     raise RuntimeError("Optimizer must be either Adam or SGD")
-            # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=10)
+            if params.optimizer == 'Adam':
+                optimizer = torch.optim.Adam(list(simulator.model.parameters()), lr=0)
+            elif params.optimizer == 'SGD':
+                optimizer = torch.optim.SGD(list(simulator.model.parameters()), lr=0)
+            else:
+                raise RuntimeError("Optimizer must be either Adam or SGD")
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=10)
             print(f"Initialize {simulator.n_replicas} random ICs in parallel")
             num_resets = 0
         else: #continue from where we left off in the last epoch/batch

@@ -4,7 +4,10 @@ results_nnip/
 results_nnip_new/
 results_nnip_new_dynamics/
 results_nnip_continuous/
-results_nnip_continuous_dynamics
+results_nnip_continuous_new/
+results_nnip_continuous_dynamics/
+results_nnip_continuous_dynamics_new/
+nnip_continuous_dynamics_new/
 *.npy
 log.txt
 test.gsd
