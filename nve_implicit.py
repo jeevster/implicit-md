@@ -128,18 +128,19 @@ class ImplicitMDSimulator():
         self.bonds = torch.tensor(NL.get_connectivity_matrix().todense().nonzero()).to(self.device).T
         self.atom_types = self.atoms.get_chemical_symbols()
         #atom type mapping
-        type_names = self.model_config[nequip.scripts.deploy.TYPE_NAMES_KEY]
-        species_to_type_name = {s: s for s in ase.data.chemical_symbols}
-        type_name_to_index = {n: i for i, n in enumerate(type_names)}
-        chemical_symbol_to_type = {
-            sym: type_name_to_index[species_to_type_name[sym]]
-            for sym in ase.data.chemical_symbols
-            if sym in type_name_to_index
-        }
-        self.typeid = np.zeros(self.n_atoms, dtype=int)
-        for i, _type in enumerate(self.atom_types):
-            self.typeid[i] = chemical_symbol_to_type[_type]  
-        self.final_atom_types = torch.Tensor(self.typeid).repeat(self.n_replicas).to(self.device).to(torch.long).unsqueeze(-1)
+        if self.model_type == "nequip":
+            type_names = self.model_config[nequip.scripts.deploy.TYPE_NAMES_KEY]
+            species_to_type_name = {s: s for s in ase.data.chemical_symbols}
+            type_name_to_index = {n: i for i, n in enumerate(type_names)}
+            chemical_symbol_to_type = {
+                sym: type_name_to_index[species_to_type_name[sym]]
+                for sym in ase.data.chemical_symbols
+                if sym in type_name_to_index
+            }
+            self.typeid = np.zeros(self.n_atoms, dtype=int)
+            for i, _type in enumerate(self.atom_types):
+                self.typeid[i] = chemical_symbol_to_type[_type]  
+            self.final_atom_types = torch.Tensor(self.typeid).repeat(self.n_replicas).to(self.device).to(torch.long).unsqueeze(-1)
 
         #extract ground truth energies, forces, and bond length deviation
         DATAPATH_TEST = f'{self.data_dir}/{self.name}/{self.molecule}/{self.size}/test/nequip_npz.npz'

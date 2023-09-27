@@ -4,7 +4,7 @@ size: all
 molecule: DHA
 normalize_labels: False
 checkpoint_epoch: -1 #which model to start from
-model: nequip
+model: schnet
 log_dir: /global/cfs/projectdirs/m4319/sanjeevr
 results_dir: 'results_nnip_continuous_new'
 model_dir: '/pscratch/sd/s/sanjeevr/MODELPATH' #/data/ishan-amin/MODELPATH/'
@@ -26,16 +26,16 @@ vacf_loss_weight: 0
 energy_loss_weight: 0.05
 force_loss_weight: 0.95
 diffusion_window: 1000
-vacf_window: 10
+vacf_window: 100
 ic_stddev: 0.0
 bond_dev_tol: 0.25 #decay this?
-max_frac_unstable_threshold: 0.0 #decay this?
+max_frac_unstable_threshold: 0.75 #decay this?
 min_frac_unstable_threshold: 0.0 #increase this?
 eq_steps: 0
-steps: 20 # 1 picosecond per epoch
-n_dump: 10
-n_dump_vacf: 1
-n_replicas: 16
+steps: 2000 # 1 picosecond per epoch
+n_dump: 50
+n_dump_vacf: 2
+n_replicas: 128
 minibatch_size: 40
 only_train_on_unstable_replicas: False
 allow_off_policy_updates: False
