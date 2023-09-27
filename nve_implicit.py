@@ -81,6 +81,7 @@ class ImplicitMDSimulator():
         self.size = config['size']
         self.model_type = config['model']
         self.all_unstable = False
+        self.first_simulation = True
 
         print("Initializing MD simulation environment")
         self.config = config
@@ -93,7 +94,7 @@ class ImplicitMDSimulator():
         self.allow_off_policy_updates = config['allow_off_policy_updates']
         self.gradient_clipping = config["gradient_clipping"]
         self.shuffle = config['shuffle']
-        self.restart_probability = config["restart_probability"]
+        self.reset_probability = config["reset_probability"]
         self.vacf_window = config["vacf_window"]
         self.no_ift = config["no_ift"]
         self.optimizer = config["optimizer"]
@@ -148,6 +149,7 @@ class ImplicitMDSimulator():
         self.mean_bond_lens = distance_pbc(
         self.gt_traj_train[:, self.bonds[:, 0]], self.gt_traj_train[:, self.bonds[:, 1]], \
                     torch.FloatTensor([30., 30., 30.]).to(self.device)).mean(dim=0)
+        self.max_bond_dev_per_replica = torch.zeros((self.n_replicas,)).to(self.device)
         self.stable_time = torch.zeros((self.n_replicas,)).to(self.device)
         
         
@@ -194,6 +196,16 @@ class ImplicitMDSimulator():
         radii = torch.stack([torch.Tensor(atoms.get_positions()) for atoms in self.raw_atoms])
         self.radii = (radii + torch.normal(torch.zeros_like(radii), self.ic_stddev)).to(self.device)
         self.velocities = torch.Tensor(initialize_velocities(self.n_atoms, self.masses, self.temp, self.n_replicas)).to(self.device)
+        #initialize checkpoint states for resetting
+        self.checkpoint_radii = []
+        self.checkpoint_radii.append(self.radii)
+        self.checkpoint_velocities = []
+        self.checkpoint_velocities.append(self.velocities)
+        self.checkpoint_zetas = []
+        self.checkpoint_zetas.append(self.zeta)
+        self.original_radii = self.radii.clone()
+        self.original_velocities = self.velocities.clone()
+        self.original_zeta = self.zeta.clone()
         
         if self.model_type == 'nequip':
             #assign velocities to atoms
@@ -324,10 +336,8 @@ class ImplicitMDSimulator():
 
 
     def resume(self):
-        random_reset = torch.rand(size=(self.n_replicas,)).to(self.device) <= params.restart_probability
         #reset replicas which exceeded the max bond dev criteria
-        stability_reset = self.max_bond_dev_per_replica > self.bond_dev_tol
-        reset_replicas = torch.logical_or(random_reset, stability_reset)
+        reset_replicas = self.max_bond_dev_per_replica > self.bond_dev_tol
         num_resets = reset_replicas.count_nonzero().item()
         if num_resets / self.n_replicas >= self.max_frac_unstable_threshold: #threshold of unstable replicas reached
             if not self.all_unstable:
@@ -339,7 +349,24 @@ class ImplicitMDSimulator():
             self.velocities = self.original_velocities
             self.zeta = self.original_zeta
 
-        else: #reset only the replicas which are unstable
+        else:
+            if self.first_simulation: #random replica reset
+                #pick replicas to reset (only pick from stable replicas)
+                stable_replicas = (~reset_replicas).nonzero()
+                random_reset_idxs = torch.randperm(stable_replicas.shape[0]) \
+                                        [0:math.ceil(self.reset_probability * stable_replicas.shape[0])].to(self.device)
+                #uniformly sample times to reset each replica to
+                reset_times = torch.randint(0, len(self.checkpoint_radii), (len(random_reset_idxs), )).to(self.device)
+                #reset them 
+                self.radii.requires_grad = False
+                self.velocities.requires_grad = False
+                self.zeta.requires_grad = False
+                for idx, time in zip(random_reset_idxs, reset_times):
+                    self.radii[idx] = self.checkpoint_radii[time][idx]
+                    self.velocities[idx] = self.checkpoint_velocities[time][idx]
+                    self.zeta[idx] = self.checkpoint_zetas[time][idx]
+
+            #reset the replicas which are unstable
             exp_reset_replicas = (reset_replicas).unsqueeze(-1).unsqueeze(-1).expand_as(self.radii)
             self.radii = torch.where(exp_reset_replicas, self.original_radii.detach().clone(), self.radii.detach().clone()).requires_grad_(True)
             self.velocities = torch.where(exp_reset_replicas, self.original_velocities.detach().clone(), self.velocities.detach().clone()).requires_grad_(True)
@@ -347,7 +374,10 @@ class ImplicitMDSimulator():
             #update stability times for each replica
             if not self.train:
                 self.stable_time = torch.where(reset_replicas, self.stable_time, self.stable_time + self.ps_per_epoch)
+        self.first_simulation = False
         return num_resets / self.n_replicas
+
+
 
 
     def force_calc(self, radii, atomic_numbers = None, batch = None, retain_grad = False):
@@ -453,6 +483,7 @@ class ImplicitMDSimulator():
       
     #top level MD simulation code (i.e the "solver") that returns the optimal "parameter" -aka the equilibriated radii
     def solve(self):
+        self.mode = 'learning' if self.all_unstable else 'simulation'
         self.running_dists = []
         self.running_vels = []
         self.running_accs = []
@@ -464,11 +495,15 @@ class ImplicitMDSimulator():
         self.original_radii = self.radii.clone()
         self.original_velocities = self.velocities.clone()
         self.original_zeta = self.zeta.clone()
+        #log checkpoint states for resetting
+        if self.mode == 'simulation':
+            self.checkpoint_radii.append(self.original_radii)
+            self.checkpoint_velocities.append(self.original_velocities)
+            self.checkpoint_zetas.append(self.original_zeta)
         #File dump
-        mode = 'learning' if self.all_unstable else 'simulation'
         if self.train or self.epoch == 0: #create one long simulation for inference
             try:
-                self.t = gsd.hoomd.open(name=f'{self.save_dir}/sim_epoch{self.epoch+1}_{mode}.gsd', mode='w')
+                self.t = gsd.hoomd.open(name=f'{self.save_dir}/sim_epoch{self.epoch+1}_{self.mode}.gsd', mode='w')
             except:
                 pass
         #Initialize forces/potential of starting configuration
@@ -1020,6 +1055,7 @@ if __name__ == "__main__":
     changed_lr = False
 
     for epoch in range(params.n_epochs):
+        
         rdf = torch.zeros_like(gt_rdf).to(device)
         rdf_loss = torch.Tensor([0]).to(device)
         vacf_loss = torch.Tensor([0]).to(device)
@@ -1041,11 +1077,9 @@ if __name__ == "__main__":
                 raise RuntimeError("Optimizer must be either Adam or SGD")
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=10)
             print(f"Initialize {simulator.n_replicas} random ICs in parallel")
-            num_resets = 0
-        else: #continue from where we left off in the last epoch/batch
-            num_resets = simulator.resume()
+        #continue from where we left off in the last epoch/batch
         simulator.epoch = epoch
-
+        num_resets = simulator.resume()
         start = time.time()
         if simulator.no_ift: #full backprop through MD simulation - baseline
             with torch.enable_grad():
@@ -1127,6 +1161,7 @@ if __name__ == "__main__":
             if simulator.all_unstable and params.train and (optimizer.param_groups[0]['lr'] < min_lr or num_resets <= params.min_frac_unstable_threshold):
                 print(f"Back to data collection")
                 simulator.all_unstable = False
+                simulator.first_simulation = True
                 changed_lr = False
                 #reinitialize optimizer and scheduler with LR = 0
                 if params.optimizer == 'Adam':

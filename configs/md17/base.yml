@@ -23,7 +23,7 @@ eval_model: post
 diffusion_loss_weight: 0
 rdf_loss_weight: 1
 adf_loss_weight: 0
-vacf_loss_weight: 1
+vacf_loss_weight: 0
 energy_loss_weight: 0.05
 force_loss_weight: 0.95
 diffusion_window: 1000
@@ -44,8 +44,8 @@ gradient_clipping: True
 use_mse_gradient: True
 shuffle: True
 optimizer: SGD
-restart_probability: 0.0
-n_epochs: 1000 #corresponding to 300 ps
+reset_probability: 0.05
+n_epochs: 500 #corresponding to 300 ps
 lr: 0.001
 max_times_reduce_lr: 2 
 diameter_viz: 0.08
