@@ -34,8 +34,10 @@ from utils import process_gradient, compare_gradients, radii_to_dists, fcc_posit
 import warnings
 warnings.filterwarnings("ignore")
 #NNIP stuff:
+import ase
 from ase import Atoms, units
 from ase.calculators.calculator import Calculator
+import nequip.scripts.deploy
 from nequip.ase.nequip_calculator import nequip_calculator
 from nequip.data import AtomicData, AtomicDataDict
 from nequip.data.AtomicData import neighbor_list_and_relative_vec
@@ -107,6 +109,10 @@ class ImplicitMDSimulator():
         self.n_dump = config["n_dump"]
         self.n_dump_vacf = config["n_dump_vacf"]
 
+        #Initialize model
+        self.model = model
+        self.model_config = model_config
+
         #initialize datasets
         self.train_dataset = LmdbDataset({'src': os.path.join(self.data_dir, self.name, self.molecule, self.size, 'train')})
         self.valid_dataset = LmdbDataset({'src': os.path.join(self.data_dir, self.name, self.molecule, '50k' if self.name == 'md17' else 'all', 'val')})
@@ -121,13 +127,20 @@ class ImplicitMDSimulator():
         NL = NeighborList(natural_cutoffs(self.atoms), self_interaction=False)
         NL.update(self.atoms)
         self.bonds = torch.tensor(NL.get_connectivity_matrix().todense().nonzero()).to(self.device).T
-        self.atom_types_list = list(set(self.atoms.get_chemical_symbols()))
         self.atom_types = self.atoms.get_chemical_symbols()
-        type_to_index = {value: index for index, value in enumerate(self.atom_types_list)}
+        #atom type mapping
+        type_names = self.model_config[nequip.scripts.deploy.TYPE_NAMES_KEY]
+        species_to_type_name = {s: s for s in ase.data.chemical_symbols}
+        type_name_to_index = {n: i for i, n in enumerate(type_names)}
+        chemical_symbol_to_type = {
+            sym: type_name_to_index[species_to_type_name[sym]]
+            for sym in ase.data.chemical_symbols
+            if sym in type_name_to_index
+        }
         self.typeid = np.zeros(self.n_atoms, dtype=int)
         for i, _type in enumerate(self.atom_types):
-            self.typeid[i] = type_to_index[_type]  
-        self.final_atom_types = torch.Tensor(self.typeid).repeat(self.n_replicas).to(self.device).to(torch.long)
+            self.typeid[i] = chemical_symbol_to_type[_type]  
+        self.final_atom_types = torch.Tensor(self.typeid).repeat(self.n_replicas).to(self.device).to(torch.long).unsqueeze(-1)
 
         #extract ground truth energies, forces, and bond length deviation
         DATAPATH_TEST = f'{self.data_dir}/{self.name}/{self.molecule}/{self.size}/test/nequip_npz.npz'
@@ -180,10 +193,7 @@ class ImplicitMDSimulator():
         while self.nsteps < params.steps: #nsteps should be at least as long as what was requested
             self.nsteps += self.vacf_window
         self.ps_per_epoch = self.nsteps * config['integrator_config']["timestep"] // 1000.
-        #Initialize model
-        self.model = model
-    
-        self.model_config = model_config
+        
 
         self.atomic_numbers = torch.Tensor(self.atoms.get_atomic_numbers()).to(torch.long).to(self.device).repeat(self.n_replicas)
         self.batch = torch.arange(self.n_replicas).repeat_interleave(self.n_atoms).to(self.device)

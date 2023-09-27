@@ -1,10 +1,10 @@
 src: /pscratch/sd/s/sanjeevr/ #data/sanjeevr
-name: md17
-size: 1k
-molecule: naphthalene
+name: md22
+size: all
+molecule: DHA
 normalize_labels: False
 checkpoint_epoch: -1 #which model to start from
-model: schnet
+model: nequip
 log_dir: /global/cfs/projectdirs/m4319/sanjeevr
 results_dir: 'results_nnip_continuous_new'
 model_dir: '/pscratch/sd/s/sanjeevr/MODELPATH' #/data/ishan-amin/MODELPATH/'
@@ -34,9 +34,9 @@ max_frac_unstable_threshold: 0.75 #decay this?
 min_frac_unstable_threshold: 0.0 #increase this?
 eq_steps: 0
 steps: 2000 # 1 picosecond per epoch
-n_dump: 50
-n_dump_vacf: 2
-n_replicas: 128
+n_dump: 10
+n_dump_vacf: 1
+n_replicas: 16
 minibatch_size: 40
 only_train_on_unstable_replicas: False
 allow_off_policy_updates: False
