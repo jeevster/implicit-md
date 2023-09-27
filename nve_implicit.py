@@ -35,8 +35,9 @@ from functorch import vmap, vjp
 from utils import process_gradient, compare_gradients, radii_to_dists, fcc_positions, initialize_velocities, \
                     dump_params_to_yml, powerlaw_inv_cdf, print_active_torch_tensors, plot_pair, solve_continuity_system, find_hr_adf_from_file, distance_pbc
 import warnings
-warnings.filterwarnings("ignore")
+# warnings.filterwarnings("ignore")
 #NNIP stuff:
+import ase
 from ase import Atoms, units
 from ase.calculators.calculator import Calculator
 import nequip.scripts.deploy
@@ -108,6 +109,7 @@ class ImplicitMDSimulator():
         self.results_dir = config["results_dir"]
         self.eval_model = config["eval_model"]
         self.n_dump = config["n_dump"]
+        self.model_config = model_config
 
         #initialize datasets
         self.train_dataset = LmdbDataset({'src': os.path.join(self.data_dir, self.name, self.molecule, self.size, 'test')})
@@ -124,14 +126,20 @@ class ImplicitMDSimulator():
         NL = NeighborList(natural_cutoffs(self.atoms), self_interaction=False)
         NL.update(self.atoms)
         self.bonds = torch.tensor(NL.get_connectivity_matrix().todense().nonzero()).to(self.device).T
-        self.atom_types_list = list(set(self.atoms.get_chemical_symbols()))
         self.atom_types = self.atoms.get_chemical_symbols()
-        type_to_index = {value: index for index, value in enumerate(self.atom_types_list)}
+        #atom type mapping
+        type_names = self.model_config[nequip.scripts.deploy.TYPE_NAMES_KEY].split(" ")
+        species_to_type_name = {s: s for s in ase.data.chemical_symbols}
+        type_name_to_index = {n: i for i, n in enumerate(type_names)}
+        chemical_symbol_to_type = {
+            sym: type_name_to_index[species_to_type_name[sym]]
+            for sym in ase.data.chemical_symbols
+            if sym in type_name_to_index
+        }
         self.typeid = np.zeros(self.n_atoms, dtype=int)
         for i, _type in enumerate(self.atom_types):
-            self.typeid[i] = type_to_index[_type]  
+            self.typeid[i] = chemical_symbol_to_type[_type]  
         self.final_atom_types = torch.Tensor(self.typeid).repeat(self.n_replicas).to(self.device).to(torch.long)
-
         #extract ground truth energies, forces, and bond length deviation
         DATAPATH_TEST = f'{self.data_dir}/{self.name}/{self.molecule}/{self.size}/test/nequip_npz.npz'
         gt_data_test = np.load(DATAPATH_TEST)
@@ -184,7 +192,7 @@ class ImplicitMDSimulator():
         #Initialize model
         #self.model = model
     
-        self.model_config = model_config
+        
 
         self.atomic_numbers = torch.Tensor(self.atoms.get_atomic_numbers()).to(torch.long).to(self.device).repeat(self.n_replicas)
         self.batch = torch.arange(self.n_replicas).repeat_interleave(self.n_atoms).to(self.device)
@@ -215,6 +223,7 @@ class ImplicitMDSimulator():
             del self.atoms_batch['atomic_numbers']
             self.atoms_batch = {k: v.to(self.device) for k, v in self.atoms_batch.items()}
             self.atoms_batch['pbc'] = self.atoms_batch['pbc'][0]
+            self.atoms_batch['cell'] = self.atoms_batch['cell'][0]
             del self.atoms_batch['batch']
             # import pdb; pdb.set_trace()
             # del self.atoms_batch['cell']
@@ -409,10 +418,23 @@ class ImplicitMDSimulator():
                 for k in AtomicDataDict.ALL_ENERGY_KEYS:
                     if k in self.atoms_batch:
                         del self.atoms_batch[k]
-                import pdb; pdb.set_trace()
-                atoms_updated = self.model(self.transform(self.atoms_batch))
+                
+                
+                self.atoms_batch = self.transform(self.atoms_batch)
+                atoms_updated = self.model(self.atoms_batch)
                 energy = atoms_updated[AtomicDataDict.TOTAL_ENERGY_KEY]
                 forces = atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.n_atoms, 3) if retain_grad else atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.n_atoms, 3).detach()
+                if self.step ==-1:
+                    assert(torch.allclose(self.atoms_batch['pos'], torch.Tensor(np.load('pos.npy')).to(self.device)))
+                    assert(torch.allclose(self.atoms_batch['cell'], torch.Tensor(np.load('cell.npy')).to(self.device)))
+                    assert(torch.allclose(self.atoms_batch['atom_types'], torch.Tensor(np.load('atom_types.npy')).to(torch.long).to(self.device)))
+                    assert(torch.allclose(energy, torch.Tensor(np.load('energy.npy')).to(self.device), atol=1e-4))
+                    assert(torch.allclose(forces, torch.Tensor(np.load('forces.npy')).to(self.device), atol=1e-4))
+                else:
+                    assert(torch.allclose(self.atoms_batch['pos'], torch.Tensor(np.load('pos2.npy')).to(self.device)))
+                    assert(torch.allclose(energy, torch.Tensor(np.load('energy2.npy')).to(self.device), atol=1e-4))
+                    assert(torch.allclose(forces, torch.Tensor(np.load('forces2.npy')).to(self.device), atol=1e-4))
+
             print(energy.item())
             assert(not torch.any(torch.isnan(forces)))
             return energy, forces
