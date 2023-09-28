@@ -72,6 +72,7 @@ from mdsim.common.flags import flags
 class ImplicitMDSimulator():
     def __init__(self, config, params, model, model_config):
         super(ImplicitMDSimulator, self).__init__()
+        print("Initializing MD simulation environment")
         self.params = params
         #GPU
         try:
@@ -82,13 +83,15 @@ class ImplicitMDSimulator():
         self.molecule = config['molecule']
         self.size = config['size']
         self.model_type = config['model']
+        self.l_max = config["l_max"]
         self.all_unstable = False
         self.first_simulation = True
 
-        print("Initializing MD simulation environment")
+        
         self.config = config
         self.data_dir = config['src']
-        self.model_dir = os.path.join(config["model_dir"], self.model_type, f"{self.name}-{self.molecule}_{self.size}_{self.model_type}")
+        lmax_string = f"lmax={self.l_max}_" if model_type == "nequip" else ""
+        self.model_dir = os.path.join(config["model_dir"], self.model_type, f"{self.name}-{self.molecule}_{self.size}_{lmax_string}{self.model_type}")
         self.train = params.train
         self.n_replicas = config["n_replicas"]
         self.minibatch_size = config['minibatch_size']
@@ -980,13 +983,14 @@ if __name__ == "__main__":
     model_type = config['model']
     
     print(f"Loading pretrained {model_type} model")
+    lmax_string = f"lmax={params.l_max}_" if model_type == "nequip" else ""
     #load the correct checkpoint based on whether we're doing train or val
     if params.train or config["eval_model"] == 'pre': #load energies/forces trained model
-        pretrained_model_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{size}_{model_type}") 
+        pretrained_model_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{size}_{lmax_string}{model_type}") 
     
     elif 'k' in config["eval_model"]:#load energies/forces model trained on a different dataset size
         new_size = config["eval_model"]
-        pretrained_model_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{new_size}_{model_type}") 
+        pretrained_model_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{new_size}_{lmax_string}{model_type}") 
 
     else: #load observable-finetuned model
         pretrained_model_path = os.path.join(params.results_dir, f"IMPLICIT_{molecule}_{params.exp_name}")
