@@ -116,8 +116,14 @@ class ImplicitMDSimulator():
         self.model_config = model_config
 
         #initialize datasets
-        self.train_dataset = LmdbDataset({'src': os.path.join(self.data_dir, self.name, self.molecule, self.size, 'train')})
-        self.valid_dataset = LmdbDataset({'src': os.path.join(self.data_dir, self.name, self.molecule, '50k' if self.name == 'md17' else 'all', 'val')})
+        if self.name == 'md17' or self.name == 'md22':
+            train_src = os.path.join(self.data_dir, self.name, self.molecule, self.size, 'train')
+            valid_src = os.path.join(self.data_dir, self.name, self.molecule, '50k' if self.name == 'md17' else 'all', 'val')
+        elif self.name == 'water':
+            train_src = os.path.join(self.data_dir, self.name, self.size, 'train')
+            valid_src = os.path.join(self.data_dir, self.name, self.size, 'val')
+        self.train_dataset = LmdbDataset({'src': train_src})
+        self.valid_dataset = LmdbDataset({'src': valid_src})
 
         #get random initial condition from dataset
         length = self.train_dataset.__len__()
@@ -146,7 +152,13 @@ class ImplicitMDSimulator():
             self.final_atom_types = torch.Tensor(self.typeid).repeat(self.n_replicas).to(self.device).to(torch.long).unsqueeze(-1)
 
         #extract ground truth energies, forces, and bond length deviation
-        DATAPATH_TEST = f'{self.data_dir}/{self.name}/{self.molecule}/{self.size}/test/nequip_npz.npz'
+        if self.name == 'md17' or self.name == 'md22':
+            DATAPATH_TRAIN = f'{self.data_dir}/{self.name}/{self.molecule}/{self.size}/train/nequip_npz.npz'
+            DATAPATH_TEST = f'{self.data_dir}/{self.name}/{self.molecule}/{self.size}/test/nequip_npz.npz'
+        elif self.name == 'water':
+            DATAPATH_TRAIN = f'{self.data_dir}/{self.name}/{self.size}/train/nequip_npz.npz'
+            DATAPATH_TEST = f'{self.data_dir}/{self.name}/{self.size}/test/nequip_npz.npz'
+
         gt_data_test = np.load(DATAPATH_TEST)
         self.gt_traj_test = torch.FloatTensor(gt_data_test.f.R).to(self.device)
         self.gt_energies_test = torch.FloatTensor(gt_data_test.f.E).to(self.device)
@@ -154,7 +166,7 @@ class ImplicitMDSimulator():
         self.target_test = {'energy': self.gt_energies_test, 'forces': self.gt_forces_test.reshape(-1, 3), \
                             'natoms': torch.Tensor([self.n_atoms]).repeat(self.gt_energies_test.shape[0]).to(self.device)}
         self.normalizer_test = Normalizer(tensor = self.gt_energies_test, device = self.device)
-        DATAPATH_TRAIN = f'{self.data_dir}/{self.name}/{self.molecule}/{self.size}/train/nequip_npz.npz'
+        
         gt_data_train = np.load(DATAPATH_TRAIN)
         self.gt_traj_train = torch.FloatTensor(gt_data_train.f.R).to(self.device)
         self.gt_energies_train = torch.FloatTensor(gt_data_train.f.E).to(self.device)
@@ -278,9 +290,7 @@ class ImplicitMDSimulator():
                 actual_batch_size = min(end, self.gt_traj_test.shape[0]) - start        
                 atomic_numbers = torch.Tensor(self.atoms.get_atomic_numbers()).to(torch.long).to(self.device).repeat(actual_batch_size)
                 batch = torch.arange(actual_batch_size).repeat_interleave(self.n_atoms).to(self.device)
-                # if i == num_batches -1:
-                #     import pdb; pdb.set_trace()
-                #     x=0
+                
                 energy, force = self.force_calc(self.gt_traj_test[start:end], atomic_numbers, batch)
                 energies.append(energy.detach())
                 forces.append(force.detach())
@@ -378,6 +388,7 @@ class ImplicitMDSimulator():
         with torch.enable_grad():
             if not radii.requires_grad:
                 radii.requires_grad = True
+            import pdb; pdb.set_trace()
             if self.model_type == "schnet":
                 energy = self.model(pos = radii.reshape(-1,3), z = atomic_numbers, batch = batch)
                 forces = -compute_grad(inputs = radii, output = energy, create_graph = retain_grad)
@@ -978,7 +989,7 @@ if __name__ == "__main__":
     #set up model
     data_path = config['src']
     name = config['name']
-    molecule = config['molecule']
+    molecule = f"-{config['molecule']}" if name == 'md17' or name == 'md22' else ""
     size = config['size']
     model_type = config['model']
     
@@ -986,11 +997,11 @@ if __name__ == "__main__":
     lmax_string = f"lmax={params.l_max}_" if model_type == "nequip" else ""
     #load the correct checkpoint based on whether we're doing train or val
     if params.train or config["eval_model"] == 'pre': #load energies/forces trained model
-        pretrained_model_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{size}_{lmax_string}{model_type}") 
+        pretrained_model_path = os.path.join(config['model_dir'], model_type, f"{name}{molecule}_{size}_{lmax_string}{model_type}") 
     
     elif 'k' in config["eval_model"]:#load energies/forces model trained on a different dataset size
         new_size = config["eval_model"]
-        pretrained_model_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{new_size}_{lmax_string}{model_type}") 
+        pretrained_model_path = os.path.join(config['model_dir'], model_type, f"{name}{molecule}_{new_size}_{lmax_string}{model_type}") 
 
     else: #load observable-finetuned model
         pretrained_model_path = os.path.join(params.results_dir, f"IMPLICIT_{molecule}_{params.exp_name}")
