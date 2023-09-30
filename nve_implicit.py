@@ -12,6 +12,7 @@ import types
 import argparse
 import logging
 import os
+from configs.md22.integrator_configs import INTEGRATOR_CONFIGS
 logging.basicConfig(level=os.environ.get("LOGLEVEL", "WARNING"))
 from itertools import product
 from tqdm import tqdm
@@ -118,7 +119,7 @@ class ImplicitMDSimulator():
         #initialize datasets
         if self.name == 'md17' or self.name == 'md22':
             train_src = os.path.join(self.data_dir, self.name, self.molecule, self.size, 'train')
-            valid_src = os.path.join(self.data_dir, self.name, self.molecule, '50k' if self.name == 'md17' else 'all', 'val')
+            valid_src = os.path.join(self.data_dir, self.name, self.molecule, '50k' if self.name == 'md17' else '100percent', 'val')
         elif self.name == 'water':
             train_src = os.path.join(self.data_dir, self.name, self.size, 'train')
             valid_src = os.path.join(self.data_dir, self.name, self.size, 'val')
@@ -180,23 +181,25 @@ class ImplicitMDSimulator():
         self.max_bond_dev_per_replica = torch.zeros((self.n_replicas,)).to(self.device)
         self.stable_time = torch.zeros((self.n_replicas,)).to(self.device)
         
-        
-        #Nose-Hoover Thermostat stuff
-        self.dt = config['integrator_config']["timestep"] * units.fs
-        self.temp = config['integrator_config']["temperature"]
         self.integrator = self.config["integrator"]
+        #Nose-Hoover Thermostat stuff
+        self.integrator_config = INTEGRATOR_CONFIGS[self.molecule] if self.name == 'md22' else config['integrator_config']
+        self.dt = self.integrator_config["timestep"] * units.fs
+        self.temp = self.integrator_config["temperature"]
+        
         # adjust units.
         if self.integrator in ['NoseHoover', 'NoseHooverChain', 'Langevin']:
             self.temp *= units.kB
         self.targeEkin = 0.5 * (3.0 * self.n_atoms) * self.temp
-        self.ttime = config["integrator_config"]["ttime"]
+        
+        self.ttime = self.integrator_config["ttime"]
         self.Q = 3.0 * self.n_atoms * self.temp * (self.ttime * self.dt)**2
         self.zeta = torch.zeros((self.n_replicas, 1, 1)).to(self.device)
         self.masses = torch.Tensor(self.atoms.get_masses().reshape(1, -1, 1)).to(self.device)
 
 
         #Langevin thermostat stuff
-        self.gamma = config["integrator_config"]["gamma"] / (1000*units.fs)
+        self.gamma = self.integrator_config["gamma"] / (1000*units.fs)
         self.noise_f = (2.0 * self.gamma/self.masses * self.temp * self.dt).sqrt().to(self.device)
 
         self.nsteps = params.steps
@@ -207,7 +210,7 @@ class ImplicitMDSimulator():
             self.nsteps = self.eq_steps + 2*self.vacf_window #at least two windows
         while self.nsteps < params.steps: #nsteps should be at least as long as what was requested
             self.nsteps += self.vacf_window
-        self.ps_per_epoch = self.nsteps * config['integrator_config']["timestep"] // 1000.
+        self.ps_per_epoch = self.nsteps * self.integrator_config["timestep"] // 1000.
         
 
         self.atomic_numbers = torch.Tensor(self.atoms.get_atomic_numbers()).to(torch.long).to(self.device).repeat(self.n_replicas)
@@ -388,7 +391,6 @@ class ImplicitMDSimulator():
         with torch.enable_grad():
             if not radii.requires_grad:
                 radii.requires_grad = True
-            import pdb; pdb.set_trace()
             if self.model_type == "schnet":
                 energy = self.model(pos = radii.reshape(-1,3), z = atomic_numbers, batch = batch)
                 forces = -compute_grad(inputs = radii, output = energy, create_graph = retain_grad)
@@ -912,7 +914,6 @@ class Stochastic_IFT(torch.autograd.Function):
                             for k in AtomicDataDict.ALL_ENERGY_KEYS:
                                 if k in temp_atoms_batch:
                                     del temp_atoms_batch[k]
-                            #import pdb; pdb.set_trace()
                             energy = model(temp_atoms_batch)[AtomicDataDict.TOTAL_ENERGY_KEY]
 
                     def get_vjp(v):
@@ -989,7 +990,7 @@ if __name__ == "__main__":
     #set up model
     data_path = config['src']
     name = config['name']
-    molecule = f"-{config['molecule']}" if name == 'md17' or name == 'md22' else ""
+    molecule = f"{config['molecule']}" if name == 'md17' or name == 'md22' else ""
     size = config['size']
     model_type = config['model']
     
@@ -997,11 +998,11 @@ if __name__ == "__main__":
     lmax_string = f"lmax={params.l_max}_" if model_type == "nequip" else ""
     #load the correct checkpoint based on whether we're doing train or val
     if params.train or config["eval_model"] == 'pre': #load energies/forces trained model
-        pretrained_model_path = os.path.join(config['model_dir'], model_type, f"{name}{molecule}_{size}_{lmax_string}{model_type}") 
+        pretrained_model_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{size}_{lmax_string}{model_type}") 
     
     elif 'k' in config["eval_model"]:#load energies/forces model trained on a different dataset size
         new_size = config["eval_model"]
-        pretrained_model_path = os.path.join(config['model_dir'], model_type, f"{name}{molecule}_{new_size}_{lmax_string}{model_type}") 
+        pretrained_model_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{new_size}_{lmax_string}{model_type}") 
 
     else: #load observable-finetuned model
         pretrained_model_path = os.path.join(params.results_dir, f"IMPLICIT_{molecule}_{params.exp_name}")
@@ -1021,21 +1022,21 @@ if __name__ == "__main__":
     # #initialize RDF calculator
     diff_rdf = DifferentiableRDF(params, device)
 
-    
-    timestep = config["integrator_config"]["timestep"]
-    ttime = config["integrator_config"]["ttime"]
+    integrator_config = INTEGRATOR_CONFIGS[molecule] if name == 'md22' else config['integrator_config']
+    timestep = integrator_config["timestep"]
+    ttime = integrator_config["ttime"]
     results_dir = os.path.join(params.results_dir, f"IMPLICIT_{molecule}_{params.exp_name}") \
                 if params.train else os.path.join(params.results_dir, f"IMPLICIT_{molecule}_{params.exp_name}", "inference", params.eval_model)
     os.makedirs(results_dir, exist_ok = True)
 
     # #load ground truth rdf and VACF
-    temp_size = '10k' if name == 'md17' else 'all'
+    temp_size = '10k' if name == 'md17' else '100percent'
     print("Computing ground truth observables from datasets")
     gt_rdf, gt_adf = find_hr_adf_from_file(data_path, name, molecule, temp_size, params, device)
     contiguous_path = f'{data_path}/contiguous-{name}/{molecule}/{temp_size}/val/nequip_npz.npz'
     gt_data = np.load(contiguous_path)
     gt_traj = torch.FloatTensor(gt_data.f.R).to(device)
-    gt_vels = gt_traj[1:] - gt_traj[:-1] #finite difference approx for now TODO: calculate precisely based on forces and positions
+    gt_vels = gt_traj[1:] - gt_traj[:-1] #finite difference approx
     gt_vacf = DifferentiableVACF(params, device)(gt_vels)
     if params.train:
         np.save(os.path.join(results_dir, 'gt_rdf.npy'), gt_rdf.cpu())

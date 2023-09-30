@@ -1,13 +1,13 @@
-src: /data/sanjeevr #/pscratch/sd/s/sanjeevr/ #data/sanjeevr
-name: lips
-size: 20k
+src: /pscratch/sd/s/sanjeevr #data/sanjeevr
+name: water
+size: 1k
 normalize_labels: False
 checkpoint_epoch: -1 #which model to start from
 model: schnet
 l_max: 3
-log_dir: /home/sanjeevr/implicit-md #/global/cfs/projectdirs/m4319/sanjeevr
+log_dir: /global/cfs/projectdirs/m4319/sanjeevr #/home/sanjeevr/implicit-md #
 results_dir: 'results_nnip_continuous_new'
-model_dir: /data/ishan-amin/MODELPATH/ #'/pscratch/sd/i/ishan_a/MODELPATH' #'/pscratch/sd/s/sanjeevr/MODELPATH' 
+model_dir: /pscratch/sd/s/sanjeevr/MODELPATH #'/pscratch/sd/s/sanjeevr/MODELPATH' 
 seed: 123
 dr: 0.02
 max_rdf_dist: 10
@@ -16,7 +16,7 @@ angle_range: [0, 180]
 no_ift: False
 exp_name: "TEST"
 integrator: NoseHoover
-integrator_config: {"timestep": 2, "temperature": 520., "ttime": 20.}
+integrator_config: {"timestep": 1., "temperature": 300., "ttime": 20.}
 train: True
 eval_model: post
 diffusion_loss_weight: 0
@@ -49,4 +49,5 @@ lr: 0.001
 max_times_reduce_lr: 2 
 diameter_viz: 0.08
 gaussian_width: 0.01
+
 
