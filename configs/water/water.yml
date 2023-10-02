@@ -16,7 +16,7 @@ angle_range: [0, 180]
 no_ift: False
 exp_name: "TEST"
 integrator: NoseHoover
-integrator_config: {"timestep": 1., "temperature": 300., "ttime": 20.}
+integrator_config: {"timestep": 1., "temperature": 300., "ttime": 20., "gamma": 0.1}
 train: True
 eval_model: post
 diffusion_loss_weight: 0
