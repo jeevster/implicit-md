@@ -30,7 +30,7 @@ import shutil
 from torch.utils.tensorboard import SummaryWriter
 from sys import getrefcount
 from functorch import vmap, vjp
-from utils import process_gradient, compare_gradients, radii_to_dists, fcc_positions, initialize_velocities, \
+from utils import process_gradient, compare_gradients, radii_to_dists, fcc_positions, initialize_velocities, load_schnet_model, \
                     dump_params_to_yml, powerlaw_inv_cdf, print_active_torch_tensors, plot_pair, solve_continuity_system, find_hr_adf_from_file, distance_pbc
 import warnings
 warnings.filterwarnings("ignore")
@@ -51,7 +51,7 @@ from ase.io import read, Trajectory
 from ase.neighborlist import natural_cutoffs, NeighborList
 import mdsim.md.integrator as md_integrator
 from mdsim.common.registry import registry
-from mdsim.common.utils import setup_imports, setup_logging, compute_bond_lengths, load_schnet_model, data_to_atoms, atoms_to_batch, atoms_to_state_dict, convert_atomic_numbers_to_types
+from mdsim.common.utils import setup_imports, setup_logging, compute_bond_lengths, data_to_atoms, atoms_to_batch, atoms_to_state_dict, convert_atomic_numbers_to_types
 from mdsim.common.custom_radius_graph import detach_numpy
 from mdsim.datasets import data_list_collater
 from mdsim.datasets.lmdb_dataset import LmdbDataset, data_list_collater
@@ -119,7 +119,7 @@ class ImplicitMDSimulator():
 
         #initialize datasets
         
-        train_src = os.path.join(self.data_dir, self.name, self.molecule, self.size, 'train')
+        train_src = os.path.join(self.data_dir, self.name, self.molecule, self.size, 'test')
         valid_src = os.path.join(self.data_dir, self.name, self.molecule, MAX_SIZES[self.name], 'val')
         
         self.train_dataset = LmdbDataset({'src': train_src})
@@ -215,7 +215,8 @@ class ImplicitMDSimulator():
         self.ic_stddev = params.ic_stddev
 
         dataset = self.train_dataset if self.train else self.valid_dataset
-        samples = np.random.choice(np.arange(dataset.__len__()), self.n_replicas, replace=False)
+        #samples = np.random.choice(np.arange(dataset.__len__()), self.n_replicas, replace=False)
+        samples = [0]
         self.raw_atoms = [data_to_atoms(dataset.__getitem__(i)) for i in samples]
         self.cell = torch.Tensor(self.raw_atoms[0].cell).to(self.device)
         radii = torch.stack([torch.Tensor(atoms.get_positions()) for atoms in self.raw_atoms])
@@ -390,6 +391,7 @@ class ImplicitMDSimulator():
             if not radii.requires_grad:
                 radii.requires_grad = True
             if self.model_type == "schnet":
+                import pdb; pdb.set_trace()
                 energy = self.model(pos = radii.reshape(-1,3), z = atomic_numbers, batch = batch)
                 forces = -compute_grad(inputs = radii, output = energy, create_graph = retain_grad)
             elif self.model_type == "nequip":
