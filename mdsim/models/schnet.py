@@ -86,12 +86,9 @@ class SchNetWrap(SchNet):
         z = data.atomic_numbers.long()
         pos = data.pos
         batch = data.batch
-
         if self.otf_graph:
-            edge_index, cell_offsets, _, neighbors = radius_graph_pbc(
-                data, self.cutoff, 500
-            )
-            data.edge_index = edge_index
+            edge_index, cell_offsets, _, neighbors = radius_graph_pbc(data, self.cutoff, 500)
+            data.edge_index = edge_index.long()
             data.cell_offsets = cell_offsets
             data.neighbors = neighbors
 
@@ -141,10 +138,10 @@ class SchNetWrap(SchNet):
                     create_graph=True,
                 )[0]
             )
-            import pdb; pdb.set_trace()
+            #import pdb; pdb.set_trace()
             return energy, forces
         else:
-            import pdb; pdb.set_trace()
+            #import pdb; pdb.set_trace()
             return energy
 
     @property

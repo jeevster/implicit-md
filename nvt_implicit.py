@@ -215,8 +215,7 @@ class ImplicitMDSimulator():
         self.ic_stddev = params.ic_stddev
 
         dataset = self.train_dataset if self.train else self.valid_dataset
-        #samples = np.random.choice(np.arange(dataset.__len__()), self.n_replicas, replace=False)
-        samples = [0]
+        samples = np.random.choice(np.arange(dataset.__len__()), self.n_replicas, replace=False)
         self.raw_atoms = [data_to_atoms(dataset.__getitem__(i)) for i in samples]
         self.cell = torch.Tensor(self.raw_atoms[0].cell).to(self.device)
         radii = torch.stack([torch.Tensor(atoms.get_positions()) for atoms in self.raw_atoms])
@@ -233,21 +232,24 @@ class ImplicitMDSimulator():
         self.original_velocities = self.velocities.clone()
         self.original_zeta = self.zeta.clone()
         
-        if self.model_type == 'nequip':
-            #assign velocities to atoms
-            for i in range(len(self.raw_atoms)):
-                self.raw_atoms[i].set_velocities(self.velocities[i].cpu().numpy())
-            #create batch of atoms to be operated on
-            self.atoms_batch = [AtomicData.from_ase(atoms=a, r_max= self.model_config["r_max"]) for a in self.raw_atoms]
-            self.atoms_batch = AtomicData.to_AtomicDataDict(Batch.from_data_list(self.atoms_batch))
+        
+        #assign velocities to atoms
+        for i in range(len(self.raw_atoms)):
+            self.raw_atoms[i].set_velocities(self.velocities[i].cpu().numpy())
+        #create batch of atoms to be operated on
+        self.r_max_key = "r_max" if self.model_type == "nequip" else "cutoff"
+        self.atoms_batch = [AtomicData.from_ase(atoms=a, r_max=self.model_config[self.r_max_key]) for a in self.raw_atoms]
+        self.atoms_batch_regular = Batch.from_data_list(self.atoms_batch) #DataBatch for non-Nequip models
+        self.atoms_batch_regular['natoms'] = torch.Tensor([self.n_atoms]).repeat(self.n_replicas).to(self.device)
+        self.atoms_batch_regular['cell'] = self.atoms_batch_regular['cell'].to(self.device)
+        self.atoms_batch_regular['atomic_numbers'] =self.atoms_batch_regular['atomic_numbers'].squeeze().to(torch.long).to(self.device)
+        #convert to dict for Nequip
+        if self.model_type == "nequip":
+            self.atoms_batch = AtomicData.to_AtomicDataDict(self.atoms_batch_regular) 
+            self.atoms_batch = {k: v.to(self.device) for k, v in self.atoms_batch.items()}
             self.atoms_batch['atom_types'] = self.final_atom_types
             del self.atoms_batch['ptr']
             del self.atoms_batch['atomic_numbers']
-            self.atoms_batch = {k: v.to(self.device) for k, v in self.atoms_batch.items()}
-            # import pdb; pdb.set_trace()
-            # del self.atoms_batch['cell']
-            # del self.atoms_batch['pbc']
-            # del self.atoms_batch['edge_cell_shift']
             
         self.diameter_viz = params.diameter_viz
         self.exp_name = params.exp_name
@@ -391,9 +393,14 @@ class ImplicitMDSimulator():
             if not radii.requires_grad:
                 radii.requires_grad = True
             if self.model_type == "schnet":
-                import pdb; pdb.set_trace()
-                energy = self.model(pos = radii.reshape(-1,3), z = atomic_numbers, batch = batch)
-                forces = -compute_grad(inputs = radii, output = energy, create_graph = retain_grad)
+                #assign radii
+                self.atoms_batch_regular['pos'] = radii.reshape(-1, 3)
+                self.atoms_batch_regular['batch'] = batch
+                #make these match the number of replicas (different from n_replicas when doing bottom-up stuff)
+                self.atoms_batch_regular['cell'] = self.atoms_batch_regular['cell'][0].unsqueeze(0).repeat(radii.shape[0], 1, 1)
+                energy, forces = self.model(self.atoms_batch_regular)
+                forces = forces.reshape(-1, self.n_atoms, 3)
+                
             elif self.model_type == "nequip":
                 #assign radii
                 self.atoms_batch['pos'] = radii.reshape(-1, 3)
@@ -405,7 +412,7 @@ class ImplicitMDSimulator():
                 self.atoms_batch['atom_types'] = self.atoms_batch['atom_types'][0:self.n_atoms].repeat(radii.shape[0], 1)
                 
                 #recompute neighbor list
-                self.atoms_batch['edge_index'] = radius_graph(radii.reshape(-1, 3), r=self.model_config["r_max"], batch=batch, max_num_neighbors=32)
+                self.atoms_batch['edge_index'] = radius_graph(radii.reshape(-1, 3), r=self.model_config[self.r_max_key], batch=batch, max_num_neighbors=32)
                 self.atoms_batch['edge_cell_shift'] = torch.zeros((self.atoms_batch['edge_index'].shape[1], 3)).to(self.device)
                 atoms_updated = self.model(self.atoms_batch)
                 del self.atoms_batch['node_features']
@@ -707,7 +714,7 @@ class Stochastic_IFT(torch.autograd.Function):
                         simulator.atoms_batch['batch'] = batch
                         simulator.atoms_batch['atom_types'] = simulator.final_atom_types
                         #recompute neighbor list
-                        simulator.atoms_batch['edge_index'] = radius_graph(radii.reshape(-1, 3), r=simulator.model_config["r_max"], batch=batch, max_num_neighbors=32)
+                        simulator.atoms_batch['edge_index'] = radius_graph(radii.reshape(-1, 3), r=simulator.model_config[simulator.r_max_key], batch=batch, max_num_neighbors=32)
                         simulator.atoms_batch['edge_cell_shift'] = torch.zeros((simulator.atoms_batch['edge_index'].shape[1], 3)).to(simulator.device)
                         atoms_updated = simulator.model(simulator.atoms_batch)
                         del simulator.atoms_batch['node_features']
@@ -898,7 +905,7 @@ class Stochastic_IFT(torch.autograd.Function):
                             #construct a batch
                             temp_atoms_batch['pos'] = radii_in.reshape(-1, 3)
                             temp_atoms_batch['batch'] = batch
-                            temp_atoms_batch['edge_index'] = radius_graph(radii_in.reshape(-1, 3), r=simulator.model_config["r_max"], batch=batch, max_num_neighbors=32)
+                            temp_atoms_batch['edge_index'] = radius_graph(radii_in.reshape(-1, 3), r=simulator.model_config[simulator.r_max_key], batch=batch, max_num_neighbors=32)
                             temp_atoms_batch['edge_cell_shift'] = torch.zeros((temp_atoms_batch['edge_index'].shape[1], 3)).to(simulator.device)
                             #adjust shapes
                             simulator.atoms_batch['cell'] = simulator.atoms_batch['cell'][0].unsqueeze(0).repeat(radii_in.shape[0], 1, 1)
