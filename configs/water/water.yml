@@ -9,8 +9,8 @@ log_dir: /home/sanjeevr/implicit-md #/global/cfs/projectdirs/m4319/sanjeevr  #
 results_dir: 'results_nnip_continuous_new'
 model_dir: /home/sanjeevr/MDsim/MODELPATH #'/pscratch/sd/s/sanjeevr/MODELPATH' 
 seed: 123
-dr: 0.02
-max_rdf_dist: 10
+dr: 0.012
+max_rdf_dist: 6
 dv: 0.1
 angle_range: [0, 180]
 no_ift: False
@@ -28,7 +28,7 @@ force_loss_weight: 0.95
 diffusion_window: 1000
 vacf_window: 100
 ic_stddev: 0.0
-bond_dev_tol: 0.25 #decay this?
+rdf_mae_tol: 3
 max_frac_unstable_threshold: 0.75 #decay this?
 min_frac_unstable_threshold: 0.0 #increase this?
 eq_steps: 0

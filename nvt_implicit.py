@@ -30,8 +30,7 @@ import shutil
 from torch.utils.tensorboard import SummaryWriter
 from sys import getrefcount
 from functorch import vmap, vjp
-from utils import process_gradient, compare_gradients, radii_to_dists, fcc_positions, initialize_velocities, load_schnet_model, \
-                    dump_params_to_yml, powerlaw_inv_cdf, print_active_torch_tensors, plot_pair, solve_continuity_system, find_hr_adf_from_file, distance_pbc
+
 import warnings
 warnings.filterwarnings("ignore")
 #NNIP stuff:
@@ -51,13 +50,17 @@ from ase.io import read, Trajectory
 from ase.neighborlist import natural_cutoffs, NeighborList
 import mdsim.md.integrator as md_integrator
 from mdsim.common.registry import registry
-from mdsim.common.utils import setup_imports, setup_logging, compute_bond_lengths, data_to_atoms, atoms_to_batch, atoms_to_state_dict, convert_atomic_numbers_to_types
+from mdsim.common.utils import setup_imports, setup_logging, compute_bond_lengths, data_to_atoms, atoms_to_batch, atoms_to_state_dict, convert_atomic_numbers_to_types, process_gradient, compare_gradients, initialize_velocities, dump_params_to_yml
 from mdsim.common.custom_radius_graph import detach_numpy
 from mdsim.datasets import data_list_collater
 from mdsim.datasets.lmdb_dataset import LmdbDataset, data_list_collater
 from mdsim.common.utils import load_config
 from mdsim.modules.evaluator import Evaluator
 from mdsim.modules.normalizer import Normalizer
+
+from mdsim.observables.md17_22 import radii_to_dists, find_hr_adf_from_file, distance_pbc
+from mdsim.observables.water import find_water_rdfs_diffusivity_from_file
+from mdsim.models.load_models import  load_schnet_model
 
 from mdsim.common.utils import (
     build_config,
@@ -1034,10 +1037,13 @@ if __name__ == "__main__":
 
     #load ground truth rdf and VACF
     print("Computing ground truth observables from datasets")
-    gt_rdf, gt_adf = find_hr_adf_from_file(data_path, name, molecule, MAX_SIZES[name], params, device)
+    if name == 'water':
+        gt_rdf, gt_diffusivity = find_water_rdfs_diffusivity_from_file(data_path, MAX_SIZES[name], params, device)
+    else:
+        gt_rdf, gt_adf = find_hr_adf_from_file(data_path, name, molecule, MAX_SIZES[name], params, device)
     contiguous_path = os.path.join(data_path, f'contiguous-{name}', molecule, MAX_SIZES[name], 'val/nequip_npz.npz')
     gt_data = np.load(contiguous_path)
-    #TODO: gt vacf doesn't look right
+    #TODO: gt vacf doesn't look right - it's because the recording frequency of the data is 10 fs, not 0.5 as in MD17
     if name == 'water':
         gt_vels = torch.FloatTensor(gt_data.f.velocities).to(device)
     else:

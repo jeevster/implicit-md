@@ -13,6 +13,7 @@ from bisect import bisect
 from functools import wraps
 from itertools import product
 from mdsim.common.YParams import YParams
+from scipy.stats import maxwell
 
 from nequip.data import AtomicData, AtomicDataDict
 from torch_geometric.data import Data, Batch
@@ -72,6 +73,58 @@ OFFSET_LIST = [
     [1, 1, 0],
     [1, 1, 1],
 ]
+# Procedure to initialize velocities with Maxwell Boltzmann Distribution
+def initialize_velocities(n_particle, masses, temp, n_replicas):
+
+    masses = masses.cpu().numpy()
+    vel_dist = maxwell()
+    momenta = masses * vel_dist.rvs(size = (n_replicas, n_particle, 3))
+    #shift so that initial momentum is zero
+    momenta -= np.mean(momenta, axis = -2, keepdims=True)
+
+    #scale velocities to match desired temperature
+    ke = (momenta**2 / (2*masses)).sum(axis = (1,2), keepdims=True)
+    targeEkin = 0.5 * (3.0 * n_particle) * temp
+    correction_factor = np.sqrt(targeEkin / ke)
+    momenta *= correction_factor
+    velocities = momenta/masses
+    return torch.Tensor(velocities)
+
+#inverse cdf for power law with exponent 'power' and min value y_min
+def powerlaw_inv_cdf(y, power, y_min):
+    return y_min*((1-y)**(1/(1-power)))
+    
+
+def dump_params_to_yml(params, filepath):
+    with open(os.path.join(filepath, "config.yaml"), 'w') as f:
+        yaml.dump(params, f)
+
+
+def print_active_torch_tensors():
+    count = 0
+    for obj in gc.get_objects():
+        try:
+            if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
+                #print(type(obj), obj.size())
+                count +=1
+                del obj
+        except:
+            pass
+    print(f"{count} tensors in memory")
+
+'''Gradient utils'''
+def compare_gradients(grad1, grad2):
+    '''Compute cosine similarity and ratio between two sets of gradient updates for a given model'''
+    assert(len(grad1) ==  len(grad2))
+    grads1_flattened = torch.cat([grad.flatten() for grad in grad1])
+    grads2_flattened = torch.cat([grad.flatten() for grad in grad2])
+    cosine_similarity = torch.nn.functional.cosine_similarity(grads1_flattened, grads2_flattened, dim=0)
+    ratio = (grads1_flattened / (grads2_flattened + 1e-8)).abs().median()
+    return cosine_similarity, ratio
+
+def process_gradient(grad, device):
+    return [g.detach() if g is not None else torch.Tensor([0.]).to(device) for g in grad]
+
 
 def convert_atomic_numbers_to_types(atomic_numbers):
     unique_atomic_numbers = torch.unique(atomic_numbers)
