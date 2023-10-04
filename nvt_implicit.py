@@ -135,6 +135,11 @@ class ImplicitMDSimulator():
         NL = NeighborList(natural_cutoffs(self.atoms), self_interaction=False)
         NL.update(self.atoms)
         self.bonds = torch.tensor(NL.get_connectivity_matrix().todense().nonzero()).to(self.device).T
+        #filter out extra edges (don't know why they're there)
+        if self.name == 'water':
+            mask = torch.abs(self.bonds[:, 0] - self.bonds[:, 1]) <=2
+            self.bonds = self.bonds[mask]
+        
         self.atom_types = self.atoms.get_chemical_symbols()
         #atom type mapping
         if self.model_type == "nequip":
