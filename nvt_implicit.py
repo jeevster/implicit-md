@@ -218,7 +218,6 @@ class ImplicitMDSimulator():
                                     self.cell, 
                                     self.device) if self.name == 'md17' \
                                     or self.name == 'md22' else WaterRDFMAE(self.data_dir, self.gt_rdf, self.n_atoms, self.n_replicas, self.params, self.device)
-        self.stability_criterion = vmap(self.stability_criterion, 1) #vmap over replica dimension 
         radii = torch.stack([torch.Tensor(atoms.get_positions()) for atoms in self.raw_atoms])
         self.radii = (radii + torch.normal(torch.zeros_like(radii), self.ic_stddev)).to(self.device)
         self.velocities = torch.Tensor(initialize_velocities(self.n_atoms, self.masses, self.temp, self.n_replicas)).to(self.device)
@@ -548,6 +547,7 @@ class ImplicitMDSimulator():
             self.stacked_radii = torch.stack(self.running_radii)
             #compute instability metric (either bond length deviation or RDF MAE)
             self.instability_per_replica = self.stability_criterion(self.stacked_radii)
+            import pdb; pdb.set_trace()
             self.max_instability = self.instability_per_replica.mean()
             self.stacked_vels = torch.cat(self.running_vels)
         

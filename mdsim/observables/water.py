@@ -35,11 +35,12 @@ class WaterRDFMAE(torch.nn.Module):
 
 
     def forward(self, stacked_radii):
-        #TODO: supply other arguments to 
-        rdfs = get_water_rdfs(stacked_radii, self.ptypes, self.lattices, self.bins, self.device)
-        #compute MAEs of all element-conditioned RDFs
-        maes = torch.cat([torch.abs(rdf-gt_rdf).mean() for rdf, gt_rdf in zip(rdfs, self.gt_rdfs)])
-        return torch.max(maes)
+        max_maes = []
+        for i in range(self.n_replicas): #explicit loop since vmap makes some numpy things weird
+            rdfs = get_water_rdfs(stacked_radii[:,i], self.ptypes, self.lattices, self.bins, self.device)
+            #compute MAEs of all element-conditioned RDFs
+            max_maes.append(torch.max(torch.cat([torch.abs(rdf-gt_rdf).mean().unsqueeze(-1) for rdf, gt_rdf in zip(rdfs.values(), self.gt_rdfs.values())])))
+        return torch.stack(max_maes).to(self.device)
   
 
 def get_diffusivity_traj(pos_seq, dilation=1):
@@ -79,7 +80,6 @@ def get_water_rdfs(data_seq, ptypes, lattices, bins, device='cpu'):
     """
     data_seq = data_seq.to(device).float()
     lattices = lattices.to(device).float()
-    pi = torch.acos(torch.zeros(1)).to(device).item() * 2
     
     type2indices = {
         'H': ptypes == 1,
@@ -95,13 +95,13 @@ def get_water_rdfs(data_seq, ptypes, lattices, bins, device='cpu'):
         indices0 = type2indices[type1].to(device)
         indices1 = type2indices[type2].to(device)
         data_pdist = distance_pbc_select(data_seq, lattices, indices0, indices1)
-        data_pdist = data_pdist.flatten()
+        data_pdist = data_pdist.flatten().cpu().numpy()
         data_shape = data_pdist.shape[0]
             
         data_pdist = data_pdist[data_pdist != 0]
-        data_hist, _ = torch.histogram(data_pdist, bins)
-        rho_data = data_shape / torch.prod(lattices)
-        Z_data = rho_data * 4 / 3 * pi * (bins[1:] ** 3 - bins[:-1] ** 3)
+        data_hist, _ = np.histogram(data_pdist, bins)
+        rho_data = data_shape / torch.prod(lattices).cpu().numpy()
+        Z_data = rho_data * 4 / 3 * np.pi * (bins[1:] ** 3 - bins[:-1] ** 3)
         data_rdf = data_hist / Z_data
         all_rdfs[type1 + type2] = torch.Tensor([data_rdf]).to(device)
         
@@ -111,7 +111,7 @@ def get_water_rdfs(data_seq, ptypes, lattices, bins, device='cpu'):
 def find_water_rdfs_diffusivity_from_file(base_path: str, size: str, params, device):
     xlim = params.max_rdf_dist
     n_bins = int(xlim/params.dr)
-    bins = torch.linspace(1e-6, xlim, n_bins + 1).to(device) # for computing RDF
+    bins = np.linspace(1e-6, xlim, n_bins + 1) # for computing RDF
 
     # get ground truth data
     DATAPATH = os.path.join(base_path, 'water', size, 'val/nequip_npz.npz')

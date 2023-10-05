@@ -102,7 +102,7 @@ class BoltzmannEstimator():
         
         if self.params.vacf_loss_weight == 0 or not self.simulator.train or not self.simulator.all_unstable:
             vacf_gradient_estimators = None
-            vacf_package = (vacf_gradient_estimators, mean_vacf, vacf_loss(mean_vacf).to(self.simulator.device))
+            vacf_package = (vacf_gradient_estimators, mean_vacf, self.vacf_loss(mean_vacf).to(self.simulator.device))
         else:
             vacf_loss_tensor = vmap(vmap(self.vacf_loss))(vacfs).reshape(-1, 1, 1)
             #define force function - expects input of shape (batch, N, 3)

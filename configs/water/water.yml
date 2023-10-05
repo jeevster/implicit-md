@@ -34,7 +34,7 @@ eq_steps: 0
 steps: 200 # 1 picosecond per epoch
 n_dump: 10
 n_dump_vacf: 2
-n_replicas: 1
+n_replicas: 4
 minibatch_size: 40
 only_train_on_unstable_replicas: False
 allow_off_policy_updates: False
