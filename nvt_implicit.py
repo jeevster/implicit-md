@@ -2,6 +2,7 @@ import numpy as np
 import gsd.hoomd
 import torch
 import logging
+import gc
 import torch.nn as nn
 import math
 from nff.utils.scatter import compute_grad
@@ -291,11 +292,7 @@ class ImplicitMDSimulator():
             for i in tqdm(range(num_batches)):
                 start = batch_size*i
                 end = batch_size*(i+1)
-                actual_batch_size = min(end, self.gt_traj_test.shape[0]) - start        
-                atomic_numbers = torch.Tensor(self.atoms.get_atomic_numbers()).to(torch.long).to(self.device).repeat(actual_batch_size)
-                batch = torch.arange(actual_batch_size).repeat_interleave(self.n_atoms).to(self.device)
-                
-                energy, force = self.force_calc(self.gt_traj_test[start:end], atomic_numbers, batch)
+                energy, force = self.force_calc(self.gt_traj_test[start:end])
                 energies.append(energy.detach())
                 forces.append(force.detach())
             
@@ -319,10 +316,7 @@ class ImplicitMDSimulator():
             for i in tqdm(range(num_batches)):
                 start = batch_size*i
                 end = batch_size*(i+1)
-                actual_batch_size = min(end, self.gt_traj_train.shape[0]) - start        
-                atomic_numbers = torch.Tensor(self.atoms.get_atomic_numbers()).to(torch.long).to(self.device).repeat(actual_batch_size)
-                batch = torch.arange(actual_batch_size).repeat_interleave(self.n_atoms).to(self.device)
-                energy, force = self.force_calc(self.gt_traj_train[start:end], atomic_numbers, batch, retain_grad = True)
+                energy, force = self.force_calc(self.gt_traj_train[start:end])
                 
                 #compute losses
                 energy_loss = self.energy_loss(self.normalizer_train.norm(self.gt_energies_train[start:end]), energy).mean()
@@ -340,8 +334,7 @@ class ImplicitMDSimulator():
             final_force_grads = tuple([g.reshape(shape) for g, shape in zip(mean_force_grads.split(original_numel), original_shapes)])
             return final_energy_grads, final_force_grads
 
-
-    def resume(self):
+    def set_starting_states(self):
         #reset replicas which exceeded the stability criteria
         reset_replicas = self.instability_per_replica > self.stability_tol
         num_resets = reset_replicas.count_nonzero().item()
@@ -384,11 +377,10 @@ class ImplicitMDSimulator():
         return num_resets / self.n_replicas
 
 
-    def force_calc(self, radii, atomic_numbers = None, batch = None, retain_grad = False):
-        if atomic_numbers is None:
-            atomic_numbers = self.atomic_numbers
-        if batch is None:
-            batch = self.batch
+    def force_calc(self, radii):
+        batch_size = radii.shape[0]
+        batch = torch.arange(batch_size).repeat_interleave(self.n_atoms).to(self.device)
+        atomic_numbers = torch.Tensor(self.atoms.get_atomic_numbers()).to(torch.long).to(self.device).repeat(batch_size)
         with torch.enable_grad():
             if not radii.requires_grad:
                 radii.requires_grad = True
@@ -418,7 +410,7 @@ class ImplicitMDSimulator():
                 del self.atoms_batch['node_features']
                 del self.atoms_batch['node_attrs']
                 energy = atoms_updated[AtomicDataDict.TOTAL_ENERGY_KEY]
-                forces = atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.n_atoms, 3) if retain_grad else atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.n_atoms, 3).detach()
+                forces = atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.n_atoms, 3)
             assert(not torch.any(torch.isnan(forces)))
             return energy, forces
 
@@ -437,7 +429,7 @@ class ImplicitMDSimulator():
         # make half a step in velocity
         velocities = velocities + 0.5 * self.dt * (accel - zeta * velocities)
         # make a full step in accelerations
-        energy, forces = self.force_calc(radii, retain_grad=retain_grad)
+        energy, forces = self.force_calc(radii)
         accel = forces / self.masses
 
         # make a half step in self.zeta
@@ -456,7 +448,7 @@ class ImplicitMDSimulator():
         
         # dump frames
         if self.step%self.n_dump == 0:
-            print(self.step, self.calc_properties(energy), file=self.f)
+            print(self.step, self.thermo_log(energy), file=self.f)
             step  = self.step if self.train else (self.epoch+1) * self.step #don't overwrite previous epochs at inference time
             try:   
                 self.t.append(self.create_frame(frame = step/self.n_dump))
@@ -470,13 +462,13 @@ class ImplicitMDSimulator():
         #full step in position
         radii = radii.detach() + self.dt*velocities
         #calculate force at new position
-        energy, forces = self.force_calc(radii, retain_grad=retain_grad)
+        energy, forces = self.force_calc(radii)
         noise = torch.randn_like(velocities)
         #full step in velocities
         velocities = velocities + self.dt*(forces/self.masses - self.gamma * velocities) + self.noise_f * noise
         # # dump frames
         if self.step%self.n_dump == 0:
-            print(self.step, self.calc_properties(energy), file=self.f)
+            print(self.step, self.thermo_log(energy), file=self.f)
             try:    
                 self.t.append(self.create_frame(frame = self.step/self.n_dump))
             except:
@@ -512,7 +504,7 @@ class ImplicitMDSimulator():
         #Initialize forces/potential of starting configuration
         with torch.no_grad():
             self.step = -1
-            _, forces = self.force_calc(self.radii, retain_grad = False)
+            _, forces = self.force_calc(self.radii)
             if self.integrator == 'Langevin':
                 #half-step outside loop to ensure symplecticity
                 self.velocities = self.velocities + self.dt/2*(forces/self.masses - self.gamma*self.velocities) + self.noise_f/torch.sqrt(torch.tensor(2.0).to(self.device))*torch.randn_like(self.velocities)
@@ -543,12 +535,12 @@ class ImplicitMDSimulator():
                     
             self.zeta = zeta
             self.forces = forces
-
-            self.stacked_radii = torch.stack(self.running_radii)
+            self.stacked_radii = torch.stack(self.running_radii[::self.n_dump])
             #compute instability metric (either bond length deviation or RDF MAE)
             self.instability_per_replica = self.stability_criterion(self.stacked_radii)
-            import pdb; pdb.set_trace()
-            self.max_instability = self.instability_per_replica.mean()
+            if isinstance(self.instability_per_replica, tuple):
+                self.instability_per_replica = self.instability_per_replica[-1]
+            self.mean_instability = self.instability_per_replica.mean()
             self.stacked_vels = torch.cat(self.running_vels)
         
         # self.f.close()
@@ -592,21 +584,17 @@ class ImplicitMDSimulator():
         s.bonds.group = detach_numpy(self.bonds)
         return s
     
-    def calc_properties(self, pe):
-        # Calculate properties of interest in this function
+    def thermo_log(self, pe):
+        #Log energies and instabilities
         p_dof = 3*self.n_atoms
         ke = 1/2 * (self.masses*torch.square(self.velocities)).sum(axis = (1,2)).unsqueeze(-1)
         temp = (2*ke/p_dof).mean() / units.kB
-
-        #max bond length deviation calculation (mean over replicas)
-        bond_lens = distance_pbc(self.radii[:, self.bonds[:, 0]], self.radii[:, self.bonds[:, 1]], torch.FloatTensor([30., 30., 30.]).to(self.device))
-        max_dev = (bond_lens - self.mean_bond_lens).abs().max(dim=-1)[0].mean()
         self.running_energy.append((ke+pe).detach())
         return {"Temperature": temp.item(),
                 "Potential Energy": pe.mean().item(),
                 "Total Energy": (ke+pe).mean().item(),
                 "Momentum Magnitude": torch.norm(torch.sum(self.masses*self.velocities, axis =-2)).item(),
-                "Max Bond Length Deviation": max_dev.item()}
+                'RDF MAE' if name == 'water' else 'Max Bond Length Deviation': self.mean_instability.item()}
 
 if __name__ == "__main__":
     setup_logging() 
@@ -704,7 +692,7 @@ if __name__ == "__main__":
     adf_losses = []
     diffusion_losses = []
     vacf_losses = []
-    max_instabilities = []
+    mean_instabilities = []
     energy_rmses = []
     force_rmses = []
     grad_times = []
@@ -741,14 +729,18 @@ if __name__ == "__main__":
                 raise RuntimeError("Optimizer must be either Adam or SGD")
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=10)
             print(f"Initialize {simulator.n_replicas} random ICs in parallel")
-        #continue from where we left off in the last epoch/batch
+
         simulator.epoch = epoch
-        num_resets = simulator.resume()
+        #set starting states based on instability metric
+        num_resets = simulator.set_starting_states()
+
         start = time.time()
-        
-        #run simulation and get gradients via Fabian method/adjoint
+        #run simulation 
+        print('Collect MD Simulation Data')
+        equilibriated_simulator = simulator.solve()
+        #estimate gradients via Fabian method/adjoint
         equilibriated_simulator, rdf_package, \
-            vacf_package, energy_force_package = boltzmann_estimator.estimate()
+            vacf_package, energy_force_package = boltzmann_estimator.estimate(equilibriated_simulator)
         
         #unpack results
         rdf_grad_batches, mean_rdf, rdf_loss, mean_adf, adf_loss = rdf_package
@@ -820,8 +812,14 @@ if __name__ == "__main__":
         sim_time = end - start
         
         #save rdf, adf, and vacf at the end of the trajectory
-        filename = f"rdf_epoch{epoch+1}.npy"
-        np.save(os.path.join(results_dir, filename), mean_rdf.cpu().detach().numpy())
+        
+        if name == 'water':
+            for key, rdf in zip(gt_rdf.keys(), mean_rdf.split(500)):
+                filename = f"{key}rdf_epoch{epoch+1}.npy" 
+                np.save(os.path.join(results_dir, filename), rdf.cpu().detach().numpy())
+        else:
+            filename = f"rdf_epoch{epoch+1}.npy"        
+            np.save(os.path.join(results_dir, filename), mean_rdf.cpu().detach().numpy())
         filename = f"adf_epoch{epoch+1}.npy"
         np.save(os.path.join(results_dir, filename), mean_adf.cpu().detach().numpy())
         filename = f"vacf_epoch{epoch+1}.npy"
@@ -847,16 +845,13 @@ if __name__ == "__main__":
         rdf_losses.append(rdf_loss.item())
         adf_losses.append(adf_loss.item())
         vacf_losses.append(vacf_loss.item())
-        max_instabilities.append(equilibriated_simulator.max_instability)
+        mean_instabilities.append(equilibriated_simulator.mean_instability)
         resets.append(num_resets)
         lrs.append(optimizer.param_groups[0]['lr'])
         #energy/force error
         energy_rmse, force_rmse = simulator.energy_force_error(params.n_replicas)
         energy_rmses.append(energy_rmse)
         force_rmses.append(force_rmse)
-        # energy_rmses.append(0)
-        # force_rmses.append(0)
-
         sim_times.append(sim_time)
         try:
             grad_norms.append(max_norm.item())
@@ -869,7 +864,7 @@ if __name__ == "__main__":
         writer.add_scalar('RDF Loss', rdf_losses[-1], global_step=epoch+1)
         writer.add_scalar('ADF Loss', adf_losses[-1], global_step=epoch+1)
         writer.add_scalar('VACF Loss', vacf_losses[-1], global_step=epoch+1)
-        writer.add_scalar('RDF MAE' if name == 'water' else 'Max Bond Length Deviation', max_instabilities[-1], global_step=epoch+1)
+        writer.add_scalar('RDF MAE' if name == 'water' else 'Max Bond Length Deviation', mean_instabilities[-1], global_step=epoch+1)
         writer.add_scalar('Fraction of Unstable Replicas', resets[-1], global_step=epoch+1)
         writer.add_scalar('Learning Rate', lrs[-1], global_step=epoch+1)
         writer.add_scalar('Energy RMSE', energy_rmses[-1], global_step=epoch+1)

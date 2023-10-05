@@ -36,11 +36,13 @@ class WaterRDFMAE(torch.nn.Module):
 
     def forward(self, stacked_radii):
         max_maes = []
+        rdf_list = []
         for i in range(self.n_replicas): #explicit loop since vmap makes some numpy things weird
             rdfs = get_water_rdfs(stacked_radii[:,i], self.ptypes, self.lattices, self.bins, self.device)
             #compute MAEs of all element-conditioned RDFs
             max_maes.append(torch.max(torch.cat([torch.abs(rdf-gt_rdf).mean().unsqueeze(-1) for rdf, gt_rdf in zip(rdfs.values(), self.gt_rdfs.values())])))
-        return torch.stack(max_maes).to(self.device)
+            rdf_list.append(torch.cat([rdf.flatten() for rdf in rdfs.values()]))
+        return torch.stack(rdf_list).to(self.device), torch.stack(max_maes).to(self.device)
   
 
 def get_diffusivity_traj(pos_seq, dilation=1):

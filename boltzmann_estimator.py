@@ -20,16 +20,18 @@ from ase.calculators.calculator import Calculator
 from nequip.data import AtomicData, AtomicDataDict
 from mdsim.common.utils import setup_imports, setup_logging, compute_bond_lengths, data_to_atoms, atoms_to_batch, atoms_to_state_dict, convert_atomic_numbers_to_types, process_gradient, compare_gradients, initialize_velocities, dump_params_to_yml
 from mdsim.observables.md17_22 import radii_to_dists, distance_pbc
-from mdsim.observables.water import find_water_rdfs_diffusivity_from_file
+from mdsim.observables.water import WaterRDFMAE, find_water_rdfs_diffusivity_from_file
 
+#TODO: have separate functions for 
 
 class BoltzmannEstimator():
-    def __init__(self, simulator, gt_rdf, gt_vacf, gt_adf, params, device):
+    def __init__(self, gt_rdf, gt_vacf, gt_adf, params, device):
         super(BoltzmannEstimator, self).__init__()
-        self.simulator = simulator
         self.params = params
         self.diff_rdf = DifferentiableRDF(self.params, device)
         self.gt_rdf = gt_rdf
+        if isinstance(self.gt_rdf, dict):
+            self.gt_rdf = torch.cat([rdf.flatten() for rdf in self.gt_rdf.values()])
         self.gt_vacf = gt_vacf
         self.gt_adf = gt_adf
     
@@ -40,7 +42,21 @@ class BoltzmannEstimator():
     def vacf_loss(self, vacf):    
         return (vacf - self.gt_vacf).pow(2).mean()
     
-    def estimate(self):
+    #define Onsager-Machlup Action ("energy" of each trajectory)
+    #TODO: make this a torch.nn.Module in observable.py
+    def om_action(vel_traj, radii_traj):
+        v_tp1 = vel_traj[:, :, 1:]
+        v_t = vel_traj[:, :, :-1]
+        f_tp1 = self.simulator.force_calc(radii_traj[:, :, 1:].reshape(-1, self.simulator.n_atoms, 3)).reshape(v_t.shape)
+        a_tp1 = f_tp1/self.simulator.masses.unsqueeze(1).unsqueeze(1)
+        diff = (v_tp1 - v_t - a_tp1*self.simulator.dt + self.simulator.gamma*v_t*self.simulator.dt)
+        #pre-divide by auxiliary temperature (noise_f**2)
+        om_action = diff**2 / (self.simulator.noise_f**2).unsqueeze(1).unsqueeze(1) #this is exponentially distributed
+        #sum over euclidean dimensions, atoms, and vacf window: TODO: this ruins the exponential property
+        return (diff/self.simulator.noise_f.unsqueeze(1).unsqueeze(1)).detach(), om_action.sum((-3, -2, -1))
+    
+    def estimate(self, simulator):
+        self.simulator = simulator
 
         if self.simulator.vacf_loss_weight !=0 and self.simulator.integrator != "Langevin":
             raise RuntimeError("Must use stochastic (Langevin) dynamics for VACF training")
@@ -50,8 +66,6 @@ class BoltzmannEstimator():
         diff_adf = DifferentiableADF(self.simulator.n_atoms, self.simulator.bonds, self.simulator.cell, self.params, self.simulator.device)
         diff_vacf = DifferentiableVACF(self.params, self.simulator.device)
         
-        print('Collect MD Simulation Data')
-        equilibriated_simulator = self.simulator.solve()
         running_radii = self.simulator.running_radii if self.simulator.all_unstable else self.simulator.running_radii[0:2]
         #ctx.save_for_backward(equilibriated_self.simulator)
         
@@ -105,46 +119,6 @@ class BoltzmannEstimator():
             vacf_package = (vacf_gradient_estimators, mean_vacf, self.vacf_loss(mean_vacf).to(self.simulator.device))
         else:
             vacf_loss_tensor = vmap(vmap(self.vacf_loss))(vacfs).reshape(-1, 1, 1)
-            #define force function - expects input of shape (batch, N, 3)
-            def get_forces(radii):
-                batch_size = radii.shape[0]
-                batch = torch.arange(batch_size).repeat_interleave(self.simulator.n_atoms).to(self.simulator.device)
-                atomic_numbers = torch.Tensor(self.simulator.atoms.get_atomic_numbers()).to(torch.long).to(self.simulator.device).repeat(batch_size)
-                if self.simulator.model_type == "schnet":
-                    energy = model(pos = radii.reshape(-1,3), z = atomic_numbers, batch = batch)
-                    grad = compute_grad(inputs = radii, output = energy)
-                    assert(not grad.is_leaf)
-                    return -grad
-                elif self.simulator.model_type == "nequip":
-                    #recompute neighbor list
-                    #assign radii
-                    self.simulator.atoms_batch['pos'] = radii.reshape(-1, 3)
-                    self.simulator.atoms_batch['batch'] = batch
-                    self.simulator.atoms_batch['atom_types'] = self.simulator.final_atom_types
-                    #recompute neighbor list
-                    self.simulator.atoms_batch['edge_index'] = radius_graph(radii.reshape(-1, 3), r=self.simulator.model_config[self.simulator.r_max_key], batch=batch, max_num_neighbors=32)
-                    self.simulator.atoms_batch['edge_cell_shift'] = torch.zeros((self.simulator.atoms_batch['edge_index'].shape[1], 3)).to(self.simulator.device)
-                    atoms_updated = self.simulator.model(self.simulator.atoms_batch)
-                    del self.simulator.atoms_batch['node_features']
-                    del self.simulator.atoms_batch['node_attrs']
-                    energy = atoms_updated[AtomicDataDict.TOTAL_ENERGY_KEY]
-                    forces = atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.simulator.n_atoms, 3)
-                    assert(not forces.is_leaf)
-                    return forces
-
-            #define Onsager-Machlup Action ("energy" of each trajectory)
-            #TODO: make this a torch.nn.Module in observable.py
-            def om_action(vel_traj, radii_traj):
-                v_tp1 = vel_traj[:, :, 1:]
-                v_t = vel_traj[:, :, :-1]
-                f_tp1 = get_forces(radii_traj[:, :, 1:].reshape(-1, self.simulator.n_atoms, 3)).reshape(v_t.shape)
-                a_tp1 = f_tp1/self.simulator.masses.unsqueeze(1).unsqueeze(1)
-                diff = (v_tp1 - v_t - a_tp1*self.simulator.dt + self.simulator.gamma*v_t*self.simulator.dt)
-                #pre-divide by auxiliary temperature (noise_f**2)
-                om_action = diff**2 / (self.simulator.noise_f**2).unsqueeze(1).unsqueeze(1) #this is exponentially distributed
-                #sum over euclidean dimensions, atoms, and vacf window: TODO: this ruins the exponential property
-                return (diff/self.simulator.noise_f.unsqueeze(1).unsqueeze(1)).detach(), om_action.sum((-3, -2, -1))
-            
             #compute OM action - do it in mini-batches to avoid OOM issues
             batch_size = 5
             print(f"Calculate gradients of Onsager-Machlup action of {velocities_traj.shape[0] * velocities_traj.shape[1]} paths in minibatches of size {batch_size*velocities_traj.shape[1]}")
@@ -162,10 +136,10 @@ class BoltzmannEstimator():
                     end = batch_size*(i+1)
                     velocities = velocities_traj[start:end]
                     radii = radii_traj[start:end]
-                    diff, om_act = om_action(velocities, radii)
+                    diff, om_act = self.om_action(velocities, radii)
                     #noises = noise_traj[start:end].reshape(-1, self.simulator.vacf_window, self.simulator.n_atoms, 3)
                     # with torch.enable_grad():
-                    #     forces = get_forces(radii.reshape(-1, self.simulator.n_atoms, 3)).reshape(-1, self.simulator.vacf_window, self.simulator.n_atoms, 3)
+                    #     forces = self.simulator.force_calc(radii.reshape(-1, self.simulator.n_atoms, 3)).reshape(-1, self.simulator.vacf_window, self.simulator.n_atoms, 3)
                     
                     #make sure the diffs match the stored noises along the trajectory
                     #assert(torch.allclose(diff, noise_traj[start:end, :, 1:], atol = 1e-3))
@@ -249,12 +223,19 @@ class BoltzmannEstimator():
                 gradient_estimator = tuple([g.reshape(shape) for g, shape in zip(mean_grads.split(original_numel), original_shapes)])
                 vacf_gradient_estimators.append(gradient_estimator)
             vacf_package = (vacf_gradient_estimators, mean_vacf, mean_vacf_loss.to(self.simulator.device))
-        ###RDF/ADF Stuff
+       
+        ###RDF/ADF Stuff ###
         
-        r2d = lambda r: radii_to_dists(r, self.simulator.params)
-        dists = vmap(r2d)(stacked_radii).reshape(-1, self.simulator.n_atoms, self.simulator.n_atoms-1, 1)
-        rdfs = torch.stack([diff_rdf(tuple(dist)) for dist in dists]).reshape(-1, self.simulator.n_replicas, self.gt_rdf.shape[-1]) #this way of calculating uses less memory
-        adfs = torch.stack([diff_adf(rad) for rad in stacked_radii.reshape(-1, self.simulator.n_atoms, 3)]).reshape(-1, self.simulator.n_replicas, self.gt_adf.shape[-1]) #this way of calculating uses less memory
+        if self.simulator.name == "water":
+            #this is computing the average
+            rdfs = torch.cat([self.simulator.stability_criterion(s.unsqueeze(0))[0] for s in stacked_radii])
+            rdfs = rdfs.reshape(-1, self.simulator.n_replicas, rdfs.shape[-1])
+            adfs = torch.zeros_like(rdfs) #TODO: fix
+        else:
+            r2d = lambda r: radii_to_dists(r, self.simulator.params)
+            dists = vmap(r2d)(stacked_radii).reshape(-1, self.simulator.n_atoms, self.simulator.n_atoms-1, 1)
+            rdfs = torch.stack([diff_rdf(tuple(dist)) for dist in dists]).reshape(-1, self.simulator.n_replicas, self.gt_rdf.shape[-1]) #this way of calculating uses less memory
+            adfs = torch.stack([diff_adf(rad) for rad in stacked_radii.reshape(-1, self.simulator.n_atoms, 3)]).reshape(-1, self.simulator.n_replicas, self.gt_adf.shape[-1]) #this way of calculating uses less memory
         
         #compute mean quantities only on stable replicas
         mean_rdf = rdfs[:, stable_replicas].mean(dim=(0, 1))
@@ -296,30 +277,13 @@ class BoltzmannEstimator():
             print(f"Computing RDF/ADF gradients from {stacked_radii.shape[0]} structures in minibatches of size {MINIBATCH_SIZE}")
             
             for i in tqdm(range(num_blocks)):
-                if self.simulator.model_type == "nequip":
-                    temp_atoms_batch = self.simulator.atoms_batch
+            
                 start = MINIBATCH_SIZE*i
                 end = MINIBATCH_SIZE*(i+1)
-                actual_batch_size = min(end, stacked_radii.shape[0]) - start
-                batch = torch.arange(actual_batch_size).repeat_interleave(self.simulator.n_atoms).to(self.simulator.device)
-                atomic_numbers = torch.Tensor(self.simulator.atoms.get_atomic_numbers()).to(torch.long).to(self.simulator.device).repeat(actual_batch_size)
                 with torch.enable_grad():
                     radii_in = stacked_radii[start:end]
                     radii_in.requires_grad = True
-                    if self.simulator.model_type == "schnet":
-                        energy = model(pos = radii_in.reshape(-1, 3), z = atomic_numbers, batch = batch)
-                    elif self.simulator.model_type == "nequip":
-                        #construct a batch
-                        temp_atoms_batch['pos'] = radii_in.reshape(-1, 3)
-                        temp_atoms_batch['batch'] = batch
-                        temp_atoms_batch['edge_index'] = radius_graph(radii_in.reshape(-1, 3), r=self.simulator.model_config[self.simulator.r_max_key], batch=batch, max_num_neighbors=32)
-                        temp_atoms_batch['edge_cell_shift'] = torch.zeros((temp_atoms_batch['edge_index'].shape[1], 3)).to(self.simulator.device)
-                        #adjust shapes
-                        self.simulator.atoms_batch['cell'] = self.simulator.atoms_batch['cell'][0].unsqueeze(0).repeat(radii_in.shape[0], 1, 1)
-                        self.simulator.atoms_batch['pbc'] = self.simulator.atoms_batch['pbc'][0].unsqueeze(0).repeat(radii_in.shape[0], 1)
-                        temp_atoms_batch['atom_types'] = self.simulator.final_atom_types[0:self.simulator.n_atoms].repeat(radii_in.shape[0], 1)
-                        energy = model(temp_atoms_batch)[AtomicDataDict.TOTAL_ENERGY_KEY]
-
+                    energy, _ = self.simulator.force_calc(radii_in)
                 def get_vjp(v):
                     return compute_grad(inputs = list(model.parameters()), output = energy, grad_outputs = v, create_graph = False)
                 vectorized_vjp = vmap(get_vjp)
@@ -331,7 +295,6 @@ class BoltzmannEstimator():
                 grads_flattened= torch.stack([torch.cat([grads_vectorized[i][j].flatten().detach() for i in range(num_self.params)]) for j in range(num_samples)])
                 
                 if self.simulator.use_mse_gradient:
-                    
                     rdf_batch = rdfs[start:end]
                     adf_batch = adfs[start:end]
                     gradient_estimator_rdf = (grads_flattened.mean(0).unsqueeze(0)*rdf_batch.mean(0).unsqueeze(-1) - grads_flattened.unsqueeze(1) * rdf_batch.unsqueeze(-1)).mean(dim=0)
