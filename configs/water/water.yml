@@ -31,10 +31,10 @@ rdf_mae_tol: 3
 max_frac_unstable_threshold: 0.75 #decay this?
 min_frac_unstable_threshold: 0.0 #increase this?
 eq_steps: 0
-steps: 2000 # 1 picosecond per epoch
+steps: 200 # 1 picosecond per epoch
 n_dump: 10
 n_dump_vacf: 2
-n_replicas: 32
+n_replicas: 1
 minibatch_size: 40
 only_train_on_unstable_replicas: False
 allow_off_policy_updates: False

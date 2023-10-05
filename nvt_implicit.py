@@ -1,6 +1,7 @@
 import numpy as np
 import gsd.hoomd
 import torch
+import logging
 import torch.nn as nn
 import math
 from nff.utils.scatter import compute_grad
@@ -13,6 +14,7 @@ logging.basicConfig(level=os.environ.get("LOGLEVEL", "WARNING"))
 from tqdm import tqdm
 import pstats
 import random
+import types
 from torch_geometric.nn import MessagePassing, radius_graph
 from torchmd.observable import generate_vol_bins, DifferentiableRDF, DifferentiableADF, DifferentiableVelHist, DifferentiableVACF, msd, DiffusionCoefficient
 import time
@@ -35,8 +37,8 @@ from mdsim.common.utils import load_config
 from mdsim.modules.evaluator import Evaluator
 from mdsim.modules.normalizer import Normalizer
 
-from mdsim.observables.md17_22 import radii_to_dists, find_hr_adf_from_file, distance_pbc
-from mdsim.observables.water import find_water_rdfs_diffusivity_from_file
+from mdsim.observables.md17_22 import BondLengthDeviation, radii_to_dists, find_hr_adf_from_file, distance_pbc
+from mdsim.observables.water import WaterRDFMAE, find_water_rdfs_diffusivity_from_file
 from mdsim.models.load_models import  load_schnet_model
 
 from mdsim.common.utils import (
@@ -47,13 +49,13 @@ from mdsim.common.utils import (
     setup_logging,
     compose_data_cfg
 )
-
+from mdsim.common.flags import flags
 from boltzmann_estimator import BoltzmannEstimator
 
 MAX_SIZES = {'md17': '50k', 'md22': '100percent', 'water': '90k', 'lips': '20k'}
 
 class ImplicitMDSimulator():
-    def __init__(self, config, params, model, model_config):
+    def __init__(self, config, params, model, model_config, gt_rdf):
         super(ImplicitMDSimulator, self).__init__()
         print("Initializing MD simulation environment")
         self.params = params
@@ -85,7 +87,12 @@ class ImplicitMDSimulator():
         self.vacf_window = config["vacf_window"]
         self.optimizer = config["optimizer"]
         self.use_mse_gradient = config["use_mse_gradient"]
-        self.bond_dev_tol = config["bond_dev_tol"]
+        #set stability criterion
+        if self.name == "md17" or self.name == "md22":    
+            self.stability_tol = config["bond_dev_tol"]
+        else:
+            self.stability_tol = config["rdf_mae_tol"]
+        
         self.max_frac_unstable_threshold = config["max_frac_unstable_threshold"]
         self.min_frac_unstable_threshold = config["min_frac_unstable_threshold"]
         self.results_dir = os.path.join(config["log_dir"], config["results_dir"])
@@ -98,7 +105,6 @@ class ImplicitMDSimulator():
         self.model_config = model_config
 
         #initialize datasets
-        
         train_src = os.path.join(self.data_dir, self.name, self.molecule, self.size, 'test')
         valid_src = os.path.join(self.data_dir, self.name, self.molecule, MAX_SIZES[self.name], 'val')
         
@@ -160,7 +166,7 @@ class ImplicitMDSimulator():
         self.mean_bond_lens = distance_pbc(
         self.gt_traj_train[:, self.bonds[:, 0]], self.gt_traj_train[:, self.bonds[:, 1]], \
                     torch.FloatTensor([30., 30., 30.]).to(self.device)).mean(dim=0)
-        self.max_bond_dev_per_replica = torch.zeros((self.n_replicas,)).to(self.device)
+        self.instability_per_replica = torch.zeros((self.n_replicas,)).to(self.device)
         self.stable_time = torch.zeros((self.n_replicas,)).to(self.device)
         
         self.integrator = self.config["integrator"]
@@ -203,6 +209,16 @@ class ImplicitMDSimulator():
         samples = np.random.choice(np.arange(dataset.__len__()), self.n_replicas, replace=False)
         self.raw_atoms = [data_to_atoms(dataset.__getitem__(i)) for i in samples]
         self.cell = torch.Tensor(self.raw_atoms[0].cell).to(self.device)
+        self.gt_rdf = gt_rdf
+        #choose the appropriate stability criterion based on the type of system
+        
+        self.stability_criterion = BondLengthDeviation(
+                                    self.bonds,
+                                    self.mean_bond_lens,
+                                    self.cell, 
+                                    self.device) if self.name == 'md17' \
+                                    or self.name == 'md22' else WaterRDFMAE(self.data_dir, self.gt_rdf, self.n_atoms, self.n_replicas, self.params, self.device)
+        self.stability_criterion = vmap(self.stability_criterion, 1) #vmap over replica dimension 
         radii = torch.stack([torch.Tensor(atoms.get_positions()) for atoms in self.raw_atoms])
         self.radii = (radii + torch.normal(torch.zeros_like(radii), self.ic_stddev)).to(self.device)
         self.velocities = torch.Tensor(initialize_velocities(self.n_atoms, self.masses, self.temp, self.n_replicas)).to(self.device)
@@ -327,8 +343,8 @@ class ImplicitMDSimulator():
 
 
     def resume(self):
-        #reset replicas which exceeded the max bond dev criteria
-        reset_replicas = self.max_bond_dev_per_replica > self.bond_dev_tol
+        #reset replicas which exceeded the stability criteria
+        reset_replicas = self.instability_per_replica > self.stability_tol
         num_resets = reset_replicas.count_nonzero().item()
         if num_resets / self.n_replicas >= self.max_frac_unstable_threshold: #threshold of unstable replicas reached
             if not self.all_unstable:
@@ -529,13 +545,10 @@ class ImplicitMDSimulator():
             self.zeta = zeta
             self.forces = forces
 
-            #compute bond length deviation
             self.stacked_radii = torch.stack(self.running_radii)
-            bond_lens = distance_pbc(self.stacked_radii[:, :, self.bonds[:, 0]], self.stacked_radii[:,:, self.bonds[:, 1]], torch.FloatTensor([30., 30., 30.]).to(self.device))
-            
-            #max over bonds and timesteps
-            self.max_bond_dev_per_replica = (bond_lens - self.mean_bond_lens).abs().max(dim=-1)[0].max(dim=0)[0].detach()
-            self.max_dev = self.max_bond_dev_per_replica.mean()
+            #compute instability metric (either bond length deviation or RDF MAE)
+            self.instability_per_replica = self.stability_criterion(self.stacked_radii)
+            self.max_instability = self.instability_per_replica.mean()
             self.stacked_vels = torch.cat(self.running_vels)
         
         # self.f.close()
@@ -595,8 +608,6 @@ class ImplicitMDSimulator():
                 "Momentum Magnitude": torch.norm(torch.sum(self.masses*self.velocities, axis =-2)).item(),
                 "Max Bond Length Deviation": max_dev.item()}
 
-
-
 if __name__ == "__main__":
     setup_logging() 
     parser = flags.get_parser()
@@ -654,14 +665,16 @@ if __name__ == "__main__":
     integrator_config = INTEGRATOR_CONFIGS[molecule] if name == 'md22' else config['integrator_config']
     timestep = integrator_config["timestep"]
     ttime = integrator_config["ttime"]
-    results_dir = os.path.join(params.results_dir, f"IMPLICIT_{molecule}_{params.exp_name}") \
-                if params.train else os.path.join(params.results_dir, f"IMPLICIT_{molecule}_{params.exp_name}", "inference", params.eval_model)
+    molecule_for_name = "water" if name == 'water' else molecule
+    results_dir = os.path.join(params.results_dir, f"IMPLICIT_{molecule_for_name}_{params.exp_name}") \
+                if params.train else os.path.join(params.results_dir, f"IMPLICIT_{molecule_for_name}_{params.exp_name}", "inference", params.eval_model)
     os.makedirs(results_dir, exist_ok = True)
 
     #load ground truth rdf and VACF
     print("Computing ground truth observables from datasets")
     if name == 'water':
         gt_rdf, gt_diffusivity = find_water_rdfs_diffusivity_from_file(data_path, MAX_SIZES[name], params, device)
+        gt_adf = torch.zeros((100,1)).to(device) #TODO: temporary
     else:
         gt_rdf, gt_adf = find_hr_adf_from_file(data_path, name, molecule, MAX_SIZES[name], params, device)
     contiguous_path = os.path.join(data_path, f'contiguous-{name}', molecule, MAX_SIZES[name], 'val/nequip_npz.npz')
@@ -675,8 +688,12 @@ if __name__ == "__main__":
     
     gt_vacf = DifferentiableVACF(params, device)(gt_vels)
     if params.train:
-        np.save(os.path.join(results_dir, 'gt_rdf.npy'), gt_rdf.cpu())
-        np.save(os.path.join(results_dir, 'gt_adf.npy'), gt_adf.cpu())
+        if isinstance(gt_rdf, dict):
+            for _type, _rdf in gt_rdf.items():
+                np.save(os.path.join(results_dir, f'gt_{_type}_rdf.npy'), _rdf.cpu())
+        else:
+            np.save(os.path.join(results_dir, 'gt_rdf.npy'), gt_rdf.cpu())
+        #np.save(os.path.join(results_dir, 'gt_adf.npy'), gt_adf.cpu())
         np.save(os.path.join(results_dir, 'gt_vacf.npy'), gt_vacf.cpu())
     
     min_lr = params.lr / (5 * params.max_times_reduce_lr)
@@ -687,7 +704,7 @@ if __name__ == "__main__":
     adf_losses = []
     diffusion_losses = []
     vacf_losses = []
-    max_bond_len_devs = []
+    max_instabilities = []
     energy_rmses = []
     force_rmses = []
     grad_times = []
@@ -701,7 +718,7 @@ if __name__ == "__main__":
 
     for epoch in range(params.n_epochs):
         
-        rdf = torch.zeros_like(gt_rdf).to(device)
+        #rdf = torch.zeros_like(gt_rdf).to(device)
         rdf_loss = torch.Tensor([0]).to(device)
         vacf_loss = torch.Tensor([0]).to(device)
         diffusion_loss = torch.Tensor([0]).to(device)
@@ -712,7 +729,7 @@ if __name__ == "__main__":
         
         if epoch==0: #draw IC from dataset
             #initialize simulator parameterized by a NN model
-            simulator = ImplicitMDSimulator(config, params, model, model_config)
+            simulator = ImplicitMDSimulator(config, params, model, model_config, gt_rdf)
             #initialize Boltzmann_estimator
             boltzmann_estimator = BoltzmannEstimator(simulator, gt_rdf, gt_vacf, gt_adf, params, device)
             #initialize outer loop optimizer/scheduler
@@ -730,7 +747,8 @@ if __name__ == "__main__":
         start = time.time()
         
         #run simulation and get gradients via Fabian method/adjoint
-        equilibriated_simulator, rdf_package, vacf_package, energy_force_package = BoltzmannEstimator.apply(simulator, gt_rdf, gt_adf, gt_vacf, params)
+        equilibriated_simulator, rdf_package, \
+            vacf_package, energy_force_package = boltzmann_estimator.estimate()
         
         #unpack results
         rdf_grad_batches, mean_rdf, rdf_loss, mean_adf, adf_loss = rdf_package
@@ -829,7 +847,7 @@ if __name__ == "__main__":
         rdf_losses.append(rdf_loss.item())
         adf_losses.append(adf_loss.item())
         vacf_losses.append(vacf_loss.item())
-        max_bond_len_devs.append(equilibriated_simulator.max_dev)
+        max_instabilities.append(equilibriated_simulator.max_instability)
         resets.append(num_resets)
         lrs.append(optimizer.param_groups[0]['lr'])
         #energy/force error
@@ -851,7 +869,7 @@ if __name__ == "__main__":
         writer.add_scalar('RDF Loss', rdf_losses[-1], global_step=epoch+1)
         writer.add_scalar('ADF Loss', adf_losses[-1], global_step=epoch+1)
         writer.add_scalar('VACF Loss', vacf_losses[-1], global_step=epoch+1)
-        writer.add_scalar('Max Bond Length Deviation', max_bond_len_devs[-1], global_step=epoch+1)
+        writer.add_scalar('RDF MAE' if name == 'water' else 'Max Bond Length Deviation', max_instabilities[-1], global_step=epoch+1)
         writer.add_scalar('Fraction of Unstable Replicas', resets[-1], global_step=epoch+1)
         writer.add_scalar('Learning Rate', lrs[-1], global_step=epoch+1)
         writer.add_scalar('Energy RMSE', energy_rmses[-1], global_step=epoch+1)
