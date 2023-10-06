@@ -67,9 +67,8 @@ class BoltzmannEstimator():
         diff_vacf = DifferentiableVACF(self.params, self.simulator.device)
         
         running_radii = self.simulator.running_radii if self.simulator.all_unstable else self.simulator.running_radii[0:2]
-        #ctx.save_for_backward(equilibriated_self.simulator)
         
-        model = equilibriated_simulator.model
+        model = simulator.model
         #find which replicas are unstable
         stable_replicas = self.simulator.instability_per_replica <= self.simulator.stability_tol
         #store original shapes of model parameters
@@ -80,7 +79,7 @@ class BoltzmannEstimator():
         radii_traj = torch.stack(running_radii)
         
         stacked_radii = radii_traj[::self.simulator.n_dump] #take i.i.d samples for RDF loss
-        velocities_traj = torch.stack(equilibriated_simulator.running_vels).permute(1,0,2,3)
+        velocities_traj = torch.stack(simulator.running_vels).permute(1,0,2,3)
         #split into sub-trajectories of length = vacf_window
         velocities_traj = velocities_traj.reshape(velocities_traj.shape[0], -1, self.simulator.vacf_window, self.simulator.n_atoms, 3)
         velocities_traj = velocities_traj[:, ::self.simulator.n_dump_vacf] #sample i.i.d paths
@@ -98,8 +97,8 @@ class BoltzmannEstimator():
 
         if self.simulator.vacf_loss_weight !=0 and self.simulator.train and self.simulator.all_unstable:
             radii_traj = radii_traj.permute(1,0,2,3)
-            accel_traj = torch.stack(equilibriated_simulator.running_accs).permute(1,0,2,3)
-            noise_traj = torch.stack(equilibriated_simulator.running_noise).permute(1,0,2,3)
+            accel_traj = torch.stack(simulator.running_accs).permute(1,0,2,3)
+            noise_traj = torch.stack(simulator.running_noise).permute(1,0,2,3)
             #split into sub-trajectories of length = vacf_window
             radii_traj = radii_traj.reshape(radii_traj.shape[0], -1, self.simulator.vacf_window,self.simulator.n_atoms, 3)
             radii_traj = radii_traj[:, ::self.simulator.n_dump_vacf] #sample i.i.d paths
@@ -235,7 +234,7 @@ class BoltzmannEstimator():
             r2d = lambda r: radii_to_dists(r, self.simulator.params)
             dists = vmap(r2d)(stacked_radii).reshape(-1, self.simulator.n_atoms, self.simulator.n_atoms-1, 1)
             rdfs = torch.stack([diff_rdf(tuple(dist)) for dist in dists]).reshape(-1, self.simulator.n_replicas, self.gt_rdf.shape[-1]) #this way of calculating uses less memory
-            adfs = torch.stack([diff_adf(rad) for rad in stacked_radii.reshape(-1, self.simulator.n_atoms, 3)]).reshape(-1, self.simulator.n_replicas, self.gt_adf.shape[-1]) #this way of calculating uses less memory
+            adfs = torch.stack([diff_adf(rad) for rad in tqdm(stacked_radii.reshape(-1, self.simulator.n_atoms, 3))]).reshape(-1, self.simulator.n_replicas, self.gt_adf.shape[-1]) #this way of calculating uses less memory
         
         #compute mean quantities only on stable replicas
         mean_rdf = rdfs[:, stable_replicas].mean(dim=(0, 1))
@@ -331,4 +330,4 @@ class BoltzmannEstimator():
 
             rdf_package = (rdf_gradient_estimators, mean_rdf, mean_self.rdf_loss.to(self.simulator.device), mean_adf, mean_self.adf_loss.to(self.simulator.device))
         
-        return equilibriated_simulator, rdf_package, vacf_package, energy_force_package
+        return rdf_package, vacf_package, energy_force_package

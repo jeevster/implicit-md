@@ -73,6 +73,13 @@ OFFSET_LIST = [
     [1, 1, 0],
     [1, 1, 1],
 ]
+
+def cleanup_atoms_batch(atoms_batch):
+    for key in ["cell_offsets", "edge_cell_shift", "edge_index", "neighbors", "ptr"]:
+        if key in atoms_batch:
+            del atoms_batch[key]
+    return atoms_batch
+
 # Procedure to initialize velocities with Maxwell Boltzmann Distribution
 def initialize_velocities(n_particle, masses, temp, n_replicas):
 

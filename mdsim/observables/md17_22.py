@@ -22,11 +22,9 @@ class BondLengthDeviation(torch.nn.Module):
         self.device = device
 
     def forward(self, stacked_radii):
-        bond_lens = distance_pbc(stacked_radii[:, :, self.bonds[:, 0]], self.stacked_radii[:,:, self.bonds[:, 1]], cell).to(self.device)
+        bond_lens = distance_pbc(stacked_radii[:, :, self.bonds[:, 0]], stacked_radii[:,:, self.bonds[:, 1]], self.cell[0]).to(self.device)
         max_bond_dev_per_replica = (bond_lens - self.mean_bond_lens).abs().max(dim=-1)[0].max(dim=0)[0].detach()
         return max_bond_dev_per_replica
-
-
 
 def radii_to_dists(radii, params):
     #Get rij matrix

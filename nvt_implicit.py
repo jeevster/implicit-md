@@ -27,11 +27,12 @@ warnings.filterwarnings("ignore")
 import ase
 from ase import Atoms, units
 import nequip.scripts.deploy
+from nequip.train.trainer import Trainer
 from nequip.data import AtomicData, AtomicDataDict
 from nequip.data.AtomicData import neighbor_list_and_relative_vec
 from nequip.utils.torch_geometric import Batch, Dataset
 from ase.neighborlist import natural_cutoffs, NeighborList
-from mdsim.common.utils import setup_imports, setup_logging, compute_bond_lengths, data_to_atoms, atoms_to_batch, atoms_to_state_dict, convert_atomic_numbers_to_types, process_gradient, compare_gradients, initialize_velocities, dump_params_to_yml
+from mdsim.common.utils import cleanup_atoms_batch, setup_imports, setup_logging, compute_bond_lengths, data_to_atoms, atoms_to_batch, atoms_to_state_dict, convert_atomic_numbers_to_types, process_gradient, compare_gradients, initialize_velocities, dump_params_to_yml
 from mdsim.common.custom_radius_graph import detach_numpy
 from mdsim.datasets.lmdb_dataset import LmdbDataset, data_list_collater
 from mdsim.common.utils import load_config
@@ -53,7 +54,7 @@ from mdsim.common.utils import (
 from mdsim.common.flags import flags
 from boltzmann_estimator import BoltzmannEstimator
 
-MAX_SIZES = {'md17': '50k', 'md22': '100percent', 'water': '90k', 'lips': '20k'}
+MAX_SIZES = {'md17': '10k', 'md22': '100percent', 'water': '90k', 'lips': '20k'}
 
 class ImplicitMDSimulator():
     def __init__(self, config, params, model, model_config, gt_rdf):
@@ -202,7 +203,7 @@ class ImplicitMDSimulator():
         self.ps_per_epoch = self.nsteps * self.integrator_config["timestep"] // 1000.
         
 
-        self.atomic_numbers = torch.Tensor(self.atoms.get_atomic_numbers()).to(torch.long).to(self.device).repeat(self.n_replicas)
+        self.atomic_numbers = torch.Tensor(self.atoms.get_atomic_numbers()).to(torch.long).to(self.device)
         self.batch = torch.arange(self.n_replicas).repeat_interleave(self.n_atoms).to(self.device)
         self.ic_stddev = params.ic_stddev
 
@@ -385,12 +386,17 @@ class ImplicitMDSimulator():
             if not radii.requires_grad:
                 radii.requires_grad = True
             if self.model_type == "schnet":
-                #assign radii
+                self.atoms_batch_regular = cleanup_atoms_batch(self.atoms_batch_regular)
                 self.atoms_batch_regular['pos'] = radii.reshape(-1, 3)
                 self.atoms_batch_regular['batch'] = batch
                 #make these match the number of replicas (different from n_replicas when doing bottom-up stuff)
                 self.atoms_batch_regular['cell'] = self.atoms_batch_regular['cell'][0].unsqueeze(0).repeat(radii.shape[0], 1, 1)
+                self.atoms_batch_regular['pbc'] = self.atoms_batch_regular['pbc'][0].unsqueeze(0).repeat(radii.shape[0], 1)
+                self.atoms_batch_regular['natoms'] = self.atomic_numbers.repeat(radii.shape[0])
+                import pdb; pdb.set_trace()
+                #self.atoms_batch_regular['atomic_numbers'] = self.atomic_numbers.repeat(radii.shape[0])
                 energy, forces = self.model(self.atoms_batch_regular)
+
                 forces = forces.reshape(-1, self.n_atoms, 3)
                 
             elif self.model_type == "nequip":
@@ -589,12 +595,15 @@ class ImplicitMDSimulator():
         p_dof = 3*self.n_atoms
         ke = 1/2 * (self.masses*torch.square(self.velocities)).sum(axis = (1,2)).unsqueeze(-1)
         temp = (2*ke/p_dof).mean() / units.kB
-        self.running_energy.append((ke+pe).detach())
+        instability = self.stability_criterion(self.radii.unsqueeze(0))
+        if isinstance(instability, tuple):
+            instability = instability[-1]
+
         return {"Temperature": temp.item(),
                 "Potential Energy": pe.mean().item(),
                 "Total Energy": (ke+pe).mean().item(),
                 "Momentum Magnitude": torch.norm(torch.sum(self.masses*self.velocities, axis =-2)).item(),
-                'RDF MAE' if name == 'water' else 'Max Bond Length Deviation': self.mean_instability.item()}
+                'RDF MAE' if name == 'water' else 'Max Bond Length Deviation': instability.mean().item()}
 
 if __name__ == "__main__":
     setup_logging() 
@@ -719,7 +728,7 @@ if __name__ == "__main__":
             #initialize simulator parameterized by a NN model
             simulator = ImplicitMDSimulator(config, params, model, model_config, gt_rdf)
             #initialize Boltzmann_estimator
-            boltzmann_estimator = BoltzmannEstimator(simulator, gt_rdf, gt_vacf, gt_adf, params, device)
+            boltzmann_estimator = BoltzmannEstimator(gt_rdf, gt_vacf, gt_adf, params, device)
             #initialize outer loop optimizer/scheduler
             if params.optimizer == 'Adam':
                 optimizer = torch.optim.Adam(list(simulator.model.parameters()), lr=0)
@@ -739,8 +748,8 @@ if __name__ == "__main__":
         print('Collect MD Simulation Data')
         equilibriated_simulator = simulator.solve()
         #estimate gradients via Fabian method/adjoint
-        equilibriated_simulator, rdf_package, \
-            vacf_package, energy_force_package = boltzmann_estimator.estimate(equilibriated_simulator)
+        rdf_package, vacf_package, energy_force_package = \
+                    boltzmann_estimator.estimate(equilibriated_simulator)
         
         #unpack results
         rdf_grad_batches, mean_rdf, rdf_loss, mean_adf, adf_loss = rdf_package
