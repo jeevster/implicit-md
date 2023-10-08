@@ -305,8 +305,7 @@ class ImplicitMDSimulator():
             return metrics['energy_rmse'], metrics['forces_rmse']
 
     def energy_force_gradient(self, batch_size):
-        #num_batches = math.ceil(self.gt_traj_train.shape[0]/ batch_size)
-        num_batches = math.ceil(1000/ batch_size)
+        num_batches = math.ceil(self.gt_traj_train.shape[0]/ batch_size)
         energy_gradients = []
         force_gradients = []
         #store original shapes of model parameters
@@ -317,7 +316,7 @@ class ImplicitMDSimulator():
             for i in tqdm(range(num_batches)):
                 start = batch_size*i
                 end = batch_size*(i+1)
-                energy, force = self.force_calc(self.gt_traj_train[start:end])
+                energy, force = self.force_calc(self.gt_traj_train[start:end], retain_grad = True)
                 
                 #compute losses
                 energy_loss = self.energy_loss(self.normalizer_train.norm(self.gt_energies_train[start:end]), energy).mean()
@@ -357,10 +356,7 @@ class ImplicitMDSimulator():
                                         [0:math.ceil(self.reset_probability * stable_replicas.shape[0])].to(self.device)
                 #uniformly sample times to reset each replica to
                 reset_times = torch.randint(0, len(self.checkpoint_radii), (len(random_reset_idxs), )).to(self.device)
-                #reset them 
-                self.radii.requires_grad = False
-                self.velocities.requires_grad = False
-                self.zeta.requires_grad = False
+               
                 for idx, time in zip(random_reset_idxs, reset_times):
                     self.radii[idx] = self.checkpoint_radii[time][idx]
                     self.velocities[idx] = self.checkpoint_velocities[time][idx]
@@ -378,7 +374,7 @@ class ImplicitMDSimulator():
         return num_resets / self.n_replicas
 
 
-    def force_calc(self, radii):
+    def force_calc(self, radii, retain_grad = False):
         batch_size = radii.shape[0]
         batch = torch.arange(batch_size).repeat_interleave(self.n_atoms).to(self.device)
         atomic_numbers = torch.Tensor(self.atoms.get_atomic_numbers()).to(torch.long).to(self.device).repeat(batch_size)
@@ -390,13 +386,12 @@ class ImplicitMDSimulator():
                 self.atoms_batch_regular['pos'] = radii.reshape(-1, 3)
                 self.atoms_batch_regular['batch'] = batch
                 #make these match the number of replicas (different from n_replicas when doing bottom-up stuff)
-                self.atoms_batch_regular['cell'] = self.atoms_batch_regular['cell'][0].unsqueeze(0).repeat(radii.shape[0], 1, 1)
-                self.atoms_batch_regular['pbc'] = self.atoms_batch_regular['pbc'][0].unsqueeze(0).repeat(radii.shape[0], 1)
-                self.atoms_batch_regular['natoms'] = self.atomic_numbers.repeat(radii.shape[0])
-                import pdb; pdb.set_trace()
-                #self.atoms_batch_regular['atomic_numbers'] = self.atomic_numbers.repeat(radii.shape[0])
-                energy, forces = self.model(self.atoms_batch_regular)
+                self.atoms_batch_regular['cell'] = self.atoms_batch_regular['cell'][0].unsqueeze(0).repeat(batch_size, 1, 1)
 
+                self.atoms_batch_regular['pbc'] = self.atoms_batch_regular['pbc'][0].unsqueeze(0).repeat(batch_size, 1)
+                self.atoms_batch_regular['natoms'] = torch.Tensor([self.n_atoms]).repeat(batch_size).to(self.device)
+                self.atoms_batch_regular['atomic_numbers'] = self.atomic_numbers.repeat(batch_size)
+                energy, forces = self.model(self.atoms_batch_regular)
                 forces = forces.reshape(-1, self.n_atoms, 3)
                 
             elif self.model_type == "nequip":
@@ -418,6 +413,9 @@ class ImplicitMDSimulator():
                 energy = atoms_updated[AtomicDataDict.TOTAL_ENERGY_KEY]
                 forces = atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.n_atoms, 3)
             assert(not torch.any(torch.isnan(forces)))
+
+            energy = energy.detach() if not retain_grad else energy
+            forces = forces.detach() if not retain_grad else forces
             return energy, forces
 
 
@@ -435,7 +433,7 @@ class ImplicitMDSimulator():
         # make half a step in velocity
         velocities = velocities + 0.5 * self.dt * (accel - zeta * velocities)
         # make a full step in accelerations
-        energy, forces = self.force_calc(radii)
+        energy, forces = self.force_calc(radii, retain_grad)
         accel = forces / self.masses
 
         # make a half step in self.zeta
@@ -468,7 +466,7 @@ class ImplicitMDSimulator():
         #full step in position
         radii = radii.detach() + self.dt*velocities
         #calculate force at new position
-        energy, forces = self.force_calc(radii)
+        energy, forces = self.force_calc(radii, retain_grad)
         noise = torch.randn_like(velocities)
         #full step in velocities
         velocities = velocities + self.dt*(forces/self.masses - self.gamma * velocities) + self.noise_f * noise
@@ -517,7 +515,6 @@ class ImplicitMDSimulator():
             zeta = self.zeta
             #Run MD
             print("Start MD trajectory", file=self.f)
-
             for step in tqdm(range(self.nsteps)):
                 self.step = step
                 #MD Step
@@ -739,6 +736,7 @@ if __name__ == "__main__":
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=10)
             print(f"Initialize {simulator.n_replicas} random ICs in parallel")
 
+        optimizer.zero_grad()
         simulator.epoch = epoch
         #set starting states based on instability metric
         num_resets = simulator.set_starting_states()
@@ -749,7 +747,7 @@ if __name__ == "__main__":
         equilibriated_simulator = simulator.solve()
         #estimate gradients via Fabian method/adjoint
         rdf_package, vacf_package, energy_force_package = \
-                    boltzmann_estimator.estimate(equilibriated_simulator)
+                    boltzmann_estimator.compute(equilibriated_simulator)
         
         #unpack results
         rdf_grad_batches, mean_rdf, rdf_loss, mean_adf, adf_loss = rdf_package

@@ -32,6 +32,7 @@ class BoltzmannEstimator():
         self.gt_rdf = gt_rdf
         if isinstance(self.gt_rdf, dict):
             self.gt_rdf = torch.cat([rdf.flatten() for rdf in self.gt_rdf.values()])
+        
         self.gt_vacf = gt_vacf
         self.gt_adf = gt_adf
     
@@ -47,7 +48,7 @@ class BoltzmannEstimator():
     def om_action(vel_traj, radii_traj):
         v_tp1 = vel_traj[:, :, 1:]
         v_t = vel_traj[:, :, :-1]
-        f_tp1 = self.simulator.force_calc(radii_traj[:, :, 1:].reshape(-1, self.simulator.n_atoms, 3)).reshape(v_t.shape)
+        f_tp1 = self.simulator.force_calc(radii_traj[:, :, 1:].reshape(-1, self.simulator.n_atoms, 3), retain_grad = True).reshape(v_t.shape)
         a_tp1 = f_tp1/self.simulator.masses.unsqueeze(1).unsqueeze(1)
         diff = (v_tp1 - v_t - a_tp1*self.simulator.dt + self.simulator.gamma*v_t*self.simulator.dt)
         #pre-divide by auxiliary temperature (noise_f**2)
@@ -55,7 +56,17 @@ class BoltzmannEstimator():
         #sum over euclidean dimensions, atoms, and vacf window: TODO: this ruins the exponential property
         return (diff/self.simulator.noise_f.unsqueeze(1).unsqueeze(1)).detach(), om_action.sum((-3, -2, -1))
     
-    def estimate(self, simulator):
+    #Function to compute the gradient estimator
+    def estimator(self, g, df_dtheta, grad_outputs = None):
+        estimator = \
+            (df_dtheta.mean(0).unsqueeze(0)*g.mean(0).unsqueeze(-1) - \
+                df_dtheta.unsqueeze(1) * g.unsqueeze(-1)).mean(dim=0)
+        #compute VJP with grad output
+        if grad_outputs is not None:
+            estimator = torch.mm(grad_outputs, estimator)[0] 
+        return estimator
+
+    def compute(self, simulator):
         self.simulator = simulator
 
         if self.simulator.vacf_loss_weight !=0 and self.simulator.integrator != "Langevin":
@@ -138,7 +149,7 @@ class BoltzmannEstimator():
                     diff, om_act = self.om_action(velocities, radii)
                     #noises = noise_traj[start:end].reshape(-1, self.simulator.vacf_window, self.simulator.n_atoms, 3)
                     # with torch.enable_grad():
-                    #     forces = self.simulator.force_calc(radii.reshape(-1, self.simulator.n_atoms, 3)).reshape(-1, self.simulator.vacf_window, self.simulator.n_atoms, 3)
+                    #     forces = self.simulator.force_calc(radii.reshape(-1, self.simulator.n_atoms, 3), retain_grad=True).reshape(-1, self.simulator.vacf_window, self.simulator.n_atoms, 3)
                     
                     #make sure the diffs match the stored noises along the trajectory
                     #assert(torch.allclose(diff, noise_traj[start:end, :, 1:], atol = 1e-3))
@@ -224,9 +235,7 @@ class BoltzmannEstimator():
             vacf_package = (vacf_gradient_estimators, mean_vacf, mean_vacf_loss.to(self.simulator.device))
        
         ###RDF/ADF Stuff ###
-        
         if self.simulator.name == "water":
-            #this is computing the average
             rdfs = torch.cat([self.simulator.stability_criterion(s.unsqueeze(0))[0] for s in stacked_radii])
             rdfs = rdfs.reshape(-1, self.simulator.n_replicas, rdfs.shape[-1])
             adfs = torch.zeros_like(rdfs) #TODO: fix
@@ -234,7 +243,7 @@ class BoltzmannEstimator():
             r2d = lambda r: radii_to_dists(r, self.simulator.params)
             dists = vmap(r2d)(stacked_radii).reshape(-1, self.simulator.n_atoms, self.simulator.n_atoms-1, 1)
             rdfs = torch.stack([diff_rdf(tuple(dist)) for dist in dists]).reshape(-1, self.simulator.n_replicas, self.gt_rdf.shape[-1]) #this way of calculating uses less memory
-            adfs = torch.stack([diff_adf(rad) for rad in tqdm(stacked_radii.reshape(-1, self.simulator.n_atoms, 3))]).reshape(-1, self.simulator.n_replicas, self.gt_adf.shape[-1]) #this way of calculating uses less memory
+            adfs = torch.stack([diff_adf(rad) for rad in stacked_radii.reshape(-1, self.simulator.n_atoms, 3)]).reshape(-1, self.simulator.n_replicas, self.gt_adf.shape[-1]) #this way of calculating uses less memory
         
         #compute mean quantities only on stable replicas
         mean_rdf = rdfs[:, stable_replicas].mean(dim=(0, 1))
@@ -276,13 +285,12 @@ class BoltzmannEstimator():
             print(f"Computing RDF/ADF gradients from {stacked_radii.shape[0]} structures in minibatches of size {MINIBATCH_SIZE}")
             
             for i in tqdm(range(num_blocks)):
-            
                 start = MINIBATCH_SIZE*i
                 end = MINIBATCH_SIZE*(i+1)
                 with torch.enable_grad():
                     radii_in = stacked_radii[start:end]
                     radii_in.requires_grad = True
-                    energy, _ = self.simulator.force_calc(radii_in)
+                    energy, _ = self.simulator.force_calc(radii_in, retain_grad = True)
                 def get_vjp(v):
                     return compute_grad(inputs = list(model.parameters()), output = energy, grad_outputs = v, create_graph = False)
                 vectorized_vjp = vmap(get_vjp)
@@ -291,29 +299,30 @@ class BoltzmannEstimator():
                 #flatten the gradients for vectorization
                 num_samples = energy.shape[0]
                 num_params = len(list(model.parameters()))
-                grads_flattened= torch.stack([torch.cat([grads_vectorized[i][j].flatten().detach() for i in range(num_self.params)]) for j in range(num_samples)])
+                grads_flattened= torch.stack([torch.cat([grads_vectorized[i][j].flatten().detach() for i in range(num_params)]) for j in range(num_samples)])
+                rdf_batch = rdfs[start:end].chunk(3 \
+                            if self.simulator.name == 'water' else 1, dim=1) # 3 separate RDFs for water
+                adf_batch = adfs[start:end]
                 
-                if self.simulator.use_mse_gradient:
-                    rdf_batch = rdfs[start:end]
-                    adf_batch = adfs[start:end]
-                    gradient_estimator_rdf = (grads_flattened.mean(0).unsqueeze(0)*rdf_batch.mean(0).unsqueeze(-1) - grads_flattened.unsqueeze(1) * rdf_batch.unsqueeze(-1)).mean(dim=0)
-                    if self.params.adf_loss_weight !=0:
-                        gradient_estimator_adf = (grads_flattened.mean(0).unsqueeze(0)*adf_batch.mean(0).unsqueeze(-1) - grads_flattened.unsqueeze(1) * adf_batch.unsqueeze(-1)).mean(dim=0)
-                        grad_outputs_adf = 2*(adf_batch.mean(0) - self.gt_adf).unsqueeze(0)
-                    #MSE gradient
-                    grad_outputs_rdf = 2*(rdf_batch.mean(0) - self.gt_rdf).unsqueeze(0)
-                    #compute VJP with MSE gradient
-                    final_vjp = torch.mm(grad_outputs_rdf, gradient_estimator_rdf)[0]
-                    if self.params.adf_loss_weight !=0:
-                        final_vjp+= self.params.adf_loss_weight*torch.mm(grad_outputs_adf, gradient_estimator_adf)[0]
-                                    
-                else:
-                    #use loss directly
-                    self.rdf_loss_batch = rdf_loss_tensor[start:end].squeeze(-1)
-                    self.adf_loss_batch = adf_loss_tensor[start:end].squeeze(-1)
-                    loss_batch = self.rdf_loss_batch + self.params.adf_loss_weight*self.adf_loss_batch
-                    final_vjp = grads_flattened.mean(0)*loss_batch.mean(0) \
-                                        - (grads_flattened*loss_batch).mean(dim=0)
+                #TODO: for water, do 3 separate RDF gradients to save memory
+                grad_outputs_rdf = [2*(rdf.mean(0) - gt_rdf).unsqueeze(0) \
+                                    if self.simulator.use_mse_gradient else None \
+                                    for rdf, gt_rdf in zip(rdf_batch, \
+                                    self.gt_rdf.chunk(len(rdf_batch)))]
+                grad_outputs_adf = 2*(adf_batch.mean(0) - self.gt_adf).unsqueeze(0) \
+                                    if self.simulator.use_mse_gradient else None
+                final_vjp = [self.estimator(rdf, grads_flattened, grad_output_rdf) for rdf, grad_output_rdf in zip(rdf_batch, grad_outputs_rdf)]
+                final_vjp = torch.stack(final_vjp).mean(0)
+                if self.params.adf_loss_weight !=0:
+                    gradient_estimator_adf = self.estimate(adf_batch, grads_flattened, grad_outputs_adf)
+                    final_vjp+= self.params.adf_loss_weight*gradient_estimator_adf             
+                # else:
+                #     #use loss directly
+                #     self.rdf_loss_batch = rdf_loss_tensor[start:end].squeeze(-1)
+                #     self.adf_loss_batch = adf_loss_tensor[start:end].squeeze(-1)
+                #     loss_batch = self.rdf_loss_batch + self.params.adf_loss_weight*self.adf_loss_batch
+                #     final_vjp = grads_flattened.mean(0)*loss_batch.mean(0) \
+                #                         - (grads_flattened*loss_batch).mean(dim=0)
 
                 if not self.simulator.allow_off_policy_updates:
                     raw_grads.append(final_vjp)
@@ -328,6 +337,6 @@ class BoltzmannEstimator():
                 mean_vjps = tuple([g.reshape(shape) for g, shape in zip(mean_vjps.split(original_numel), original_shapes)])
                 rdf_gradient_estimators.append(mean_vjps)
 
-            rdf_package = (rdf_gradient_estimators, mean_rdf, mean_self.rdf_loss.to(self.simulator.device), mean_adf, mean_self.adf_loss.to(self.simulator.device))
+            rdf_package = (rdf_gradient_estimators, mean_rdf, mean_rdf_loss.to(self.simulator.device), mean_adf, mean_adf_loss.to(self.simulator.device))
         
         return rdf_package, vacf_package, energy_force_package

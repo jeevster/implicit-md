@@ -27,15 +27,15 @@ force_loss_weight: 0.95
 diffusion_window: 1000
 vacf_window: 100
 ic_stddev: 0.0
-rdf_mae_tol: 3
+rdf_mae_tol: 0.02
 max_frac_unstable_threshold: 0.75 #decay this?
 min_frac_unstable_threshold: 0.0 #increase this?
 eq_steps: 0
-steps: 2000 # 1 picosecond per epoch
-n_dump: 10
+steps: 200 # 1 picosecond per epoch
+n_dump: 50
 n_dump_vacf: 2
-n_replicas: 16
-minibatch_size: 40
+n_replicas: 48
+minibatch_size: 16
 only_train_on_unstable_replicas: False
 allow_off_policy_updates: False
 gradient_clipping: True
