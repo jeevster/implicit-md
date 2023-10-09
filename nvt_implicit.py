@@ -272,7 +272,7 @@ class ImplicitMDSimulator():
         self.diff_vacf = vmap(DifferentiableVACF(params, self.device))
     
         molecule_for_name = "water" if self.name == 'water' else self.molecule
-        name = f"IMPLICIT_{molecule_for_name}_{params.exp_name}"
+        name = f"IMPLICIT_{self.model_type}_{molecule_for_name}_{params.exp_name}"
         self.save_dir = os.path.join(self.results_dir, name) if self.train else os.path.join(self.results_dir, name, 'inference', self.eval_model)
         os.makedirs(self.save_dir, exist_ok = True)
         dump_params_to_yml(self.params, self.save_dir)
@@ -624,7 +624,7 @@ if __name__ == "__main__":
         pretrained_model_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{new_size}_{lmax_string}{model_type}") 
 
     else: #load observable-finetuned model
-        pretrained_model_path = os.path.join(params.results_dir, f"IMPLICIT_{molecule}_{params.exp_name}")
+        pretrained_model_path = os.path.join(params.results_dir, f"IMPLICIT_{model_type}_{molecule}_{params.exp_name}")
 
     if model_type == "nequip":
         ckpt_epoch = config['checkpoint_epoch']
@@ -645,8 +645,8 @@ if __name__ == "__main__":
     timestep = integrator_config["timestep"]
     ttime = integrator_config["ttime"]
     molecule_for_name = "water" if name == 'water' else molecule
-    results_dir = os.path.join(params.results_dir, f"IMPLICIT_{molecule_for_name}_{params.exp_name}") \
-                if params.train else os.path.join(params.results_dir, f"IMPLICIT_{molecule_for_name}_{params.exp_name}", "inference", params.eval_model)
+    results_dir = os.path.join(params.results_dir, f"IMPLICIT_{model_type}_{molecule_for_name}_{params.exp_name}") \
+                if params.train else os.path.join(params.results_dir, f"IMPLICIT_{model_type}_{molecule_for_name}_{params.exp_name}", "inference", params.eval_model)
     os.makedirs(results_dir, exist_ok = True)
 
     #load ground truth rdf and VACF

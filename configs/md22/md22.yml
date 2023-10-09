@@ -1,12 +1,12 @@
 #TODO: specify different integrator configs for different molecules based on MD22 paper
 src: /pscratch/sd/s/sanjeevr #data/sanjeevr
 name: md22
-size: 100percent
-molecule: double_walled_nanotube
+size: 10percent
+molecule: ac_Ala3_NHMe
 normalize_labels: False
 checkpoint_epoch: -1 #which model to start from
 model: nequip
-l_max: 3
+l_max: 1
 log_dir: /global/cfs/projectdirs/m4319/sanjeevr #/home/sanjeevr/implicit-md #
 results_dir: 'results_nnip_continuous_new'
 model_dir: /pscratch/sd/s/sanjeevr/MODELPATH #'/pscratch/sd/s/sanjeevr/MODELPATH' 
@@ -35,8 +35,8 @@ eq_steps: 0
 steps: 2000 # 1 picosecond per epoch
 n_dump: 50
 n_dump_vacf: 2
-n_replicas: 8
-minibatch_size: 14
+n_replicas: 128
+minibatch_size: 32
 only_train_on_unstable_replicas: False
 allow_off_policy_updates: False
 gradient_clipping: True
@@ -44,7 +44,7 @@ use_mse_gradient: True
 shuffle: True
 optimizer: SGD
 reset_probability: 0.05
-n_epochs: 200 #corresponding to 300 ps
+n_epochs: 500 #corresponding to 300 ps
 lr: 0.001
 max_times_reduce_lr: 2 
 diameter_viz: 0.08

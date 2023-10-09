@@ -45,7 +45,7 @@ class BoltzmannEstimator():
     
     #define Onsager-Machlup Action ("energy" of each trajectory)
     #TODO: make this a torch.nn.Module in observable.py
-    def om_action(vel_traj, radii_traj):
+    def om_action(self, vel_traj, radii_traj):
         v_tp1 = vel_traj[:, :, 1:]
         v_t = vel_traj[:, :, :-1]
         f_tp1 = self.simulator.force_calc(radii_traj[:, :, 1:].reshape(-1, self.simulator.n_atoms, 3), retain_grad = True).reshape(v_t.shape)
@@ -304,7 +304,7 @@ class BoltzmannEstimator():
                             if self.simulator.name == 'water' else 1, dim=1) # 3 separate RDFs for water
                 adf_batch = adfs[start:end]
                 
-                #TODO: for water, do 3 separate RDF gradients to save memory
+                #TODO: fix the case where we don't use the MSE gradient
                 grad_outputs_rdf = [2*(rdf.mean(0) - gt_rdf).unsqueeze(0) \
                                     if self.simulator.use_mse_gradient else None \
                                     for rdf, gt_rdf in zip(rdf_batch, \
