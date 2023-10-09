@@ -997,7 +997,7 @@ def radius_graph_pbc(data, radius, max_num_neighbors_threshold, topk_per_pair=No
         index1 * max_num_neighbors
         + torch.arange(len(index1), device=device)
         - index_neighbor_offset_expand
-    )
+    ).long()
     distance_sort.index_copy_(0, index_sort_map, atom_distance_sqr)
     distance_sort = distance_sort.view(len(atom_pos), max_num_neighbors)
 
@@ -1048,7 +1048,7 @@ def get_pbc_distances(
 ):
     j_index, i_index = edge_index
     num_edges = get_n_edge(j_index, num_atoms)
-    distance_vectors = pos[j_index] - pos[i_index]
+    distance_vectors = pos[j_index.long()] - pos[i_index.long()]
 
     # correct for pbc
     lattice_edges = torch.repeat_interleave(lattice, num_edges, dim=0)

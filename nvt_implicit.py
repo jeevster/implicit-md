@@ -41,7 +41,7 @@ from mdsim.modules.normalizer import Normalizer
 
 from mdsim.observables.md17_22 import BondLengthDeviation, radii_to_dists, find_hr_adf_from_file, distance_pbc
 from mdsim.observables.water import WaterRDFMAE, find_water_rdfs_diffusivity_from_file
-from mdsim.models.load_models import  load_schnet_model
+from mdsim.models.load_models import load_model
 
 from mdsim.common.utils import (
     build_config,
@@ -381,20 +381,8 @@ class ImplicitMDSimulator():
         with torch.enable_grad():
             if not radii.requires_grad:
                 radii.requires_grad = True
-            if self.model_type == "schnet":
-                self.atoms_batch_regular = cleanup_atoms_batch(self.atoms_batch_regular)
-                self.atoms_batch_regular['pos'] = radii.reshape(-1, 3)
-                self.atoms_batch_regular['batch'] = batch
-                #make these match the number of replicas (different from n_replicas when doing bottom-up stuff)
-                self.atoms_batch_regular['cell'] = self.atoms_batch_regular['cell'][0].unsqueeze(0).repeat(batch_size, 1, 1)
-
-                self.atoms_batch_regular['pbc'] = self.atoms_batch_regular['pbc'][0].unsqueeze(0).repeat(batch_size, 1)
-                self.atoms_batch_regular['natoms'] = torch.Tensor([self.n_atoms]).repeat(batch_size).to(self.device)
-                self.atoms_batch_regular['atomic_numbers'] = self.atomic_numbers.repeat(batch_size)
-                energy, forces = self.model(self.atoms_batch_regular)
-                forces = forces.reshape(-1, self.n_atoms, 3)
                 
-            elif self.model_type == "nequip":
+            if self.model_type == "nequip":
                 #assign radii
                 self.atoms_batch['pos'] = radii.reshape(-1, 3)
                 self.atoms_batch['batch'] = batch
@@ -412,6 +400,17 @@ class ImplicitMDSimulator():
                 del self.atoms_batch['node_attrs']
                 energy = atoms_updated[AtomicDataDict.TOTAL_ENERGY_KEY]
                 forces = atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.n_atoms, 3)
+            else:
+                self.atoms_batch_regular = cleanup_atoms_batch(self.atoms_batch_regular)
+                self.atoms_batch_regular['pos'] = radii.reshape(-1, 3)
+                self.atoms_batch_regular['batch'] = batch
+                #make these match the number of replicas (different from n_replicas when doing bottom-up stuff)
+                self.atoms_batch_regular['cell'] = self.atoms_batch_regular['cell'][0].unsqueeze(0).repeat(batch_size, 1, 1)
+                self.atoms_batch_regular['pbc'] = self.atoms_batch_regular['pbc'][0].unsqueeze(0).repeat(batch_size, 1)
+                self.atoms_batch_regular['natoms'] = torch.Tensor([self.n_atoms]).repeat(batch_size).to(self.device)
+                self.atoms_batch_regular['atomic_numbers'] = self.atomic_numbers.repeat(batch_size)
+                energy, forces = self.model(self.atoms_batch_regular)
+                forces = forces.reshape(-1, self.n_atoms, 3)
             assert(not torch.any(torch.isnan(forces)))
 
             energy = energy.detach() if not retain_grad else energy
@@ -646,8 +645,8 @@ if __name__ == "__main__":
         cname = 'best_model.pth' if ckpt_epoch == -1 else f"ckpt{ckpt_epoch}.pth"
         model, model_config = Trainer.load_model_from_training_session(pretrained_model_path, \
                                 model_name = cname, device =  torch.device(device))
-    elif model_type == "schnet":
-        model, model_config = load_schnet_model(path = pretrained_model_path, ckpt_epoch = config['checkpoint_epoch'], device = torch.device(device), train = params.train or params.eval_model == 'pre')
+    else:
+        model, model_config = load_model(model_type, path = pretrained_model_path, ckpt_epoch = config['checkpoint_epoch'], device = torch.device(device), train = params.train or params.eval_model == 'pre')
     #count number of trainable params
     model_parameters = filter(lambda p: p.requires_grad, model.parameters())
     num_params = sum([np.prod(p.size()) for p in model_parameters])
@@ -859,6 +858,8 @@ if __name__ == "__main__":
         energy_rmse, force_rmse = simulator.energy_force_error(params.n_replicas)
         energy_rmses.append(energy_rmse)
         force_rmses.append(force_rmse)
+        # energy_rmses.append(0)
+        # force_rmses.append(0)
         sim_times.append(sim_time)
         try:
             grad_norms.append(max_norm.item())

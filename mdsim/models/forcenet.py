@@ -195,7 +195,7 @@ class ForceNet(BaseModel):
     Args:
         num_atoms (int): Unused argument
         bond_feat_dim (int): Unused argument
-        num_targets (int): Unused argumebt
+        num_targets (int): Unused argument
         hidden_channels (int, optional): Number of hidden channels.
             (default: :obj:`512`)
         num_iteractions (int, optional): Number of interaction blocks.
@@ -232,9 +232,7 @@ class ForceNet(BaseModel):
 
     def __init__(
         self,
-        num_atoms,  # not used
-        bond_feat_dim,  # not used
-        num_targets,  # not used
+        num_targets = 1,
         hidden_channels=512,
         num_interactions=5,
         cutoff=6.0,
@@ -452,6 +450,7 @@ class ForceNet(BaseModel):
         )
 
         edge_index = out["edge_index"]
+        edge_index = edge_index.to(torch.long)
         edge_dist = out["distances"]
         edge_vec = out["distance_vec"]
 

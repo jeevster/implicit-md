@@ -56,6 +56,7 @@ class SchNetWrap(SchNet):
 
     def __init__(
         self,
+        num_targets=1,
         use_pbc=True,
         regress_forces=True,
         otf_graph=False,

@@ -309,9 +309,7 @@ class DimeNetPlusPlus(torch.nn.Module):
 class DimeNetPlusPlusWrap(DimeNetPlusPlus):
     def __init__(
         self,
-        num_atoms,
-        bond_feat_dim,  # not used
-        num_targets,
+        num_targets=1,
         use_pbc=True,
         regress_forces=True,
         hidden_channels=128,
@@ -376,13 +374,14 @@ class DimeNetPlusPlusWrap(DimeNetPlusPlus):
             edge_index = out["edge_index"]
             dist = out["distances"]
             offsets = out["offsets"]
-
+            edge_index = (edge_index[0].to(torch.long), edge_index[1].to(torch.long))
             j, i = edge_index
         else:
             edge_index = radius_graph(pos, r=self.cutoff, batch=batch)
+            edge_index = (edge_index[0].to(torch.long), edge_index[1].to(torch.long))
             j, i = edge_index
             dist = (pos[i] - pos[j]).pow(2).sum(dim=-1).sqrt()
-
+        
         _, _, idx_i, idx_j, idx_k, idx_kj, idx_ji = self.triplets(
             edge_index,
             data.cell_offsets,

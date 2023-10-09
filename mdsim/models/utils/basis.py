@@ -262,6 +262,8 @@ class SphericalSmearing(nn.Module):
 
     def forward(self, xyz):
         # assuming input is already normalized
+        if xyz.requires_grad:
+            xyz = xyz.detach()
         assert xyz.size(1) == 3
 
         xyz = xyz / xyz.norm(dim=-1).view(-1, 1)

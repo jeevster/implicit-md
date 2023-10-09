@@ -104,9 +104,6 @@ class GemNetT(torch.nn.Module):
 
     def __init__(
         self,
-        num_atoms: Optional[int],
-        bond_feat_dim: int,
-        num_targets: int,
         num_spherical: int,
         num_radial: int,
         num_blocks: int,
@@ -120,6 +117,7 @@ class GemNetT(torch.nn.Module):
         num_after_skip: int,
         num_concat: int,
         num_atom: int,
+        num_targets: int = 1,
         regress_forces: bool = True,
         direct_forces: bool = False,
         cutoff: float = 6.0,
@@ -274,6 +272,7 @@ class GemNetT(torch.nn.Module):
         id3_ragged_idx: torch.Tensor, shape (num_triplets,)
             Indices enumerating the copies of id3_ca for creating a padded matrix
         """
+        edge_index = (edge_index[0].to(torch.long), edge_index[1].to(torch.long))
         idx_s, idx_t = edge_index  # c->a (source=c, target=a)
 
         value = torch.arange(
@@ -543,6 +542,7 @@ class GemNetT(torch.nn.Module):
             id3_ca,
             id3_ragged_idx,
         ) = self.generate_interaction_graph(data)
+        edge_index = (edge_index[0].to(torch.long), edge_index[1].to(torch.long))
         idx_s, idx_t = edge_index
 
         # Calculate triplet angles
