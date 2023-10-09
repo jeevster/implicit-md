@@ -1,19 +1,19 @@
-src: /data/sanjeevr #/pscratch/sd/s/sanjeevr #data/sanjeevr
+src: /pscratch/sd/s/sanjeevr #data/sanjeevr
 name: water
 size: 1k
 normalize_labels: False
 checkpoint_epoch: -1 #which model to start from
 model: dimenetplusplus
 l_max: 3
-log_dir: /home/sanjeevr/implicit-md #/global/cfs/projectdirs/m4319/sanjeevr  #
+log_dir: /global/cfs/projectdirs/m4319/sanjeevr  #/home/sanjeevr/implicit-md
 results_dir: 'results_nnip_continuous_new'
-model_dir: /home/sanjeevr/MDsim/MODELPATH #'/pscratch/sd/s/sanjeevr/MODELPATH' 
+model_dir: /pscratch/sd/s/sanjeevr/MODELPATH #/home/sanjeevr/MDsim/MODELPATH
 seed: 123
 dr: 0.012
 max_rdf_dist: 6
 dv: 0.1
 angle_range: [0, 180]
-exp_name: "TEST_mae0.4"
+exp_name: "TEST_temp"
 integrator: NoseHoover
 integrator_config: {"timestep": 1., "temperature": 300., "ttime": 20., "gamma": 0.1}
 train: True
@@ -34,8 +34,8 @@ eq_steps: 0
 steps: 1000 # 1 picosecond per epoch
 n_dump: 25
 n_dump_vacf: 2
-n_replicas: 8
-minibatch_size: 8
+n_replicas: 128
+minibatch_size: 32
 only_train_on_unstable_replicas: False
 allow_off_policy_updates: False
 gradient_clipping: True

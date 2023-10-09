@@ -92,7 +92,7 @@ class ImplicitMDSimulator():
         #set stability criterion
         if self.name == "md17" or self.name == "md22":    
             self.stability_tol = config["bond_dev_tol"]
-        else:
+        else: #Water and LiPS
             self.stability_tol = config["rdf_mae_tol"]
         
         self.max_frac_unstable_threshold = config["max_frac_unstable_threshold"]
@@ -241,13 +241,13 @@ class ImplicitMDSimulator():
         #create batch of atoms to be operated on
         self.r_max_key = "r_max" if self.model_type == "nequip" else "cutoff"
         self.atoms_batch = [AtomicData.from_ase(atoms=a, r_max=self.model_config[self.r_max_key]) for a in self.raw_atoms]
-        self.atoms_batch_regular = Batch.from_data_list(self.atoms_batch) #DataBatch for non-Nequip models
-        self.atoms_batch_regular['natoms'] = torch.Tensor([self.n_atoms]).repeat(self.n_replicas).to(self.device)
-        self.atoms_batch_regular['cell'] = self.atoms_batch_regular['cell'].to(self.device)
-        self.atoms_batch_regular['atomic_numbers'] =self.atoms_batch_regular['atomic_numbers'].squeeze().to(torch.long).to(self.device)
+        self.atoms_batch = Batch.from_data_list(self.atoms_batch) #DataBatch for non-Nequip models
+        self.atoms_batch['natoms'] = torch.Tensor([self.n_atoms]).repeat(self.n_replicas).to(self.device)
+        self.atoms_batch['cell'] = self.atoms_batch['cell'].to(self.device)
+        self.atoms_batch['atomic_numbers'] =self.atoms_batch['atomic_numbers'].squeeze().to(torch.long).to(self.device)
         #convert to dict for Nequip
         if self.model_type == "nequip":
-            self.atoms_batch = AtomicData.to_AtomicDataDict(self.atoms_batch_regular) 
+            self.atoms_batch = AtomicData.to_AtomicDataDict(self.atoms_batch) 
             self.atoms_batch = {k: v.to(self.device) for k, v in self.atoms_batch.items()}
             self.atoms_batch['atom_types'] = self.final_atom_types
             del self.atoms_batch['ptr']
@@ -377,42 +377,30 @@ class ImplicitMDSimulator():
     def force_calc(self, radii, retain_grad = False):
         batch_size = radii.shape[0]
         batch = torch.arange(batch_size).repeat_interleave(self.n_atoms).to(self.device)
-        atomic_numbers = torch.Tensor(self.atoms.get_atomic_numbers()).to(torch.long).to(self.device).repeat(batch_size)
         with torch.enable_grad():
             if not radii.requires_grad:
                 radii.requires_grad = True
-                
+            #assign radii and batch
+            self.atoms_batch['pos'] = radii.reshape(-1, 3)
+            self.atoms_batch['batch'] = batch
+            #make these match the number of replicas (different from n_replicas when doing bottom-up stuff)
+            self.atoms_batch['cell'] = self.atoms_batch['cell'][0].unsqueeze(0).repeat(batch_size, 1, 1)
+            self.atoms_batch['pbc'] = self.atoms_batch['pbc'][0].unsqueeze(0).repeat(batch_size, 1)
             if self.model_type == "nequip":
-                #assign radii
-                self.atoms_batch['pos'] = radii.reshape(-1, 3)
-                self.atoms_batch['batch'] = batch
-                self.atoms_batch['atom_types'] = self.final_atom_types
-                #make these match the number of replicas (different from n_replicas when doing bottom-up stuff)
-                self.atoms_batch['cell'] = self.atoms_batch['cell'][0].unsqueeze(0).repeat(radii.shape[0], 1, 1)
-                self.atoms_batch['pbc'] = self.atoms_batch['pbc'][0].unsqueeze(0).repeat(radii.shape[0], 1)
-                self.atoms_batch['atom_types'] = self.atoms_batch['atom_types'][0:self.n_atoms].repeat(radii.shape[0], 1)
-                
+                self.atoms_batch['atom_types'] = self.atoms_batch['atom_types'][0:self.n_atoms].repeat(batch_size, 1)
                 #recompute neighbor list
                 self.atoms_batch['edge_index'] = radius_graph(radii.reshape(-1, 3), r=self.model_config[self.r_max_key], batch=batch, max_num_neighbors=32)
                 self.atoms_batch['edge_cell_shift'] = torch.zeros((self.atoms_batch['edge_index'].shape[1], 3)).to(self.device)
                 atoms_updated = self.model(self.atoms_batch)
-                del self.atoms_batch['node_features']
-                del self.atoms_batch['node_attrs']
                 energy = atoms_updated[AtomicDataDict.TOTAL_ENERGY_KEY]
                 forces = atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.n_atoms, 3)
             else:
-                self.atoms_batch_regular = cleanup_atoms_batch(self.atoms_batch_regular)
-                self.atoms_batch_regular['pos'] = radii.reshape(-1, 3)
-                self.atoms_batch_regular['batch'] = batch
-                #make these match the number of replicas (different from n_replicas when doing bottom-up stuff)
-                self.atoms_batch_regular['cell'] = self.atoms_batch_regular['cell'][0].unsqueeze(0).repeat(batch_size, 1, 1)
-                self.atoms_batch_regular['pbc'] = self.atoms_batch_regular['pbc'][0].unsqueeze(0).repeat(batch_size, 1)
-                self.atoms_batch_regular['natoms'] = torch.Tensor([self.n_atoms]).repeat(batch_size).to(self.device)
-                self.atoms_batch_regular['atomic_numbers'] = self.atomic_numbers.repeat(batch_size)
-                energy, forces = self.model(self.atoms_batch_regular)
+                self.atoms_batch = cleanup_atoms_batch(self.atoms_batch)
+                self.atoms_batch['natoms'] = torch.Tensor([self.n_atoms]).repeat(batch_size).to(self.device)
+                self.atoms_batch['atomic_numbers'] = self.atomic_numbers.repeat(batch_size)
+                energy, forces = self.model(self.atoms_batch)
                 forces = forces.reshape(-1, self.n_atoms, 3)
             assert(not torch.any(torch.isnan(forces)))
-
             energy = energy.detach() if not retain_grad else energy
             forces = forces.detach() if not retain_grad else forces
             return energy, forces
