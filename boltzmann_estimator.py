@@ -292,7 +292,7 @@ class BoltzmannEstimator():
                     radii_in.requires_grad = True
                     energy, _ = self.simulator.force_calc(radii_in, retain_grad = True)
                 def get_vjp(v):
-                    return compute_grad(inputs = list(model.parameters()), output = energy, grad_outputs = v, create_graph = False)
+                    return compute_grad(inputs = list(model.parameters()), output = energy, grad_outputs = v, allow_unused = True, create_graph = False)
                 vectorized_vjp = vmap(get_vjp)
                 I_N = torch.eye(energy.shape[0]).unsqueeze(-1).to(self.simulator.device)
                 grads_vectorized = vectorized_vjp(I_N)

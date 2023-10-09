@@ -17,7 +17,7 @@
 #     sbatch run_implicit.sh $mol 1 0 0.10 1.9 0.0 'TEST_lmax1_10percent_resumestrategy0.25_learn_continuous_strongerenergyforce'
 # done
 
-models=('schnet' 'forcenet')
+models=('forcenet')
 # Iterate through the molecules and run the scripts
 for model in "${models[@]}"; do
     sbatch run_implicit.sh $model 1 0 0 0 0.0 'TEST_resumestrategy0.25_learn_continuous_noenergyforce'
