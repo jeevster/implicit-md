@@ -75,7 +75,6 @@ class ImplicitMDSimulator():
         self.all_unstable = False
         self.first_simulation = True
 
-        
         self.config = config
         self.data_dir = config['src']
         lmax_string = f"lmax={self.l_max}_" if model_type == "nequip" else ""
@@ -107,14 +106,13 @@ class ImplicitMDSimulator():
         self.model_config = model_config
 
         #initialize datasets
-        train_src = os.path.join(self.data_dir, self.name, self.molecule, self.size, 'test')
+        train_src = os.path.join(self.data_dir, self.name, self.molecule, self.size, 'train')
         valid_src = os.path.join(self.data_dir, self.name, self.molecule, MAX_SIZES[self.name], 'val')
         
         self.train_dataset = LmdbDataset({'src': train_src})
         self.valid_dataset = LmdbDataset({'src': valid_src})
 
         #get random initial condition from dataset
-        length = self.train_dataset.__len__()
         init_data = self.train_dataset.__getitem__(10)
         self.n_atoms = init_data['pos'].shape[0]
         self.atoms = data_to_atoms(init_data)
