@@ -129,8 +129,8 @@ def compare_gradients(grad1, grad2):
     ratio = (grads1_flattened / (grads2_flattened + 1e-8)).abs().median()
     return cosine_similarity, ratio
 
-def process_gradient(grad, device):
-    return [g.detach() if g is not None else torch.Tensor([0.]).to(device) for g in grad]
+def process_gradient(params, grads, device):
+    return [g.detach() if g is not None else torch.zeros_like(param).to(device) for g, param in zip(grads, params)]
 
 
 def convert_atomic_numbers_to_types(atomic_numbers):

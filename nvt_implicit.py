@@ -320,8 +320,8 @@ class ImplicitMDSimulator():
                 #compute losses
                 energy_loss = self.energy_loss(self.normalizer_train.norm(self.gt_energies_train[start:end]), energy).mean()
                 force_loss = self.force_loss(self.gt_forces_train[start:end].reshape(-1, 3), force.reshape(-1, 3)).mean() 
-                energy_gradients.append(process_gradient(torch.autograd.grad(energy_loss, self.model.parameters(), allow_unused = True, retain_graph = True), self.device))
-                force_gradients.append(process_gradient(torch.autograd.grad(force_loss, self.model.parameters(), allow_unused = True), self.device))
+                energy_gradients.append(process_gradient(self.model.parameters(), torch.autograd.grad(energy_loss, self.model.parameters(), allow_unused = True, retain_graph = True), self.device))
+                force_gradients.append(process_gradient(self.model.parameters(), torch.autograd.grad(force_loss, self.model.parameters(), allow_unused = True), self.device))
             num_params = len(list(self.model.parameters()))
             #energy
             energy_grads_flattened = torch.stack([torch.cat([energy_gradients[j][i].flatten().detach() for i in range(num_params)]) for j in range(num_batches)])
@@ -734,6 +734,8 @@ if __name__ == "__main__":
         #estimate gradients via Fabian method/adjoint
         rdf_package, vacf_package, energy_force_package = \
                     boltzmann_estimator.compute(equilibriated_simulator)
+
+        test = simulator.energy_force_gradient(batch_size=simulator.n_replicas)
                 
         #unpack results
         rdf_grad_batches, mean_rdf, rdf_loss, mean_adf, adf_loss = rdf_package
