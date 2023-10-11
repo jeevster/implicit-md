@@ -15,7 +15,7 @@ dr: 0.02
 max_rdf_dist: 10
 dv: 0.1
 angle_range: [0, 180]
-exp_name: "TEST_nequip"
+exp_name: "TEST_ckpt" #"TEST_lmax1_10percent_resumestrategy0.25_learn_continuous"
 integrator: NoseHoover
 train: True
 eval_model: post
@@ -32,7 +32,7 @@ bond_dev_tol: 0.25 #decay this?
 max_frac_unstable_threshold: 0.75 #decay this?
 min_frac_unstable_threshold: 0.0 #increase this?
 eq_steps: 0
-steps: 2000 # 1 picosecond per epoch
+steps: 20 # 1 picosecond per epoch
 n_dump: 50
 n_dump_vacf: 2
 n_replicas: 128
@@ -44,7 +44,7 @@ use_mse_gradient: True
 shuffle: True
 optimizer: SGD
 reset_probability: 0.05
-n_epochs: 500 #corresponding to 300 ps
+n_epochs: 600 #corresponding to 300 ps
 lr: 0.001
 max_times_reduce_lr: 2 
 diameter_viz: 0.08

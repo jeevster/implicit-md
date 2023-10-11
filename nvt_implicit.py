@@ -31,6 +31,7 @@ from nequip.train.trainer import Trainer
 from nequip.data import AtomicData, AtomicDataDict
 from nequip.data.AtomicData import neighbor_list_and_relative_vec
 from nequip.utils.torch_geometric import Batch, Dataset
+from nequip.utils import atomic_write
 from ase.neighborlist import natural_cutoffs, NeighborList
 from mdsim.common.utils import cleanup_atoms_batch, setup_imports, setup_logging, compute_bond_lengths, data_to_atoms, atoms_to_batch, atoms_to_state_dict, convert_atomic_numbers_to_types, process_gradient, compare_gradients, initialize_velocities, dump_params_to_yml
 from mdsim.common.custom_radius_graph import detach_numpy
@@ -41,7 +42,7 @@ from mdsim.modules.normalizer import Normalizer
 
 from mdsim.observables.md17_22 import BondLengthDeviation, radii_to_dists, find_hr_adf_from_file, distance_pbc
 from mdsim.observables.water import WaterRDFMAE, find_water_rdfs_diffusivity_from_file
-from mdsim.models.load_models import load_model
+from mdsim.models.load_models import load_pretrained_model
 
 from mdsim.common.utils import (
     build_config,
@@ -540,10 +541,13 @@ class ImplicitMDSimulator():
     def save_checkpoint(self, best=False):
         name = "best_ckpt.pth" if best else "ckpt.pth"
         checkpoint_path = os.path.join(self.save_dir, name)
-        try:
+        if self.model_type == "nequip":
+            with atomic_write(checkpoint_path, blocking=True, binary=True) as write_to:
+                torch.save(self.model.state_dict(), write_to)
+            import pdb; pdb.set_trace()
+        else:
             torch.save({'model_state': self.model.state_dict(), 'config': self.model_config}, checkpoint_path)
-        except:
-            pass
+        
     def restore_checkpoint(self, best=False):
         name = "best_ckpt.pt" if best else "ckpt.pt"
         checkpoint_path = os.path.join(self.save_dir, name)
@@ -617,20 +621,38 @@ if __name__ == "__main__":
     if params.train or config["eval_model"] == 'pre': #load energies/forces trained model
         pretrained_model_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{size}_{lmax_string}{model_type}") 
     
-    elif 'k' in config["eval_model"]:#load energies/forces model trained on a different dataset size
+    elif 'k' in config["eval_model"] or 'percent' in config["eval_model"]:#load energies/forces model trained on a different dataset size
         new_size = config["eval_model"]
-        pretrained_model_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{new_size}_{lmax_string}{model_type}") 
+        pretrained_model_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{new_size}_{lmax_string}{model_type}")
 
-    else: #load observable-finetuned model
+    elif 'lmax' in config["eval_model"]:#load energies/forces model trained with a different lmax
+        assert model_type == 'nequip', f"l option is only valid with nequip models, you have selected {model_type}"
+        new_lmax_string = config["eval_model"] + "_"
+        pretrained_model_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{size}_{new_lmax_string}{model_type}")  
+
+    elif 'post' in config["eval_model"]: #load observable finetuned model
         pretrained_model_path = os.path.join(params.results_dir, f"IMPLICIT_{model_type}_{molecule}_{params.exp_name}")
-
+    else:
+        RuntimeError("Invalid eval model choice")
+    
     if model_type == "nequip":
         ckpt_epoch = config['checkpoint_epoch']
-        cname = 'best_model.pth' if ckpt_epoch == -1 else f"ckpt{ckpt_epoch}.pth"
-        model, model_config = Trainer.load_model_from_training_session(pretrained_model_path, \
-                                model_name = cname, device =  torch.device(device))
+        cname = 'best_ckpt.pth' if ckpt_epoch == -1 else f"ckpt{ckpt_epoch}.pth"
+        print(f'Loading model weights from {os.path.join(pretrained_model_path, cname)}')
+        if config['eval_model'] == 'post':
+            #we didn't save the Nequip checkpoint correctly so it's not working 
+            pre_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{size}_{lmax_string}{model_type}")
+            _, model_config = Trainer.load_model_from_training_session(pre_path, \
+                                    model_name = cname, device =  torch.device(device))
+            model, _ = Trainer.load_model_from_training_session(pretrained_model_path, \
+                                    config_dictionary=model_config, model_name = cname, device =  torch.device(device))
+        else:
+            model, model_config = Trainer.load_model_from_training_session(pretrained_model_path, \
+                                    model_name = cname, device =  torch.device(device))
+            
+
     else:
-        model, model_config = load_model(model_type, path = pretrained_model_path, ckpt_epoch = config['checkpoint_epoch'], device = torch.device(device), train = params.train or params.eval_model == 'pre')
+        model, model_config = load_pretrained_model(model_type, path = pretrained_model_path, ckpt_epoch = config['checkpoint_epoch'], device = torch.device(device), train = params.train or params.eval_model == 'pre')
     #count number of trainable params
     model_parameters = filter(lambda p: p.requires_grad, model.parameters())
     num_params = sum([np.prod(p.size()) for p in model_parameters])
