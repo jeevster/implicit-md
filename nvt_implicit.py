@@ -838,11 +838,12 @@ if __name__ == "__main__":
         resets.append(num_resets)
         lrs.append(optimizer.param_groups[0]['lr'])
         #energy/force error
-        energy_rmse, force_rmse = simulator.energy_force_error(params.n_replicas)
-        energy_rmses.append(energy_rmse)
-        force_rmses.append(force_rmse)
-        # energy_rmses.append(0)
-        # force_rmses.append(0)
+        if epoch == 0 or simulator.all_unstable: #don't compute it unless we are in the learning phase
+            # energy_rmse, force_rmse = simulator.energy_force_error(params.n_replicas)
+            # energy_rmses.append(energy_rmse)
+            # force_rmses.append(force_rmse)
+            energy_rmses.append(0)
+            force_rmses.append(0)
         sim_times.append(sim_time)
         try:
             grad_norms.append(max_norm.item())
