@@ -12,16 +12,16 @@
 # molecules_md22=('ac_Ala3_NHMe' 'DHA' 'AT_AT')
 # # Iterate through the molecules and run the scripts
 # for mol in "${molecules_md22[@]}"; do
-#     sbatch run_implicit.sh $mol 1 0 0 0 0.0 'TEST_lmax1_10percent_resumestrategy0.25_learn_continuous_noenergyforce'
-#     sbatch run_implicit.sh $mol 1 0 0.05 0.95 0.0 'TEST_lmax1_10percent_resumestrategy0.25_learn_continuous'
-#     sbatch run_implicit.sh $mol 1 0 0.10 1.9 0.0 'TEST_lmax1_10percent_resumestrategy0.25_learn_continuous_strongerenergyforce'
+#     sbatch run_implicit.sh $mol 1 0 0 0 0.0 0 'TEST_lmax1_10percent_resumestrategy0.25_learn_continuous_noenergyforce'
+#     sbatch run_implicit.sh $mol 1 0 0.05 0.95 0.0 0 'TEST_lmax1_10percent_resumestrategy0.25_learn_continuous'
+#     sbatch run_implicit.sh $mol 1 0 0.10 1.9 0.0 0 'TEST_lmax1_10percent_resumestrategy0.25_learn_continuous_strongerenergyforce'
 # done
 
-models=('forcenet')
+models=('schnet' 'dimenetplusplus')
 # Iterate through the molecules and run the scripts
 for model in "${models[@]}"; do
-    sbatch run_implicit.sh $model 1 0 0 0 0.0 'TEST_resumestrategy0.25_learn_continuous_noenergyforce'
-    sbatch run_implicit.sh $model 1 0 0.05 0.95 0.0 'TEST_resumestrategy0.25_learn_continuous'
-    sbatch run_implicit.sh $model 1 0 0.10 1.9 0.0 'TEST_resumestrategy0.25_learn_continuous_strongerenergyforce'
+    sbatch run_implicit.sh $model 1 0 0 0 0.0 'TEST_resumestrategy0.8_learn_continuous_noenergyforce'
+    sbatch run_implicit.sh $model 1 0 0.05 0.95 0.0 'TEST_resumestrategy0.8_learn_continuous'
+    sbatch run_implicit.sh $model 1 0 0.10 1.9 0.0 'TEST_resumestrategy0.8_learn_continuous_strongerenergyforce'
 done
 

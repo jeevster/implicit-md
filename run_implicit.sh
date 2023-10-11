@@ -13,6 +13,8 @@
 # Define the path to your Python script
 script="/global/homes/s/sanjeevr/implicit-md/nvt_implicit.py"
 config_yml="/global/homes/s/sanjeevr/implicit-md/configs/water/water.yml"
+# command_train="python $script --config-yml $config_yml --model=nequip --molecule=$1 --size=10percent --rdf_loss_weight=$2 --vacf_loss_weight=$3 \
+#                --energy_loss_weight=$4 --force_loss_weight=$5 --exp_name=$7"
 command_train="python $script --config-yml $config_yml --model=$1 --rdf_loss_weight=$2 --vacf_loss_weight=$3 \
              --energy_loss_weight=$4 --force_loss_weight=$5 --reset_probability=$6 --exp_name=$7"
 # command_inference_pre="python $script --config-yml $config_yml --model=nequip --molecule=$1 --size=10percent --rdf_loss_weight=$2 --vacf_loss_weight=$3 --minibatch_size=8 \

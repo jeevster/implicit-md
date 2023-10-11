@@ -1,13 +1,13 @@
-src: /data/sanjeevr #/pscratch/sd/s/sanjeevr 
+src: /pscratch/sd/s/sanjeevr #/data/sanjeevr
 name: water
-size: 1k
+size: 10k
 normalize_labels: False
 checkpoint_epoch: -1 #which model to start from
 model: schnet
 l_max: 3
-log_dir: /home/sanjeevr/implicit-md #/global/cfs/projectdirs/m4319/sanjeevr  #
+log_dir: /global/cfs/projectdirs/m4319/sanjeevr  #/home/sanjeevr/implicit-md
 results_dir: 'results_nnip_continuous_new'
-model_dir: /home/sanjeevr/MDsim/MODELPATH #/pscratch/sd/s/sanjeevr/MODELPATH 
+model_dir: /pscratch/sd/s/sanjeevr/MODELPATH #/home/sanjeevr/MDsim/MODELPATH 
 seed: 123
 dr: 0.012
 max_rdf_dist: 6
@@ -27,17 +27,17 @@ vacf_loss_weight: 0
 energy_loss_weight: 0.05
 force_loss_weight: 0.95
 diffusion_window: 1000
-vacf_window: 100
+vacf_window: 10
 ic_stddev: 0.0
-rdf_mae_tol: 0.8 #1/3 of Forces are Not Enough cutoff
+rdf_mae_tol: 0.8 #less than Forces are Not Enough cutoff
 max_frac_unstable_threshold: 0.75 #decay this?
 min_frac_unstable_threshold: 0.0 #increase this?
 eq_steps: 0
-steps: 1000 # 1 picosecond per epoch
-n_dump: 1
+steps: 200 # shorter interval for checking instability since failure happens more quickly
+n_dump: 5 #more frequent dump since failure happens more quickly
 n_dump_vacf: 2
-n_replicas: 1
-minibatch_size: 10
+n_replicas: 128
+minibatch_size: 32
 only_train_on_unstable_replicas: False
 allow_off_policy_updates: False
 gradient_clipping: True
@@ -45,7 +45,7 @@ use_mse_gradient: True
 shuffle: True
 optimizer: SGD
 reset_probability: 0.0
-n_epochs: 500 #corresponding to 300 ps
+n_epochs: 5000
 lr: 0.001
 max_times_reduce_lr: 2 
 

@@ -544,7 +544,6 @@ class ImplicitMDSimulator():
         if self.model_type == "nequip":
             with atomic_write(checkpoint_path, blocking=True, binary=True) as write_to:
                 torch.save(self.model.state_dict(), write_to)
-            import pdb; pdb.set_trace()
         else:
             torch.save({'model_state': self.model.state_dict(), 'config': self.model_config}, checkpoint_path)
         
@@ -640,7 +639,6 @@ if __name__ == "__main__":
         cname = 'best_ckpt.pth' if ckpt_epoch == -1 else f"ckpt{ckpt_epoch}.pth"
         print(f'Loading model weights from {os.path.join(pretrained_model_path, cname)}')
         if config['eval_model'] == 'post':
-            #we didn't save the Nequip checkpoint correctly so it's not working 
             pre_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{size}_{lmax_string}{model_type}")
             _, model_config = Trainer.load_model_from_training_session(pre_path, \
                                     model_name = cname, device =  torch.device(device))
