@@ -89,10 +89,7 @@ class ImplicitMDSimulator():
         self.optimizer = config["optimizer"]
         self.use_mse_gradient = config["use_mse_gradient"]
         #set stability criterion
-        if self.name == "md17" or self.name == "md22":    
-            self.stability_tol = config["bond_dev_tol"]
-        else: #Water and LiPS
-            self.stability_tol = config["rdf_mae_tol"]
+        self.stability_tol = config["rdf_mae_tol"] if self.pbc else config["bond_dev_tol"]
         
         self.max_frac_unstable_threshold = config["max_frac_unstable_threshold"]
         self.min_frac_unstable_threshold = config["min_frac_unstable_threshold"]
@@ -213,13 +210,13 @@ class ImplicitMDSimulator():
         self.cell = torch.Tensor(self.raw_atoms[0].cell).to(self.device)
         self.gt_rdf = gt_rdf
         #choose the appropriate stability criterion based on the type of system
-        
-        self.stability_criterion = BondLengthDeviation(
-                                    self.bonds,
-                                    self.mean_bond_lens,
-                                    self.cell, 
-                                    self.device) if self.name == 'md17' \
-                                    or self.name == 'md22' else WaterRDFMAE(self.data_dir, self.gt_rdf, self.n_atoms, self.n_replicas, self.params, self.device)
+        self.stability_criterion = WaterRDFMAE(self.data_dir, self.gt_rdf, self.n_atoms, self.n_replicas, self.params, self.device) \
+                                    if self.pbc else \
+                                    BondLengthDeviation(
+                                        self.bonds,
+                                        self.mean_bond_lens,
+                                        self.cell, 
+                                        self.device)
         radii = torch.stack([torch.Tensor(atoms.get_positions()) for atoms in self.raw_atoms])
         self.radii = (radii + torch.normal(torch.zeros_like(radii), self.ic_stddev)).to(self.device)
         self.velocities = torch.Tensor(initialize_velocities(self.n_atoms, self.masses, self.temp, self.n_replicas)).to(self.device)
@@ -586,7 +583,7 @@ class ImplicitMDSimulator():
                 "Potential Energy": pe.mean().item(),
                 "Total Energy": (ke+pe).mean().item(),
                 "Momentum Magnitude": torch.norm(torch.sum(self.masses*self.velocities, axis =-2)).item(),
-                'RDF MAE' if name == 'water' else 'Max Bond Length Deviation': instability.mean().item()}
+                'RDF MAE' if self.pbc else 'Max Bond Length Deviation': instability.mean().item()}
 
 if __name__ == "__main__":
     setup_logging() 
@@ -734,8 +731,6 @@ if __name__ == "__main__":
         #estimate gradients via Fabian method/adjoint
         rdf_package, vacf_package, energy_force_package = \
                     boltzmann_estimator.compute(equilibriated_simulator)
-
-        test = simulator.energy_force_gradient(batch_size=simulator.n_replicas)
                 
         #unpack results
         rdf_grad_batches, mean_rdf, rdf_loss, mean_adf, adf_loss = rdf_package
@@ -807,7 +802,6 @@ if __name__ == "__main__":
         sim_time = end - start
         
         #save rdf, adf, and vacf at the end of the trajectory
-        
         if name == 'water':
             for key, rdf in zip(gt_rdf.keys(), mean_rdf.split(500)):
                 filename = f"{key}rdf_epoch{epoch+1}.npy" 

@@ -38,7 +38,8 @@ class WaterRDFMAE(torch.nn.Module):
         max_maes = []
         rdf_list = []
         for i in range(self.n_replicas): #explicit loop since vmap makes some numpy things weird
-            rdfs = get_water_rdfs(stacked_radii[:,i], self.ptypes, self.lattices, self.bins, self.device)
+            rdfs = [get_water_rdfs(frame.unsqueeze(0), self.ptypes, self.lattices, self.bins, self.device) for frame in stacked_radii[:,i]]
+            rdfs = {k: torch.stack([rdf[k] for rdf in rdfs]).mean(0) for k in rdfs[0].keys()} #average over frames
             #compute MAEs of all element-conditioned RDFs
             max_maes.append(torch.max(torch.cat([torch.abs(rdf-gt_rdf).mean().unsqueeze(-1) for rdf, gt_rdf in zip(rdfs.values(), self.gt_rdfs.values())])))
             rdf_list.append(torch.cat([rdf.flatten() for rdf in rdfs.values()]))

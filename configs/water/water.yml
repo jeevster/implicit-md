@@ -31,11 +31,11 @@ rdf_mae_tol: 0.4 #much lower than Forces are Not Enough cutoff
 max_frac_unstable_threshold: 0.75 #decay this?
 min_frac_unstable_threshold: 0.0 #increase this?
 eq_steps: 0
-steps: 100 # 1 picosecond per epoch
+steps: 1000 # 1 picosecond per epoch
 n_dump: 25
 n_dump_vacf: 2
-n_replicas: 1
-minibatch_size: 32
+n_replicas: 10
+minibatch_size: 10
 only_train_on_unstable_replicas: False
 allow_off_policy_updates: False
 gradient_clipping: True
