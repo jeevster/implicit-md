@@ -42,6 +42,7 @@ from mdsim.modules.normalizer import Normalizer
 
 from mdsim.observables.md17_22 import BondLengthDeviation, radii_to_dists, find_hr_adf_from_file, distance_pbc
 from mdsim.observables.water import WaterRDFMAE, find_water_rdfs_diffusivity_from_file
+from mdsim.observables.lips import find_lips_rdfs_diffusivity_from_file
 from mdsim.models.load_models import load_pretrained_model
 
 from mdsim.common.utils import (
@@ -672,6 +673,10 @@ if __name__ == "__main__":
     if name == 'water':
         gt_rdf, gt_diffusivity = find_water_rdfs_diffusivity_from_file(data_path, MAX_SIZES[name], params, device)
         gt_adf = torch.zeros((100,1)).to(device) #TODO: temporary
+    elif name == 'lips':
+        gt_rdf, gt_diffusivity = find_lips_rdfs_diffusivity_from_file(data_path, MAX_SIZES[name], params, device)
+        gt_adf = torch.zeros((100,1)).to(device) #TODO: temporary
+        
     else:
         gt_rdf, gt_adf = find_hr_adf_from_file(data_path, name, molecule, MAX_SIZES[name], params, device)
     contiguous_path = os.path.join(data_path, f'contiguous-{name}', molecule, MAX_SIZES[name], 'val/nequip_npz.npz')
@@ -679,6 +684,9 @@ if __name__ == "__main__":
     #TODO: gt vacf doesn't look right - it's because the recording frequency of the data is 10 fs, not 0.5 as in MD17
     if name == 'water':
         gt_vels = torch.FloatTensor(gt_data.f.velocities).to(device)
+    elif name == 'lips':
+        gt_traj = torch.FloatTensor(gt_data.f.pos).to(device)
+        gt_vels = gt_traj[1:] - gt_traj[:-1] #finite difference approx
     else:
         gt_traj = torch.FloatTensor(gt_data.f.R).to(device)
         gt_vels = gt_traj[1:] - gt_traj[:-1] #finite difference approx
