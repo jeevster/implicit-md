@@ -148,19 +148,30 @@ class ImplicitMDSimulator():
         DATAPATH_TEST = os.path.join(self.data_dir, self.name, self.molecule, self.size, 'test/nequip_npz.npz')
         
         gt_data_test = np.load(DATAPATH_TEST)
-        self.gt_traj_test = torch.FloatTensor(gt_data_test.f.wrapped_coords if self.name == 'water' else gt_data_test.f.R).to(self.device)
-        self.gt_energies_test = torch.FloatTensor(gt_data_test.f.energy if self.name == 'water' else gt_data_test.f.E).to(self.device)
+        gt_data_train = np.load(DATAPATH_TRAIN)
+        if self.name == 'water':
+            pos_field_train = gt_data_train.f.wrapped_coords
+            pos_field_test = gt_data_test.f.wrapped_coords
+        elif self.name == 'lips':
+            pos_field_train = gt_data_train.f.pos
+            pos_field_test = gt_data_test.f.pos
+        else:
+            pos_field_train = gt_data_train.f.R
+            pos_field_test = gt_data_test.f.R
+        
+        self.gt_traj_test = torch.FloatTensor(pos_field_test).to(self.device)
+        self.gt_energies_test = torch.FloatTensor(gt_data_test.f.energy if self.pbc else gt_data_test.f.E).to(self.device)
         #TODO: force vs forces
-        self.gt_forces_test = torch.FloatTensor(gt_data_test.f.forces if self.name == 'water' else gt_data_test.f.F).to(self.device)
+        self.gt_forces_test = torch.FloatTensor(gt_data_test.f.forces if self.pbc else gt_data_test.f.F).to(self.device)
         self.target_test = {'energy': self.gt_energies_test, 'forces': self.gt_forces_test.reshape(-1, 3), \
                             'natoms': torch.Tensor([self.n_atoms]).repeat(self.gt_energies_test.shape[0]).to(self.device)}
         self.normalizer_test = Normalizer(tensor = self.gt_energies_test, device = self.device)
         
-        gt_data_train = np.load(DATAPATH_TRAIN)
-        self.gt_traj_train = torch.FloatTensor(gt_data_train.f.wrapped_coords if self.name == 'water' else gt_data_train.f.R).to(self.device)
-        self.gt_energies_train = torch.FloatTensor(gt_data_train.f.energy if self.name == 'water' else gt_data_train.f.E).to(self.device)
+        
+        self.gt_traj_train = torch.FloatTensor(pos_field_train).to(self.device)
+        self.gt_energies_train = torch.FloatTensor(gt_data_train.f.energy if self.pbc else gt_data_train.f.E).to(self.device)
         #TODO: force vs forces
-        self.gt_forces_train = torch.FloatTensor(gt_data_train.f.forces if self.name == 'water' else gt_data_train.f.F).to(self.device)
+        self.gt_forces_train = torch.FloatTensor(gt_data_train.f.forces if self.pbc else gt_data_train.f.F).to(self.device)
         self.target_train = {'energy': self.gt_energies_train, 'forces': self.gt_forces_train.reshape(-1, 3), \
                                 'natoms': torch.Tensor([self.n_atoms]).repeat(self.gt_energies_train.shape[0]).to(self.device)}
         self.normalizer_train = Normalizer(tensor = self.gt_energies_train, device = self.device)
@@ -388,6 +399,7 @@ class ImplicitMDSimulator():
                 self.atoms_batch['atom_types'] = self.atoms_batch['atom_types'][0:self.n_atoms].repeat(batch_size, 1)
                 #recompute neighbor list
                 self.atoms_batch['edge_index'] = radius_graph(radii.reshape(-1, 3), r=self.model_config[self.r_max_key], batch=batch, max_num_neighbors=32)
+                #TODO: edge cell shift is nonzero for LiPS (non cubic cell)
                 self.atoms_batch['edge_cell_shift'] = torch.zeros((self.atoms_batch['edge_index'].shape[1], 3)).to(self.device)
                 atoms_updated = self.model(self.atoms_batch)
                 energy = atoms_updated[AtomicDataDict.TOTAL_ENERGY_KEY]
@@ -396,6 +408,7 @@ class ImplicitMDSimulator():
                 self.atoms_batch = cleanup_atoms_batch(self.atoms_batch)
                 self.atoms_batch['natoms'] = torch.Tensor([self.n_atoms]).repeat(batch_size).to(self.device)
                 self.atoms_batch['atomic_numbers'] = self.atomic_numbers.repeat(batch_size)
+                import pdb; pdb.set_trace()
                 energy, forces = self.model(self.atoms_batch)
                 forces = forces.reshape(-1, self.n_atoms, 3)
             assert(not torch.any(torch.isnan(forces)))
@@ -545,6 +558,8 @@ class ImplicitMDSimulator():
         if self.model_type == "nequip":
             with atomic_write(checkpoint_path, blocking=True, binary=True) as write_to:
                 torch.save(self.model.state_dict(), write_to)
+            import pdb; pdb.set_trace()
+            test = torch.load(checkpoint_path, map_location=self.device) #confirm we can load the checkpoint
         else:
             torch.save({'model_state': self.model.state_dict(), 'config': self.model_config}, checkpoint_path)
         
