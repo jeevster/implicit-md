@@ -557,7 +557,6 @@ class ImplicitMDSimulator():
         if self.model_type == "nequip":
             with atomic_write(checkpoint_path, blocking=True, binary=True) as write_to:
                 torch.save(self.model.state_dict(), write_to)
-            import pdb; pdb.set_trace()
             test = torch.load(checkpoint_path, map_location=self.device) #confirm we can load the checkpoint
         else:
             torch.save({'model_state': self.model.state_dict(), 'config': self.model_config}, checkpoint_path)
@@ -581,7 +580,14 @@ class ImplicitMDSimulator():
         s.particles.position = partpos
         s.particles.velocity = velocities
         s.particles.diameter = diameter
-        s.configuration.box=[10.0, 10.0, 10.0,0,0,0]
+        
+        cell = torch.Tensor(self.atoms.cell)
+        # if self.name == 'lips':
+        #     magnitudes = torch.norm(cell, dim=1).unsqueeze(1)
+        #     tilts = torch.tan(torch.acos(torch.mm(cell, cell.T) / torch.mm(magnitudes, magnitudes.T)))
+        # else:
+        tilts = torch.zeros((3,3))
+        s.configuration.box=[cell[0][0], cell[1][1], cell[2][2],tilts[0][1],tilts[0][2],tilts[1][2]]
         s.configuration.step = self.dt
 
         s.bonds.N = self.bonds.shape[0]

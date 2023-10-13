@@ -95,6 +95,7 @@ class BoltzmannEstimator():
         velocities_traj = velocities_traj.reshape(velocities_traj.shape[0], -1, self.simulator.vacf_window, self.simulator.n_atoms, 3)
         velocities_traj = velocities_traj[:, ::self.simulator.n_dump_vacf] #sample i.i.d paths
         vacfs = vmap(vmap(diff_vacf))(velocities_traj)
+        import pdb; pdb.set_trace()
         mean_vacf = vacfs[stable_replicas].mean(dim = (0,1)) #only compute loss on stable replicas
         vacfs = vacfs.reshape(-1, self.simulator.vacf_window)
         mean_vacf_loss = self.vacf_loss(mean_vacf)   

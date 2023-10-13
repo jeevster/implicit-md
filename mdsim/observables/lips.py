@@ -38,7 +38,7 @@ class LiPSRDFMAE(torch.nn.Module):
             #compute MAEs of all element-conditioned RDFs
             maes.append(self.xlim*torch.abs(rdf-self.gt_rdf).mean().unsqueeze(-1))
             rdf_list.append(rdf)
-        return torch.stack(rdf_list).to(self.device), torch.stack(maes).to(self.device)
+        return torch.stack(rdf_list).to(self.device), torch.cat(maes).to(self.device)
   
 
 def compute_image_flag(cell, fcoord1, fcoord2):
