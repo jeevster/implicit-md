@@ -470,6 +470,7 @@ class ImplicitMDSimulator():
         # # dump frames
         if self.step%self.n_dump == 0:
             print(self.step, self.thermo_log(energy), file=self.f)
+            step  = self.step if self.train else (self.epoch+1) * self.step #don't overwrite previous epochs at inference time
             try:    
                 self.t.append(self.create_frame(frame = self.step/self.n_dump))
             except:
@@ -632,6 +633,7 @@ if __name__ == "__main__":
     data_path = config['src']
     name = config['name']
     molecule = f"{config['molecule']}" if name == 'md17' or name == 'md22' else ""
+    molecule_for_name = name if name =='water' or name == 'lips' else molecule
     size = config['size']
     model_type = config['model']
     
@@ -651,7 +653,7 @@ if __name__ == "__main__":
         pretrained_model_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{size}_{new_lmax_string}{model_type}")  
 
     elif 'post' in config["eval_model"]: #load observable finetuned model
-        pretrained_model_path = os.path.join(params.results_dir, f"IMPLICIT_{model_type}_{molecule}_{params.exp_name}")
+        pretrained_model_path = os.path.join(params.results_dir, f"IMPLICIT_{model_type}_{molecule_for_name}_{params.exp_name}")
     else:
         RuntimeError("Invalid eval model choice")
     
@@ -659,17 +661,17 @@ if __name__ == "__main__":
         ckpt_epoch = config['checkpoint_epoch']
         cname = 'best_ckpt.pth' if ckpt_epoch == -1 else f"ckpt{ckpt_epoch}.pth"
         print(f'Loading model weights from {os.path.join(pretrained_model_path, cname)}')
-        if config['eval_model'] == 'post':
+        if config['eval_model'] == 'post' and not params.train:
+            #get config from pretrained directory
             pre_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{size}_{lmax_string}{model_type}")
             _, model_config = Trainer.load_model_from_training_session(pre_path, \
                                     model_name = cname, device =  torch.device(device))
+            #get model from finetuned directory
             model, _ = Trainer.load_model_from_training_session(pretrained_model_path, \
                                     config_dictionary=model_config, model_name = cname, device =  torch.device(device))
         else:
             model, model_config = Trainer.load_model_from_training_session(pretrained_model_path, \
                                     model_name = cname, device =  torch.device(device))
-            
-
     else:
         model, model_config = load_pretrained_model(model_type, path = pretrained_model_path, ckpt_epoch = config['checkpoint_epoch'], device = torch.device(device), train = params.train or params.eval_model == 'pre')
     #count number of trainable params
@@ -683,7 +685,7 @@ if __name__ == "__main__":
     integrator_config = INTEGRATOR_CONFIGS[molecule] if name == 'md22' else config['integrator_config']
     timestep = integrator_config["timestep"]
     ttime = integrator_config["ttime"]
-    molecule_for_name = name if name =='water' or name == 'lips' else molecule
+    
     results_dir = os.path.join(params.results_dir, f"IMPLICIT_{model_type}_{molecule_for_name}_{params.exp_name}") \
                 if params.train else os.path.join(params.results_dir, f"IMPLICIT_{model_type}_{molecule_for_name}_{params.exp_name}", "inference", params.eval_model)
     os.makedirs(results_dir, exist_ok = True)
@@ -829,7 +831,7 @@ if __name__ == "__main__":
                         simulator.stable_time = torch.zeros((simulator.n_replicas,)).to(simulator.device)
                 if optimizer.param_groups[0]['lr'] > 0:
                     optimizer.step()
-            scheduler.step(outer_loss) #adjust LR according to observable loss on stable replicas
+            scheduler.step(num_resets) #adjust LR according to observable loss on stable replicas
             grad_cosine_similarity = sum(grad_cosine_similarity) / len(grad_cosine_similarity)
             ratios = sum(ratios) / len(ratios)
         
@@ -866,7 +868,8 @@ if __name__ == "__main__":
         if outer_loss < best_outer_loss:
             best_outer_loss = outer_loss
             best = True
-        simulator.save_checkpoint(best = best)
+        if params.train:
+            simulator.save_checkpoint(best = best)
         
         torch.cuda.empty_cache()
         gc.collect()
@@ -887,11 +890,11 @@ if __name__ == "__main__":
         lrs.append(optimizer.param_groups[0]['lr'])
         #energy/force error
         if epoch == 0 or simulator.all_unstable: #don't compute it unless we are in the learning phase
-            # energy_rmse, force_rmse = simulator.energy_force_error(params.n_replicas)
-            # energy_rmses.append(energy_rmse)
-            # force_rmses.append(force_rmse)
-            energy_rmses.append(0)
-            force_rmses.append(0)
+            energy_rmse, force_rmse = simulator.energy_force_error(params.n_replicas)
+            energy_rmses.append(energy_rmse)
+            force_rmses.append(force_rmse)
+            # energy_rmses.append(0)
+            # force_rmses.append(0)
         sim_times.append(sim_time)
         try:
             grad_norms.append(max_norm.item())

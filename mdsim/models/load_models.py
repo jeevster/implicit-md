@@ -18,7 +18,10 @@ def load_pretrained_model(model_type, path = None, ckpt_epoch = -1, device = "cp
         config = torch.load(ckpt_and_config_path, map_location=torch.device("cpu"))["config"]
     
     #load model
-    model = registry.get_model_class(model_type)(**config["model_attributes"]).to(device)
+    if "model_attributes" in config.keys():
+        model = registry.get_model_class(model_type)(**config["model_attributes"]).to(device)
+    else:
+        model = registry.get_model_class(model_type)(**config).to(device)
 
     #get checkpoint
     print(f'Loading model weights from {ckpt_and_config_path}')
@@ -34,7 +37,7 @@ def load_pretrained_model(model_type, path = None, ckpt_epoch = -1, device = "cp
         model.load_state_dict(checkpoint)
 
         
-    return model, config["model_attributes"] 
+    return model, config["model_attributes"] if "model_attributes" in config.keys() else config
 
 
 
