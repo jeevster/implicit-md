@@ -42,7 +42,7 @@ from mdsim.modules.normalizer import Normalizer
 
 from mdsim.observables.md17_22 import BondLengthDeviation, radii_to_dists, find_hr_adf_from_file, distance_pbc
 from mdsim.observables.water import WaterRDFMAE, find_water_rdfs_diffusivity_from_file
-from mdsim.observables.lips import find_lips_rdfs_diffusivity_from_file
+from mdsim.observables.lips import LiPSRDFMAE, find_lips_rdfs_diffusivity_from_file
 from mdsim.models.load_models import load_pretrained_model
 
 from mdsim.common.utils import (
@@ -223,13 +223,13 @@ class ImplicitMDSimulator():
         self.cell = torch.Tensor(self.raw_atoms[0].cell).to(self.device)
         self.gt_rdf = gt_rdf
         #choose the appropriate stability criterion based on the type of system
-        self.stability_criterion = WaterRDFMAE(self.data_dir, self.gt_rdf, self.n_atoms, self.n_replicas, self.params, self.device) \
-                                    if self.pbc else \
-                                    BondLengthDeviation(
-                                        self.bonds,
-                                        self.mean_bond_lens,
-                                        self.cell, 
-                                        self.device)
+        if self.name == 'water':
+            self.stability_criterion = WaterRDFMAE(self.data_dir, self.gt_rdf, self.n_atoms, self.n_replicas, self.params, self.device)
+        elif self.name == 'lips':
+            self.stability_criterion = LiPSRDFMAE(self.data_dir, self.gt_rdf, self.n_atoms, self.n_replicas, self.params, self.device)
+        else:
+            self.stability_criterion = BondLengthDeviation(self.bonds,self.mean_bond_lens,self.cell, self.device)
+                                        
         radii = torch.stack([torch.Tensor(atoms.get_positions()) for atoms in self.raw_atoms])
         self.radii = (radii + torch.normal(torch.zeros_like(radii), self.ic_stddev)).to(self.device)
         self.velocities = torch.Tensor(initialize_velocities(self.n_atoms, self.masses, self.temp, self.n_replicas)).to(self.device)
@@ -283,7 +283,7 @@ class ImplicitMDSimulator():
         self.diff_rdf = vmap(DifferentiableRDF(params, self.device), -1)
         self.diff_vacf = vmap(DifferentiableVACF(params, self.device))
     
-        molecule_for_name = "water" if self.name == 'water' else self.molecule
+        molecule_for_name = self.name if self.name =='water' or self.name == 'lips' else self.molecule
         name = f"IMPLICIT_{self.model_type}_{molecule_for_name}_{params.exp_name}"
         self.save_dir = os.path.join(self.results_dir, name) if self.train else os.path.join(self.results_dir, name, 'inference', self.eval_model)
         os.makedirs(self.save_dir, exist_ok = True)
@@ -408,7 +408,6 @@ class ImplicitMDSimulator():
                 self.atoms_batch = cleanup_atoms_batch(self.atoms_batch)
                 self.atoms_batch['natoms'] = torch.Tensor([self.n_atoms]).repeat(batch_size).to(self.device)
                 self.atoms_batch['atomic_numbers'] = self.atomic_numbers.repeat(batch_size)
-                import pdb; pdb.set_trace()
                 energy, forces = self.model(self.atoms_batch)
                 forces = forces.reshape(-1, self.n_atoms, 3)
             assert(not torch.any(torch.isnan(forces)))
@@ -678,7 +677,7 @@ if __name__ == "__main__":
     integrator_config = INTEGRATOR_CONFIGS[molecule] if name == 'md22' else config['integrator_config']
     timestep = integrator_config["timestep"]
     ttime = integrator_config["ttime"]
-    molecule_for_name = "water" if name == 'water' else molecule
+    molecule_for_name = name if name =='water' or name == 'lips' else molecule
     results_dir = os.path.join(params.results_dir, f"IMPLICIT_{model_type}_{molecule_for_name}_{params.exp_name}") \
                 if params.train else os.path.join(params.results_dir, f"IMPLICIT_{model_type}_{molecule_for_name}_{params.exp_name}", "inference", params.eval_model)
     os.makedirs(results_dir, exist_ok = True)

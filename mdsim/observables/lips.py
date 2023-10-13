@@ -7,6 +7,40 @@ from mdsim.observables.water import get_smoothed_diffusivity
 from tqdm import tqdm
 import itertools
 
+class LiPSRDFMAE(torch.nn.Module):
+    def __init__(self, base_path, gt_rdf, n_atoms, n_replicas, params, device):
+        super(LiPSRDFMAE, self).__init__()
+        self.gt_rdf = gt_rdf
+        self.n_atoms = n_atoms
+        self.n_replicas = n_replicas
+        self.device = device
+        self.params = params
+        self.xlim = params.max_rdf_dist
+        n_bins = int(self.xlim/params.dr)
+        self.bins = np.linspace(1e-6, self.xlim, n_bins + 1) # for computing RDF
+        # get ground truth data
+        atoms = read(os.path.join(base_path, 'lips', 'lips.xyz'), index=':', format='extxyz')
+        n_points = len(atoms)
+        positions, cell, atomic_numbers = [], [], []
+        for i in tqdm(range(n_points)):
+            positions.append(atoms[i].get_positions())
+            cell.append(atoms[i].get_cell())
+            atomic_numbers.append(atoms[i].get_atomic_numbers())
+        positions = torch.from_numpy(np.array(positions))
+        self.cell = torch.from_numpy(np.array(cell)[0])
+
+
+    def forward(self, stacked_radii):
+        maes = []
+        rdf_list = []
+        for i in range(self.n_replicas): #explicit loop since vmap makes some numpy things weird
+            rdf = get_lips_rdf(stacked_radii[:, i], self.cell, self.bins).to(self.device)
+            #compute MAEs of all element-conditioned RDFs
+            maes.append(self.xlim*torch.abs(rdf-self.gt_rdf).mean().unsqueeze(-1))
+            rdf_list.append(rdf)
+        return torch.stack(rdf_list).to(self.device), torch.stack(maes).to(self.device)
+  
+
 def compute_image_flag(cell, fcoord1, fcoord2):
     supercells = torch.FloatTensor(list(itertools.product((-1, 0, 1), repeat=3))).to(cell.device)
     fcoords = fcoord2[:, None] + supercells
@@ -45,6 +79,8 @@ def compute_distance_matrix_batch(cell, cart_coords, num_cells=1):
     # But we want only min
     distance_matrix = dist.min(dim=-1)[0]
     return distance_matrix
+
+    
     
 def get_lips_rdf(data_seq, lattices, bins, device='cpu'):
     data_seq = data_seq.to(device).float()
@@ -64,7 +100,7 @@ def get_lips_rdf(data_seq, lattices, bins, device='cpu'):
     Z_data = rho_data * 4 / 3 * np.pi * (bins[1:] ** 3 - bins[:-1] ** 3)
     rdf = data_hist / Z_data
         
-    return rdf
+    return torch.Tensor(rdf).to(device)
 
 def find_lips_rdfs_diffusivity_from_file(base_path: str, size: str, params, device):
     xlim = params.max_rdf_dist

@@ -23,7 +23,6 @@ class WaterRDFMAE(torch.nn.Module):
         self.n_replicas = n_replicas
         self.device = device
         self.params = params
-        self.diff_rdf = DifferentiableRDF(self.params, self.device)
         self.xlim = params.max_rdf_dist
         n_bins = int(self.xlim/params.dr)
         self.bins = np.linspace(1e-6, self.xlim, n_bins + 1) # for computing RDF

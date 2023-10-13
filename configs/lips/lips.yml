@@ -32,7 +32,7 @@ max_frac_unstable_threshold: 0.75 #decay this?
 min_frac_unstable_threshold: 0.0 #increase this?
 eq_steps: 0
 steps: 2000 # 1 picosecond per epoch
-n_dump: 50
+n_dump: 1
 n_dump_vacf: 2
 n_replicas: 8
 minibatch_size: 40
