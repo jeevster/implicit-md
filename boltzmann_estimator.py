@@ -255,9 +255,13 @@ class BoltzmannEstimator():
             rdf_gradient_estimators = None
             rdf_package = (rdf_gradient_estimators, mean_rdf, self.rdf_loss(mean_rdf).to(self.simulator.device), mean_adf, self.adf_loss(mean_adf).to(self.simulator.device))              
         else:
-            #only keep the unstable replicas
-            mask = ~stable_replicas if self.params.only_train_on_unstable_replicas \
-                    else torch.ones((self.simulator.n_replicas), dtype=torch.bool).to(self.simulator.device)
+            #if focusing on accuracy, always only keep stable replicas for gradient calculation
+            if not self.simulator.all_unstable:
+                mask = stable_replicas
+            #if focusing on stability, option to only keep unstable replicas for gradient calculation
+            else:
+                mask = ~stable_replicas if (self.params.only_train_on_unstable_replicas) \
+                        else torch.ones((self.simulator.n_replicas), dtype=torch.bool).to(self.simulator.device)
             rdfs = rdfs[:, mask].reshape(-1, rdfs.shape[-1])
             adfs = adfs[:, mask].reshape(-1, adfs.shape[-1])
             stacked_radii = stacked_radii[:, mask]

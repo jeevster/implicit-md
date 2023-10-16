@@ -349,7 +349,7 @@ class ImplicitMDSimulator():
         #reset replicas which exceeded the stability criteria
         reset_replicas = self.instability_per_replica > self.stability_tol
         num_unstable_replicas = reset_replicas.count_nonzero().item()
-        if num_resets / self.n_replicas >= self.max_frac_unstable_threshold: #threshold of unstable replicas reached
+        if num_unstable_replicas / self.n_replicas >= self.max_frac_unstable_threshold: #threshold of unstable replicas reached
             if not self.all_unstable:
                 print("Threshold of unstable replicas has been reached... Start Learning")
             self.all_unstable = True
