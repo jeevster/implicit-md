@@ -60,8 +60,6 @@ class Evaluator:
             assert prediction[attr].shape == target[attr].shape
 
         metrics = prev_metrics
-
-        import pdb; pdb.set_trace()
         for fn in self.task_metrics[self.task]:
             res = eval(fn)(prediction, target)
             metrics = self.update(fn, res, metrics)

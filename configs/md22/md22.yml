@@ -37,6 +37,7 @@ n_dump: 50
 n_dump_vacf: 2
 n_replicas: 2
 minibatch_size: 32
+only_learn_if_unstable_threshold_reached: True
 only_train_on_unstable_replicas: False
 allow_off_policy_updates: False
 gradient_clipping: True

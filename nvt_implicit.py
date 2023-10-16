@@ -482,7 +482,7 @@ class ImplicitMDSimulator():
       
     #top level MD simulation code (i.e the "solver") that returns the optimal "parameter" -aka the equilibriated radii
     def solve(self):
-        self.mode = 'learning' if self.all_unstable else 'simulation'
+        self.mode = 'learning' if self.optimizer.param_groups[0]['lr'] > 0 else 'simulation'
         self.running_dists = []
         self.running_vels = []
         self.running_accs = []
@@ -495,7 +495,7 @@ class ImplicitMDSimulator():
         self.original_velocities = self.velocities.clone()
         self.original_zeta = self.zeta.clone()
         #log checkpoint states for resetting
-        if self.mode == 'simulation':
+        if not self.all_unstable:
             self.checkpoint_radii.append(self.original_radii)
             self.checkpoint_velocities.append(self.original_velocities)
             self.checkpoint_zetas.append(self.original_zeta)
@@ -767,15 +767,17 @@ if __name__ == "__main__":
             boltzmann_estimator = BoltzmannEstimator(gt_rdf, gt_vacf, gt_adf, params, device)
             #initialize outer loop optimizer/scheduler
             if params.optimizer == 'Adam':
-                optimizer = torch.optim.Adam(list(simulator.model.parameters()), lr=0)
+                simulator.optimizer = torch.optim.Adam(list(simulator.model.parameters()), \
+                                            0 if params.only_learn_if_unstable_threshold_reached else params.lr)
             elif params.optimizer == 'SGD':
-                optimizer = torch.optim.SGD(list(simulator.model.parameters()), lr=0)
+                simulator.optimizer = torch.optim.SGD(list(simulator.model.parameters()), \
+                                            0 if params.only_learn_if_unstable_threshold_reached else params.lr)
             else:
                 raise RuntimeError("Optimizer must be either Adam or SGD")
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=10)
+            simulator.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(simulator.optimizer, mode='min', factor=0.2, patience=10)
             print(f"Initialize {simulator.n_replicas} random ICs in parallel")
 
-        optimizer.zero_grad()
+        simulator.optimizer.zero_grad()
         simulator.epoch = epoch
         #set starting states based on instability metric
         num_resets = simulator.set_starting_states()
@@ -814,7 +816,7 @@ if __name__ == "__main__":
             grad_cosine_similarity = []
             ratios = []
             for rdf_grads, vacf_grads, energy_grads, force_grads in zip(rdf_grad_batches, vacf_grad_batches, energy_grad_batches, force_grad_batches): #loop through minibatches
-                optimizer.zero_grad()
+                simulator.optimizer.zero_grad()
                 add_lists = lambda list1, list2, w1, w2: tuple([w1*l1 + w2*l2 \
                                                     for l1, l2 in zip(list1, list2)])
                 obs_grads = add_lists(rdf_grads, vacf_grads, params.rdf_loss_weight, params.vacf_loss_weight)
@@ -830,28 +832,30 @@ if __name__ == "__main__":
                 if params.gradient_clipping: #gradient clipping
                     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 if simulator.all_unstable and not changed_lr: #start learning
-                    optimizer.param_groups[0]['lr'] = params.lr
+                    simulator.optimizer.param_groups[0]['lr'] = params.lr
                     changed_lr = True
                     if not params.train:
                         np.save(os.path.join(results_dir, f'replicas_stable_time.npy'), simulator.stable_time.cpu().numpy())
                         simulator.stable_time = torch.zeros((simulator.n_replicas,)).to(simulator.device)
-                if optimizer.param_groups[0]['lr'] > 0:
-                    optimizer.step()
-            scheduler.step(num_resets if name == 'water' else outer_loss)
+                if simulator.optimizer.param_groups[0]['lr'] > 0:
+                    simulator.optimizer.step()
+            simulator.scheduler.step(num_resets if name == 'water' else outer_loss)
             grad_cosine_similarity = sum(grad_cosine_similarity) / len(grad_cosine_similarity)
             ratios = sum(ratios) / len(ratios)
         
-        if simulator.all_unstable and params.train and (optimizer.param_groups[0]['lr'] < min_lr or num_resets <= params.min_frac_unstable_threshold):
+        if simulator.all_unstable and params.train and (simulator.optimizer.param_groups[0]['lr'] < min_lr or num_resets <= params.min_frac_unstable_threshold):
             print(f"Back to data collection")
             simulator.all_unstable = False
             simulator.first_simulation = True
             changed_lr = False
             #reinitialize optimizer and scheduler with LR = 0
             if params.optimizer == 'Adam':
-                optimizer = torch.optim.Adam(list(simulator.model.parameters()), lr=0)
+                simulator.optimizer = torch.optim.Adam(list(simulator.model.parameters()), \
+                                            0 if params.only_learn_if_unstable_threshold_reached else params.lr)
             elif params.optimizer == 'SGD':
-                optimizer = torch.optim.SGD(list(simulator.model.parameters()), lr=0)
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=10)
+                simulator.optimizer = torch.optim.SGD(list(simulator.model.parameters()), \
+                                            0 if params.only_learn_if_unstable_threshold_reached else params.lr)
+            simulator.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(simulator.optimizer, mode='min', factor=0.2, patience=10)
 
                     
         end = time.time()
@@ -893,9 +897,9 @@ if __name__ == "__main__":
         vacf_losses.append(vacf_loss.item())
         mean_instabilities.append(equilibriated_simulator.mean_instability)
         resets.append(num_resets)
-        lrs.append(optimizer.param_groups[0]['lr'])
+        lrs.append(simulator.optimizer.param_groups[0]['lr'])
         #energy/force error
-        if epoch == 0 or simulator.all_unstable: #don't compute it unless we are in the learning phase
+        if epoch == 0 or simulator.optimizer.param_groups[0]['lr'] > 0: #don't compute it unless we are in the learning phase
             energy_rmse, force_rmse = simulator.energy_force_error(params.n_replicas)
             energy_rmses.append(energy_rmse)
             force_rmses.append(force_rmse)

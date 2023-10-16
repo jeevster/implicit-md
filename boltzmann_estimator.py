@@ -77,7 +77,7 @@ class BoltzmannEstimator():
         diff_adf = DifferentiableADF(self.simulator.n_atoms, self.simulator.bonds, self.simulator.cell, self.params, self.simulator.device)
         diff_vacf = DifferentiableVACF(self.params, self.simulator.device)
         
-        running_radii = self.simulator.running_radii if self.simulator.all_unstable else self.simulator.running_radii[0:2]
+        running_radii = self.simulator.running_radii if self.simulator.optimizer.param_groups[0]['lr'] > 0 else self.simulator.running_radii[0:2]
         
         model = simulator.model
         #find which replicas are unstable
@@ -100,13 +100,13 @@ class BoltzmannEstimator():
         mean_vacf_loss = self.vacf_loss(mean_vacf)   
 
         #energy/force loss
-        if (self.simulator.energy_loss_weight != 0 or self.simulator.force_loss_weight!=0) and self.simulator.train and self.simulator.all_unstable:
+        if (self.simulator.energy_loss_weight != 0 or self.simulator.force_loss_weight!=0) and self.simulator.train and simulator.optimizer.param_groups[0]['lr'] > 0:
             energy_grads, force_grads = self.simulator.energy_force_gradient(batch_size = self.simulator.n_replicas)
             energy_force_package = ([energy_grads], [force_grads])
         else:
             energy_force_package = (None, None)
 
-        if self.simulator.vacf_loss_weight !=0 and self.simulator.train and self.simulator.all_unstable:
+        if self.simulator.vacf_loss_weight !=0 and self.simulator.train and simulator.optimizer.param_groups[0]['lr'] > 0:
             radii_traj = radii_traj.permute(1,0,2,3)
             accel_traj = torch.stack(simulator.running_accs).permute(1,0,2,3)
             noise_traj = torch.stack(simulator.running_noise).permute(1,0,2,3)
@@ -124,7 +124,7 @@ class BoltzmannEstimator():
             del self.simulator.running_vels
             
         
-        if self.params.vacf_loss_weight == 0 or not self.simulator.train or not self.simulator.all_unstable:
+        if self.params.vacf_loss_weight == 0 or not self.simulator.train or simulator.optimizer.param_groups[0]['lr'] == 0:
             vacf_gradient_estimators = None
             vacf_package = (vacf_gradient_estimators, mean_vacf, self.vacf_loss(mean_vacf).to(self.simulator.device))
         else:
@@ -251,7 +251,7 @@ class BoltzmannEstimator():
         mean_rdf_loss = self.rdf_loss(mean_rdf)
         mean_adf_loss = self.adf_loss(mean_adf)
         
-        if self.params.rdf_loss_weight ==0 or not self.simulator.train or not self.simulator.all_unstable:
+        if self.params.rdf_loss_weight ==0 or not self.simulator.train or simulator.optimizer.param_groups[0]['lr'] == 0:
             rdf_gradient_estimators = None
             rdf_package = (rdf_gradient_estimators, mean_rdf, self.rdf_loss(mean_rdf).to(self.simulator.device), mean_adf, self.adf_loss(mean_adf).to(self.simulator.device))              
         else:
