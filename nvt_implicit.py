@@ -557,8 +557,9 @@ class ImplicitMDSimulator():
         checkpoint_path = os.path.join(self.save_dir, name)
         if self.model_type == "nequip":
             with atomic_write(checkpoint_path, blocking=True, binary=True) as write_to:
-                torch.save(self.model.state_dict(), write_to)
-            test = torch.load(checkpoint_path, map_location=self.device) #confirm we can load the checkpoint
+                #torch.save(self.model.state_dict(), write_to)
+                torch.save(self.model, write_to)
+            #test = torch.load(checkpoint_path, map_location=self.device) #confirm we can load the checkpoint
         else:
             torch.save({'model_state': self.model.state_dict(), 'config': self.model_config}, checkpoint_path)
         
@@ -658,18 +659,21 @@ if __name__ == "__main__":
         RuntimeError("Invalid eval model choice")
     
     if model_type == "nequip":
-        ckpt_epoch = config['checkpoint_epoch']
-        cname = 'best_ckpt.pth' if ckpt_epoch == -1 else f"ckpt{ckpt_epoch}.pth"
-        print(f'Loading model weights from {os.path.join(pretrained_model_path, cname)}')
         if config['eval_model'] == 'post' and not params.train:
             #get config from pretrained directory
+            cname = 'ckpt.pth'
+            print(f'Loading model weights from {os.path.join(pretrained_model_path, cname)}')
             pre_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{size}_{lmax_string}{model_type}")
             _, model_config = Trainer.load_model_from_training_session(pre_path, \
-                                    model_name = cname, device =  torch.device(device))
+                                    model_name = 'best_ckpt.pth', device =  torch.device(device))
             #get model from finetuned directory
-            model, _ = Trainer.load_model_from_training_session(pretrained_model_path, \
-                                    config_dictionary=model_config, model_name = cname, device =  torch.device(device))
+            # model, _ = Trainer.load_model_from_training_session(pretrained_model_path, \
+            #                         config_dictionary=model_config, model_name = cname, device =  torch.device(device))
+            model = torch.load(os.path.join(pretrained_model_path, cname), map_location = torch.device(device))
         else:
+            ckpt_epoch = config['checkpoint_epoch']
+            cname = 'best_ckpt.pth' if ckpt_epoch == -1 else f"ckpt{ckpt_epoch}.pth"
+            print(f'Loading model weights from {os.path.join(pretrained_model_path, cname)}')
             model, model_config = Trainer.load_model_from_training_session(pretrained_model_path, \
                                     model_name = cname, device =  torch.device(device))
     else:
@@ -831,7 +835,7 @@ if __name__ == "__main__":
                         simulator.stable_time = torch.zeros((simulator.n_replicas,)).to(simulator.device)
                 if optimizer.param_groups[0]['lr'] > 0:
                     optimizer.step()
-            scheduler.step(num_resets) #adjust LR according to observable loss on stable replicas
+            scheduler.step(num_resets if name == 'water' else outer_loss)
             grad_cosine_similarity = sum(grad_cosine_similarity) / len(grad_cosine_similarity)
             ratios = sum(ratios) / len(ratios)
         
@@ -893,8 +897,6 @@ if __name__ == "__main__":
             energy_rmse, force_rmse = simulator.energy_force_error(params.n_replicas)
             energy_rmses.append(energy_rmse)
             force_rmses.append(force_rmse)
-            # energy_rmses.append(0)
-            # force_rmses.append(0)
         sim_times.append(sim_time)
         try:
             grad_norms.append(max_norm.item())
