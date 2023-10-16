@@ -348,7 +348,7 @@ class ImplicitMDSimulator():
     def set_starting_states(self):
         #reset replicas which exceeded the stability criteria
         reset_replicas = self.instability_per_replica > self.stability_tol
-        num_resets = reset_replicas.count_nonzero().item()
+        num_unstable_replicas = reset_replicas.count_nonzero().item()
         if num_resets / self.n_replicas >= self.max_frac_unstable_threshold: #threshold of unstable replicas reached
             if not self.all_unstable:
                 print("Threshold of unstable replicas has been reached... Start Learning")
@@ -382,7 +382,7 @@ class ImplicitMDSimulator():
             if not self.train:
                 self.stable_time = torch.where(reset_replicas, self.stable_time, self.stable_time + self.ps_per_epoch)
         self.first_simulation = False
-        return num_resets / self.n_replicas
+        return num_unstable_replicas / self.n_replicas
 
 
     def force_calc(self, radii, retain_grad = False):
@@ -780,7 +780,7 @@ if __name__ == "__main__":
         simulator.optimizer.zero_grad()
         simulator.epoch = epoch
         #set starting states based on instability metric
-        num_resets = simulator.set_starting_states()
+        num_unstable_replicas = simulator.set_starting_states()
 
         start = time.time()
         #run simulation 
@@ -839,11 +839,12 @@ if __name__ == "__main__":
                         simulator.stable_time = torch.zeros((simulator.n_replicas,)).to(simulator.device)
                 if simulator.optimizer.param_groups[0]['lr'] > 0:
                     simulator.optimizer.step()
-            simulator.scheduler.step(num_resets if name == 'water' else outer_loss)
+            #If we are focusing on accuracy, step based on observable loss. If we are focusing on stability, step based on number of unstable replicas
+            simulator.scheduler.step(num_unstable_replicas if simulator.all_unstable else outer_loss)
             grad_cosine_similarity = sum(grad_cosine_similarity) / len(grad_cosine_similarity)
             ratios = sum(ratios) / len(ratios)
         
-        if simulator.all_unstable and params.train and (simulator.optimizer.param_groups[0]['lr'] < min_lr or num_resets <= params.min_frac_unstable_threshold):
+        if simulator.all_unstable and params.train and (simulator.optimizer.param_groups[0]['lr'] < min_lr or num_unstable_replicas <= params.min_frac_unstable_threshold):
             print(f"Back to data collection")
             simulator.all_unstable = False
             simulator.first_simulation = True
@@ -896,7 +897,7 @@ if __name__ == "__main__":
         adf_losses.append(adf_loss.item())
         vacf_losses.append(vacf_loss.item())
         mean_instabilities.append(equilibriated_simulator.mean_instability)
-        resets.append(num_resets)
+        resets.append(num_unstable_replicas)
         lrs.append(simulator.optimizer.param_groups[0]['lr'])
         #energy/force error
         if epoch == 0 or simulator.optimizer.param_groups[0]['lr'] > 0: #don't compute it unless we are in the learning phase
