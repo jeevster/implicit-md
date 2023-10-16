@@ -309,7 +309,7 @@ class ImplicitMDSimulator():
             
             energies = torch.cat(energies)
             forces = torch.cat(forces)
-            prediction = {'energy': self.normalizer_train.denorm(energies), 'forces': forces.reshape(-1, 3), 'natoms': torch.Tensor([self.n_atoms]).repeat(energies.shape[0]).to(self.device)}
+            prediction = {'energy': self.normalizer_train.denorm(energies) if not self.model_type=='nequip' else energies, 'forces': forces.reshape(-1, 3), 'natoms': torch.Tensor([self.n_atoms]).repeat(energies.shape[0]).to(self.device)}
             metrics = self.evaluator.eval(prediction, self.target_test)
             metrics = {k: v['metric'] for k, v in metrics.items()}
             return metrics['energy_rmse'], metrics['forces_rmse']
@@ -328,7 +328,9 @@ class ImplicitMDSimulator():
                 end = batch_size*(i+1)
                 energy, force = self.force_calc(self.gt_traj_train[start:end], retain_grad = True)
                 #compute losses
-                energy_loss = self.energy_loss(self.normalizer_train.norm(self.gt_energies_train[start:end]), energy).mean()
+                gt_energy = self.gt_energies_train[start:end] if self.model_type == "nequip" \
+                                else self.normalizer_train.norm(self.gt_energies_train[start:end])
+                energy_loss = self.energy_loss(gt_energy, energy).mean()
                 force_loss = self.force_loss(self.gt_forces_train[start:end].reshape(-1, 3), force.reshape(-1, 3)).mean() 
                 energy_gradients.append(process_gradient(self.model.parameters(), torch.autograd.grad(energy_loss, self.model.parameters(), allow_unused = True, retain_graph = True), self.device))
                 force_gradients.append(process_gradient(self.model.parameters(), torch.autograd.grad(force_loss, self.model.parameters(), allow_unused = True), self.device))
