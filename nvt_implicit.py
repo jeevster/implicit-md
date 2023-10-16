@@ -858,7 +858,6 @@ if __name__ == "__main__":
                                             0 if params.only_learn_if_unstable_threshold_reached else params.lr)
             simulator.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(simulator.optimizer, mode='min', factor=0.2, patience=10)
 
-                    
         end = time.time()
         sim_time = end - start
         

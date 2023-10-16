@@ -48,7 +48,7 @@ class BoltzmannEstimator():
     def om_action(self, vel_traj, radii_traj):
         v_tp1 = vel_traj[:, :, 1:]
         v_t = vel_traj[:, :, :-1]
-        f_tp1 = self.simulator.force_calc(radii_traj[:, :, 1:].reshape(-1, self.simulator.n_atoms, 3), retain_grad = True).reshape(v_t.shape)
+        f_tp1 = self.simulator.force_calc(radii_traj[:, :, 1:].reshape(-1, self.simulator.n_atoms, 3), retain_grad = True)[1].reshape(v_t.shape)
         a_tp1 = f_tp1/self.simulator.masses.unsqueeze(1).unsqueeze(1)
         diff = (v_tp1 - v_t - a_tp1*self.simulator.dt + self.simulator.gamma*v_t*self.simulator.dt)
         #pre-divide by auxiliary temperature (noise_f**2)
@@ -82,6 +82,13 @@ class BoltzmannEstimator():
         model = simulator.model
         #find which replicas are unstable
         stable_replicas = self.simulator.instability_per_replica <= self.simulator.stability_tol
+        #if focusing on accuracy, always only keep stable replicas for gradient calculation
+        if not self.simulator.all_unstable:
+            mask = stable_replicas
+        #if focusing on stability, option to only keep unstable replicas for gradient calculation
+        else:
+            mask = ~stable_replicas if (self.params.only_train_on_unstable_replicas) \
+                    else torch.ones((self.simulator.n_replicas), dtype=torch.bool).to(self.simulator.device)
         #store original shapes of model parameters
         original_numel = [param.data.numel() for param in model.parameters()]
         original_shapes = [param.data.shape for param in model.parameters()]
@@ -96,7 +103,6 @@ class BoltzmannEstimator():
         velocities_traj = velocities_traj[:, ::self.simulator.n_dump_vacf] #sample i.i.d paths
         vacfs = vmap(vmap(diff_vacf))(velocities_traj)
         mean_vacf = vacfs[stable_replicas].mean(dim = (0,1)) #only compute loss on stable replicas
-        vacfs = vacfs.reshape(-1, self.simulator.vacf_window)
         mean_vacf_loss = self.vacf_loss(mean_vacf)   
 
         #energy/force loss
@@ -105,8 +111,12 @@ class BoltzmannEstimator():
             energy_force_package = ([energy_grads], [force_grads])
         else:
             energy_force_package = (None, None)
-
-        if self.simulator.vacf_loss_weight !=0 and self.simulator.train and simulator.optimizer.param_groups[0]['lr'] > 0:
+        
+        #VACF stuff
+        if self.params.vacf_loss_weight == 0 or not self.simulator.train or simulator.optimizer.param_groups[0]['lr'] == 0:
+            vacf_gradient_estimators = None
+            vacf_package = (vacf_gradient_estimators, mean_vacf, self.vacf_loss(mean_vacf).to(self.simulator.device))
+        else:
             radii_traj = radii_traj.permute(1,0,2,3)
             accel_traj = torch.stack(simulator.running_accs).permute(1,0,2,3)
             noise_traj = torch.stack(simulator.running_noise).permute(1,0,2,3)
@@ -115,20 +125,14 @@ class BoltzmannEstimator():
             radii_traj = radii_traj[:, ::self.simulator.n_dump_vacf] #sample i.i.d paths
             noise_traj = noise_traj.reshape(noise_traj.shape[0], -1, self.simulator.vacf_window, self.simulator.n_atoms, 3)
             noise_traj = noise_traj[:, ::self.simulator.n_dump_vacf] #sample i.i.d paths
-        else:
-            del radii_traj
-            del velocities_traj
-            del self.simulator.running_radii
-            del self.simulator.running_accs
-            del self.simulator.running_noise
-            del self.simulator.running_vels
             
-        
-        if self.params.vacf_loss_weight == 0 or not self.simulator.train or simulator.optimizer.param_groups[0]['lr'] == 0:
-            vacf_gradient_estimators = None
-            vacf_package = (vacf_gradient_estimators, mean_vacf, self.vacf_loss(mean_vacf).to(self.simulator.device))
-        else:
-            vacf_loss_tensor = vmap(vmap(self.vacf_loss))(vacfs).reshape(-1, 1, 1)
+            vacfs = vacfs[mask].reshape(-1, self.simulator.vacf_window)
+            radii_traj = radii_traj[mask]
+            velocities_traj = velocities_traj[mask]
+            accel_traj = accel_traj[mask]
+            noise_traj = noise_traj[mask]
+
+            vacf_loss_tensor = vmap(self.vacf_loss)(vacfs).reshape(-1, 1, 1)
             #compute OM action - do it in mini-batches to avoid OOM issues
             batch_size = 5
             print(f"Calculate gradients of Onsager-Machlup action of {velocities_traj.shape[0] * velocities_traj.shape[1]} paths in minibatches of size {batch_size*velocities_traj.shape[1]}")
@@ -137,7 +141,6 @@ class BoltzmannEstimator():
             om_acts = []
             grads = []
             quick_grads = []
-            
             with torch.enable_grad():
                 velocities_traj = velocities_traj.detach().requires_grad_(True)
                 radii_traj = radii_traj.detach().requires_grad_(True)
@@ -170,7 +173,7 @@ class BoltzmannEstimator():
                     #grad = [[self.simulator.process_gradient(g) for g in get_grads(v)] for v in I_N]
                     #this explicit loop is very slow though (10 seconds per iteration)
                     #OM-action method
-                    grad = [process_gradient(torch.autograd.grad(o, model.parameters(), create_graph = False, retain_graph = True, allow_unused = True), self.simulator.device) for o in om_act.flatten()]
+                    grad = [process_gradient(model.parameters(), torch.autograd.grad(o, model.parameters(), create_graph = False, retain_graph = True, allow_unused = True), self.simulator.device) for o in om_act.flatten()]
                     
                     om_act = om_act.detach()
                     diffs.append(diff)
@@ -180,6 +183,7 @@ class BoltzmannEstimator():
             #recombine batches
             diff = torch.cat(diffs)
             om_act = torch.cat(om_acts)
+            import pdb; pdb.set_trace()
             grads = sum(grads, [])
             #log OM stats
             np.save(os.path.join(self.simulator.save_dir, f'om_diffs_epoch{self.simulator.epoch}'), diff.flatten().cpu().numpy())
@@ -204,8 +208,7 @@ class BoltzmannEstimator():
             start_time = time.time()
             vacf_gradient_estimators = []
             raw_grads = []
-            print(f"Computing VACF gradients from {vacf_grads_flattened.shape[0]} trajectories in minibatches of size {vacf_minibatch_size}")
-            for i in tqdm(range(num_blocks)):
+            for i in range(num_blocks):
                 start = vacf_minibatch_size*i
                 end = vacf_minibatch_size*(i+1)
                 vacf_grads_batch = vacf_grads_flattened[start:end]
@@ -255,13 +258,6 @@ class BoltzmannEstimator():
             rdf_gradient_estimators = None
             rdf_package = (rdf_gradient_estimators, mean_rdf, self.rdf_loss(mean_rdf).to(self.simulator.device), mean_adf, self.adf_loss(mean_adf).to(self.simulator.device))              
         else:
-            #if focusing on accuracy, always only keep stable replicas for gradient calculation
-            if not self.simulator.all_unstable:
-                mask = stable_replicas
-            #if focusing on stability, option to only keep unstable replicas for gradient calculation
-            else:
-                mask = ~stable_replicas if (self.params.only_train_on_unstable_replicas) \
-                        else torch.ones((self.simulator.n_replicas), dtype=torch.bool).to(self.simulator.device)
             rdfs = rdfs[:, mask].reshape(-1, rdfs.shape[-1])
             adfs = adfs[:, mask].reshape(-1, adfs.shape[-1])
             stacked_radii = stacked_radii[:, mask]

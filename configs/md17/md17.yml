@@ -14,15 +14,15 @@ dr: 0.02
 max_rdf_dist: 10
 dv: 0.1
 angle_range: [0, 180]
-exp_name: "TEST_original"
-integrator: NoseHoover
+exp_name: "TEST_vacf"
+integrator: Langevin
 integrator_config: {"timestep": 0.5, "temperature": 500., "ttime": 20., "gamma": 0.1}
 train: True
 eval_model: post
 diffusion_loss_weight: 0
 rdf_loss_weight: 1
 adf_loss_weight: 0
-vacf_loss_weight: 0
+vacf_loss_weight: 1
 energy_loss_weight: 0.05
 force_loss_weight: 0.95
 diffusion_window: 1000
@@ -34,10 +34,10 @@ min_frac_unstable_threshold: 0.0 #increase this?
 eq_steps: 0
 steps: 2000 # 1 picosecond per epoch
 n_dump: 50
-n_dump_vacf: 2
+n_dump_vacf: 1
 n_replicas: 128
 minibatch_size: 40
-only_learn_if_unstable_threshold_reached: True
+only_learn_if_unstable_threshold_reached: False
 only_train_on_unstable_replicas: False
 allow_off_policy_updates: False
 gradient_clipping: True
