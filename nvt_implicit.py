@@ -351,6 +351,7 @@ class ImplicitMDSimulator():
         num_unstable_replicas = reset_replicas.count_nonzero().item()
         if num_unstable_replicas / self.n_replicas >= self.max_frac_unstable_threshold: #threshold of unstable replicas reached
             if not self.all_unstable:
+                import pdb; pdb.set_trace()
                 print("Threshold of unstable replicas has been reached... Start Learning")
             self.all_unstable = True
         
@@ -782,6 +783,16 @@ if __name__ == "__main__":
         #set starting states based on instability metric
         num_unstable_replicas = simulator.set_starting_states()
 
+        #start learning with focus on instability
+        if simulator.all_unstable and not changed_lr: 
+            simulator.optimizer.param_groups[0]['lr'] = params.lr
+            #reset scheduler
+            simulator.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(simulator.optimizer, mode='min', factor=0.2, patience=10)
+            changed_lr = True
+            if not params.train:
+                np.save(os.path.join(results_dir, f'replicas_stable_time.npy'), simulator.stable_time.cpu().numpy())
+                simulator.stable_time = torch.zeros((simulator.n_replicas,)).to(simulator.device)
+
         start = time.time()
         #run simulation 
         print('Collect MD Simulation Data')
@@ -831,14 +842,8 @@ if __name__ == "__main__":
                     
                 if params.gradient_clipping: #gradient clipping
                     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                if simulator.all_unstable and not changed_lr: #start learning
-                    simulator.optimizer.param_groups[0]['lr'] = params.lr
-                    changed_lr = True
-                    if not params.train:
-                        np.save(os.path.join(results_dir, f'replicas_stable_time.npy'), simulator.stable_time.cpu().numpy())
-                        simulator.stable_time = torch.zeros((simulator.n_replicas,)).to(simulator.device)
-                if simulator.optimizer.param_groups[0]['lr'] > 0:
-                    simulator.optimizer.step()
+                
+                simulator.optimizer.step()
             #If we are focusing on accuracy, step based on observable loss. If we are focusing on stability, step based on number of unstable replicas
             simulator.scheduler.step(num_unstable_replicas if simulator.all_unstable else outer_loss)
             grad_cosine_similarity = sum(grad_cosine_similarity) / len(grad_cosine_similarity)

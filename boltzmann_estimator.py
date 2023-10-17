@@ -46,6 +46,7 @@ class BoltzmannEstimator():
     #define Onsager-Machlup Action ("energy" of each trajectory)
     #TODO: make this a torch.nn.Module in observable.py
     def om_action(self, vel_traj, radii_traj):
+        #expects vel_traj and radii_traj to be of shape T X N X 3
         v_tp1 = vel_traj[:, :, 1:]
         v_t = vel_traj[:, :, :-1]
         f_tp1 = self.simulator.force_calc(radii_traj[:, :, 1:].reshape(-1, self.simulator.n_atoms, 3), retain_grad = True)[1].reshape(v_t.shape)
@@ -134,7 +135,7 @@ class BoltzmannEstimator():
 
             vacf_loss_tensor = vmap(self.vacf_loss)(vacfs).reshape(-1, 1, 1)
             #compute OM action - do it in mini-batches to avoid OOM issues
-            batch_size = 5
+            batch_size = 1
             print(f"Calculate gradients of Onsager-Machlup action of {velocities_traj.shape[0] * velocities_traj.shape[1]} paths in minibatches of size {batch_size*velocities_traj.shape[1]}")
             num_blocks = math.ceil(velocities_traj.shape[0]/ batch_size)
             diffs = []
