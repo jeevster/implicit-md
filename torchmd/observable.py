@@ -218,4 +218,22 @@ class DiffusionCoefficient(torch.nn.Module):
         #Einstein relation
         return 1/6 * theta[0]
 
+class SelfIntermediateScattering(torch.nn.Module):
+    # Note: k_mag should be the bin of the first RDF peak
+    def __init__(self, k_mag, device, n_vectors=30):
+        super(SelfIntermediateScattering, self).__init__()
+        self.device = device
+        self.k_mag = k_mag
+        # Generate random unit vectors
+        random_vectors = torch.randn(n_vectors, 3, device=device)
+        # Normalize the vectors to have unit length, then scale by k_mag
+        self.k_vectors = (random_vectors / torch.norm(random_vectors, dim=1, keepdim=True)) * k_mag
+    def forward(self, trajectory):
+        # Dimensions: timestep x replica x n_atoms x 3
+        trajectory = trajectory.to(self.device)
+        dr = trajectory - trajectory[0, :, :, :].unsqueeze(0)
+        dr_dot_k = torch.sum(dr[:, : , : , None, :] *  self.k_vectors[None, None, None, :, :], dim = -1)
+        exponential_term = torch.exp(1j * dr_dot_k).real
+        return torch.mean(exponential_term, dim=(1,2,3))
+
 

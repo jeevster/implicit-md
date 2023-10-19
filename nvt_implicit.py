@@ -90,6 +90,7 @@ class ImplicitMDSimulator():
         self.vacf_window = config["vacf_window"]
         self.optimizer = config["optimizer"]
         self.use_mse_gradient = config["use_mse_gradient"]
+        self.adjoint = config["adjoint"]
         #set stability criterion
         self.stability_tol = config["rdf_mae_tol"] if self.pbc else config["bond_dev_tol"]
         
@@ -351,7 +352,6 @@ class ImplicitMDSimulator():
         num_unstable_replicas = reset_replicas.count_nonzero().item()
         if num_unstable_replicas / self.n_replicas >= self.max_frac_unstable_threshold: #threshold of unstable replicas reached
             if not self.all_unstable:
-                import pdb; pdb.set_trace()
                 print("Threshold of unstable replicas has been reached... Start Learning")
             self.all_unstable = True
         
@@ -904,7 +904,7 @@ if __name__ == "__main__":
         resets.append(num_unstable_replicas)
         lrs.append(simulator.optimizer.param_groups[0]['lr'])
         #energy/force error
-        if epoch == 0 or simulator.optimizer.param_groups[0]['lr'] > 0: #don't compute it unless we are in the learning phase
+        if epoch == 0 or (simulator.optimizer.param_groups[0]['lr'] > 0 and params.train): #don't compute it unless we are in the learning phase
             energy_rmse, force_rmse = simulator.energy_force_error(params.n_replicas)
             energy_rmses.append(energy_rmse)
             force_rmses.append(force_rmse)

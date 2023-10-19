@@ -21,6 +21,7 @@ from nequip.data import AtomicData, AtomicDataDict
 from mdsim.common.utils import setup_imports, setup_logging, compute_bond_lengths, data_to_atoms, atoms_to_batch, atoms_to_state_dict, convert_atomic_numbers_to_types, process_gradient, compare_gradients, initialize_velocities, dump_params_to_yml
 from mdsim.observables.md17_22 import radii_to_dists, distance_pbc
 from mdsim.observables.water import WaterRDFMAE, find_water_rdfs_diffusivity_from_file
+from adjoints import get_adjoints, get_model_grads
 
 #TODO: have separate functions for 
 
@@ -69,7 +70,6 @@ class BoltzmannEstimator():
 
     def compute(self, simulator):
         self.simulator = simulator
-
         if self.simulator.vacf_loss_weight !=0 and self.simulator.integrator != "Langevin":
             raise RuntimeError("Must use stochastic (Langevin) dynamics for VACF training")
         
@@ -105,7 +105,7 @@ class BoltzmannEstimator():
         vacfs = vmap(vmap(diff_vacf))(velocities_traj)
         mean_vacf = vacfs[stable_replicas].mean(dim = (0,1)) #only compute loss on stable replicas
         mean_vacf_loss = self.vacf_loss(mean_vacf)   
-
+        
         #energy/force loss
         if (self.simulator.energy_loss_weight != 0 or self.simulator.force_loss_weight!=0) and self.simulator.train and simulator.optimizer.param_groups[0]['lr'] > 0:
             energy_grads, force_grads = self.simulator.energy_force_gradient(batch_size = self.simulator.n_replicas)
@@ -118,124 +118,120 @@ class BoltzmannEstimator():
             vacf_gradient_estimators = None
             vacf_package = (vacf_gradient_estimators, mean_vacf, self.vacf_loss(mean_vacf).to(self.simulator.device))
         else:
-            radii_traj = radii_traj.permute(1,0,2,3)
-            accel_traj = torch.stack(simulator.running_accs).permute(1,0,2,3)
-            noise_traj = torch.stack(simulator.running_noise).permute(1,0,2,3)
-            #split into sub-trajectories of length = vacf_window
-            radii_traj = radii_traj.reshape(radii_traj.shape[0], -1, self.simulator.vacf_window,self.simulator.n_atoms, 3)
-            radii_traj = radii_traj[:, ::self.simulator.n_dump_vacf] #sample i.i.d paths
-            noise_traj = noise_traj.reshape(noise_traj.shape[0], -1, self.simulator.vacf_window, self.simulator.n_atoms, 3)
-            noise_traj = noise_traj[:, ::self.simulator.n_dump_vacf] #sample i.i.d paths
-            
-            vacfs = vacfs[mask].reshape(-1, self.simulator.vacf_window)
-            radii_traj = radii_traj[mask]
-            velocities_traj = velocities_traj[mask]
-            accel_traj = accel_traj[mask]
-            noise_traj = noise_traj[mask]
-
-            vacf_loss_tensor = vmap(self.vacf_loss)(vacfs).reshape(-1, 1, 1)
-            #compute OM action - do it in mini-batches to avoid OOM issues
-            batch_size = 1
-            print(f"Calculate gradients of Onsager-Machlup action of {velocities_traj.shape[0] * velocities_traj.shape[1]} paths in minibatches of size {batch_size*velocities_traj.shape[1]}")
-            num_blocks = math.ceil(velocities_traj.shape[0]/ batch_size)
-            diffs = []
-            om_acts = []
-            grads = []
-            quick_grads = []
-            with torch.enable_grad():
-                velocities_traj = velocities_traj.detach().requires_grad_(True)
-                radii_traj = radii_traj.detach().requires_grad_(True)
-                for i in tqdm(range(num_blocks)):
-                    start = batch_size*i
-                    end = batch_size*(i+1)
-                    velocities = velocities_traj[start:end]
-                    radii = radii_traj[start:end]
-                    diff, om_act = self.om_action(velocities, radii)
-                    #noises = noise_traj[start:end].reshape(-1, self.simulator.vacf_window, self.simulator.n_atoms, 3)
-                    # with torch.enable_grad():
-                    #     forces = self.simulator.force_calc(radii.reshape(-1, self.simulator.n_atoms, 3), retain_grad=True).reshape(-1, self.simulator.vacf_window, self.simulator.n_atoms, 3)
-                    
-                    #make sure the diffs match the stored noises along the trajectory
-                    #assert(torch.allclose(diff, noise_traj[start:end, :, 1:], atol = 1e-3))
-                    
-                    #doesn't work because vmap detaches the force tensor before doing the vectorization
-                    def get_grads(forces_, noises_):
-                        return torch.autograd.grad(-1*forces_, list(model.parameters()), noises_, allow_unused = True)
-                    
-                    #loop over samples
-                    #VJP between df/dtheta and noise - thought this method would be faster but it's the same
-                    #verified that gradients match the OM action way
-                    # for i in tqdm(range(forces.shape[0])):
-                    #     grad = [self.simulator.process_gradient(g) for g in torch.autograd.grad(-1*forces[i], list(model.parameters()), 2*self.simulator.dt/self.simulator.masses* self.simulator.noise_f * noises[i], retain_graph = True, allow_unused = True)]
-                    #     quick_grads.append(grad)
-                    # I_N = torch.eye(om_act.flatten().shape[0]).to(self.simulator.device)
-                    #the vmap leads to a seg fault for some reason
-                    #grad = get_grads_vmaped(I_N)
-                    #grad = [[self.simulator.process_gradient(g) for g in get_grads(v)] for v in I_N]
-                    #this explicit loop is very slow though (10 seconds per iteration)
-                    #OM-action method
-                    grad = [process_gradient(model.parameters(), torch.autograd.grad(o, model.parameters(), create_graph = False, retain_graph = True, allow_unused = True), self.simulator.device) for o in om_act.flatten()]
-                    
-                    om_act = om_act.detach()
-                    diffs.append(diff)
-                    om_acts.append(om_act)
-                    grads.append(grad)
-
-            #recombine batches
-            diff = torch.cat(diffs)
-            om_act = torch.cat(om_acts)
-            import pdb; pdb.set_trace()
-            grads = sum(grads, [])
-            #log OM stats
-            np.save(os.path.join(self.simulator.save_dir, f'om_diffs_epoch{self.simulator.epoch}'), diff.flatten().cpu().numpy())
-            np.save(os.path.join(self.simulator.save_dir, f'om_action_epoch{self.simulator.epoch}'), om_act.detach().flatten().cpu().numpy())
-                
-            #flatten out the grads
-            num_params = len(list(model.parameters()))
-            num_samples = len(grads)
-
-            vacf_grads_flattened = torch.stack([torch.cat([grads[i][j].flatten().detach() for j in range(num_params)]) for i in range(num_samples)])
-            if self.simulator.shuffle:   
-                shuffle_idx = torch.randperm(vacf_grads_flattened.shape[0])
-                vacf_grads_flattened = vacf_grads_flattened[shuffle_idx]
-                vacf_loss_tensor = vacf_loss_tensor[shuffle_idx]
-                vacfs = vacfs[shuffle_idx]
-                
-            #now calculate Fabian estimator
-            #scale VACF minibatch size to have a similar number of gradient updates as RDF
-            #vacf_minibatch_size = math.ceil(MINIBATCH_SIZE / self.simulator.vacf_window * self.simulator.n_dump)
-            vacf_minibatch_size = MINIBATCH_SIZE
-            num_blocks = math.ceil(vacf_grads_flattened.shape[0]/ vacf_minibatch_size)
-            start_time = time.time()
             vacf_gradient_estimators = []
-            raw_grads = []
-            for i in range(num_blocks):
-                start = vacf_minibatch_size*i
-                end = vacf_minibatch_size*(i+1)
-                vacf_grads_batch = vacf_grads_flattened[start:end]
-                if self.simulator.use_mse_gradient:
-                    #compute VJP with MSE gradient
-                    vacf_batch = vacfs[start:end]
-                    gradient_estimator = (vacf_grads_batch.mean(0).unsqueeze(0)*vacf_batch.mean(0).unsqueeze(-1) - vacf_grads_batch.unsqueeze(1) * vacf_batch.unsqueeze(-1)).mean(dim=0)
-                    grad_outputs = 2*(vacf_batch.mean(0) - self.gt_vacf).unsqueeze(0) #MSE gradient
-                    final_vjp = torch.mm(grad_outputs, gradient_estimator)[0]
-                else:
-                    #use loss directly
-                    vacf_loss_batch = vacf_loss_tensor[start:end].squeeze(-1)
-                    final_vjp = vacf_grads_batch.mean(0)*vacf_loss_batch.mean(0) \
-                                        - (vacf_grads_batch*vacf_loss_batch).mean(dim=0)
-
-                if not self.simulator.allow_off_policy_updates:
-                    raw_grads.append(final_vjp)
-                else:
-                    #re-assemble flattened gradients into correct shape
-                    gradient_estimator = tuple([g.reshape(shape) for g, shape in zip(final_vjp.split(original_numel), original_shapes)])
+            if self.params.adjoint:
+                with torch.enable_grad():
+                    #reshape into independent paths
+                    short_vel_traj = torch.stack(simulator.running_vels).permute(1,0,2,3)[stable_replicas].reshape(-1, self.simulator.vacf_window, self.simulator.n_atoms, 3)[::self.simulator.n_dump_vacf]
+                    short_pos_traj = torch.stack(simulator.running_radii).permute(1,0,2,3)[stable_replicas].reshape(-1, self.simulator.vacf_window, self.simulator.n_atoms, 3)[::self.simulator.n_dump_vacf]
+                    short_vel_traj.requires_grad = True
+                    short_pos_traj.requires_grad = True
+                    short_vacfs = vmap(diff_vacf)(short_vel_traj)
+                    mean_short_vacf = (short_vacfs).mean(dim = 0)
+                    mean_vacf_loss = self.vacf_loss(mean_short_vacf)
+                    grad_outputs, = torch.autograd.grad(mean_vacf_loss, short_vel_traj, allow_unused = True)
+                    force_fn = lambda r: simulator.force_calc(r, retain_grad = True)[1]
+                    print(f"Computing gradients of VACF loss via adjoint method on {short_pos_traj.shape[0]} paths of length {short_pos_traj.shape[1]}")
+                    adjoints, _, R = get_adjoints(simulator, short_pos_traj, grad_outputs, force_fn)
+                    grads = [get_model_grads(adj, r, simulator) for adj, r in tqdm(zip(adjoints, R))]
+                    num_params = len(list(simulator.model.parameters()))
+                    num_samples = len(grads)
+                    grads_final = torch.stack([torch.cat([grads[i][j].flatten().detach() for j in range(num_params)]) for i in range(num_samples)]).sum(0)
+                    gradient_estimator = tuple([g.reshape(shape) for g, shape in zip(grads_final.split(original_numel), original_shapes)])
                     vacf_gradient_estimators.append(gradient_estimator)
-            if not self.simulator.allow_off_policy_updates:
-                mean_grads = torch.stack(raw_grads).mean(dim=0)
-                #re-assemble flattened gradients into correct shape
-                gradient_estimator = tuple([g.reshape(shape) for g, shape in zip(mean_grads.split(original_numel), original_shapes)])
-                vacf_gradient_estimators.append(gradient_estimator)
+            else:
+                radii_traj = radii_traj.permute(1,0,2,3)
+                accel_traj = torch.stack(simulator.running_accs).permute(1,0,2,3)
+                noise_traj = torch.stack(simulator.running_noise).permute(1,0,2,3)
+                #split into sub-trajectories of length = vacf_window
+                radii_traj = radii_traj.reshape(radii_traj.shape[0], -1, self.simulator.vacf_window,self.simulator.n_atoms, 3)
+                radii_traj = radii_traj[:, ::self.simulator.n_dump_vacf] #sample i.i.d paths
+                noise_traj = noise_traj.reshape(noise_traj.shape[0], -1, self.simulator.vacf_window, self.simulator.n_atoms, 3)
+                noise_traj = noise_traj[:, ::self.simulator.n_dump_vacf] #sample i.i.d paths
+                
+                vacfs = vacfs[mask].reshape(-1, self.simulator.vacf_window)
+                radii_traj = radii_traj[mask]
+                velocities_traj = velocities_traj[mask]
+                accel_traj = accel_traj[mask]
+                noise_traj = noise_traj[mask]
+
+                vacf_loss_tensor = vmap(self.vacf_loss)(vacfs).reshape(-1, 1, 1)
+                #compute OM action - do it in mini-batches to avoid OOM issues
+                batch_size = 1
+                print(f"Calculate gradients of Onsager-Machlup action of {velocities_traj.shape[0] * velocities_traj.shape[1]} paths in minibatches of size {batch_size*velocities_traj.shape[1]}")
+                num_blocks = math.ceil(velocities_traj.shape[0]/ batch_size)
+                diffs = []
+                om_acts = []
+                grads = []
+                quick_grads = []
+                with torch.enable_grad():
+                    velocities_traj = velocities_traj.detach().requires_grad_(True)
+                    radii_traj = radii_traj.detach().requires_grad_(True)
+                    for i in tqdm(range(num_blocks)):
+                        start = batch_size*i
+                        end = batch_size*(i+1)
+                        velocities = velocities_traj[start:end]
+                        radii = radii_traj[start:end]
+                        diff, om_act = self.om_action(velocities, radii)
+                        grad = [process_gradient(model.parameters(), torch.autograd.grad(o, model.parameters(), create_graph = False, retain_graph = True, allow_unused = True), self.simulator.device) for o in om_act.flatten()]
+                        om_act = om_act.detach()
+                        diffs.append(diff)
+                        om_acts.append(om_act)
+                        grads.append(grad)
+
+                #recombine batches
+                diff = torch.cat(diffs)
+                om_act = torch.cat(om_acts)
+                grads = sum(grads, [])
+                #log OM stats
+                np.save(os.path.join(self.simulator.save_dir, f'om_diffs_epoch{self.simulator.epoch}'), diff.flatten().cpu().numpy())
+                np.save(os.path.join(self.simulator.save_dir, f'om_action_epoch{self.simulator.epoch}'), om_act.detach().flatten().cpu().numpy())
+                    
+                #flatten out the grads
+                num_params = len(list(model.parameters()))
+                num_samples = len(grads)
+
+                vacf_grads_flattened = torch.stack([torch.cat([grads[i][j].flatten().detach() for j in range(num_params)]) for i in range(num_samples)])
+                if self.simulator.shuffle:   
+                    shuffle_idx = torch.randperm(vacf_grads_flattened.shape[0])
+                    vacf_grads_flattened = vacf_grads_flattened[shuffle_idx]
+                    vacf_loss_tensor = vacf_loss_tensor[shuffle_idx]
+                    vacfs = vacfs[shuffle_idx]
+                    
+                #now calculate Fabian estimator
+                #scale VACF minibatch size to have a similar number of gradient updates as RDF
+                #vacf_minibatch_size = math.ceil(MINIBATCH_SIZE / self.simulator.vacf_window * self.simulator.n_dump)
+                vacf_minibatch_size = MINIBATCH_SIZE
+                num_blocks = math.ceil(vacf_grads_flattened.shape[0]/ vacf_minibatch_size)
+                start_time = time.time()
+                raw_grads = []
+                for i in range(num_blocks):
+                    start = vacf_minibatch_size*i
+                    end = vacf_minibatch_size*(i+1)
+                    vacf_grads_batch = vacf_grads_flattened[start:end]
+                    if self.simulator.use_mse_gradient:
+                        #compute VJP with MSE gradient
+                        vacf_batch = vacfs[start:end]
+                        gradient_estimator = (vacf_grads_batch.mean(0).unsqueeze(0)*vacf_batch.mean(0).unsqueeze(-1) - vacf_grads_batch.unsqueeze(1) * vacf_batch.unsqueeze(-1)).mean(dim=0)
+                        grad_outputs = 2*(vacf_batch.mean(0) - self.gt_vacf).unsqueeze(0) #MSE gradient
+                        final_vjp = torch.mm(grad_outputs, gradient_estimator)[0]
+                    else:
+                        #use loss directly
+                        vacf_loss_batch = vacf_loss_tensor[start:end].squeeze(-1)
+                        final_vjp = vacf_grads_batch.mean(0)*vacf_loss_batch.mean(0) \
+                                            - (vacf_grads_batch*vacf_loss_batch).mean(dim=0)
+
+                    if not self.simulator.allow_off_policy_updates:
+                        raw_grads.append(final_vjp)
+                    else:
+                        #re-assemble flattened gradients into correct shape
+                        gradient_estimator = tuple([g.reshape(shape) for g, shape in zip(final_vjp.split(original_numel), original_shapes)])
+                        vacf_gradient_estimators.append(gradient_estimator)
+                if not self.simulator.allow_off_policy_updates:
+                    mean_grads = torch.stack(raw_grads).mean(dim=0)
+                    #re-assemble flattened gradients into correct shape
+                    gradient_estimator = tuple([g.reshape(shape) for g, shape in zip(mean_grads.split(original_numel), original_shapes)])
+                    vacf_gradient_estimators.append(gradient_estimator)
             vacf_package = (vacf_gradient_estimators, mean_vacf, mean_vacf_loss.to(self.simulator.device))
        
         ###RDF/ADF Stuff ###
