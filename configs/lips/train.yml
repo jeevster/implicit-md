@@ -1,11 +1,11 @@
 src: /data/sanjeevr #/pscratch/sd/s/sanjeevr
-name: water
-size: 10k
+name: lips
+size: 20k
 normalize_labels: False
 checkpoint_epoch: -1 #which model to start from
 model: schnet
 l_max: 3
-log_dir: /home/sanjeevr/implicit-md #/global/cfs/projectdirs/m4319/sanjeevr
+log_dir: /home/sanjeevr/implicit-md #/global/cfs/projectdirs/m4319/sanjeevr 
 results_dir: 'results_nnip_continuous_new'
 model_dir: /home/sanjeevr/MDsim/MODELPATH #/pscratch/sd/s/sanjeevr/MODELPATH
 seed: 123
@@ -13,11 +13,9 @@ dr: 0.012
 max_rdf_dist: 6
 dv: 0.1
 angle_range: [0, 180]
-diameter_viz: 0.08
-gaussian_width: 0.01
-exp_name: "TEST_learnalways"
+exp_name: "TEST"
 integrator: NoseHoover
-integrator_config: {"timestep": 1., "temperature": 300., "ttime": 20., "gamma": 0.1}
+integrator_config: {"timestep": 0.25, "temperature": 520., "ttime": 20., "gamma": 0.1}
 train: True
 eval_model: post
 diffusion_loss_weight: 0
@@ -29,27 +27,27 @@ force_loss_weight: 0.95
 diffusion_window: 1000
 vacf_window: 100
 ic_stddev: 0.0
-rdf_mae_tol: 3.0 #less than Forces are Not Enough cutoff
-max_frac_unstable_threshold: 0.5 #decay this?
+rdf_mae_tol: 0.5 #decay this?
+max_frac_unstable_threshold: 0.75 #decay this?
 min_frac_unstable_threshold: 0.0 #increase this?
 eq_steps: 0
-steps: 1000 # shorter interval for checking instability since failure happens more quickly
-n_dump: 25 #more frequent dump since failure happens more quickly
+steps: 4000 # 1 picosecond per epoch
+n_dump: 100
 n_dump_vacf: 2
-n_replicas: 128
-minibatch_size: 32
+n_replicas: 8
+minibatch_size: 40
 adjoint: True
-only_learn_if_unstable_threshold_reached: False
+only_learn_if_unstable_threshold_reached: True
 only_train_on_unstable_replicas: False
 allow_off_policy_updates: False
 gradient_clipping: True
 use_mse_gradient: True
 shuffle: True
 optimizer: SGD
-reset_probability: 0.0
-n_epochs: 300
+reset_probability: 0.05
+n_epochs: 600
 lr: 0.001
 max_times_reduce_lr: 2 
-
-
+diameter_viz: 0.08
+gaussian_width: 0.01
 

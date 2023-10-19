@@ -1,0 +1,11 @@
+includes:
+- configs/lips/train.yml
+train: False
+eval_model: post
+rdf_mae_tol: 1.0 #Forces are Not Enough cutoff
+max_frac_unstable_threshold: 0.9
+eq_steps: 0
+steps: 4000 #1 ps per epoch
+n_dump: 100 
+n_replicas: 64
+n_epochs: 50

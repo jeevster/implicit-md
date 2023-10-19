@@ -290,6 +290,7 @@ class ImplicitMDSimulator():
         os.makedirs(self.save_dir, exist_ok = True)
         dump_params_to_yml(self.params, self.save_dir)
         #File dump stuff
+        import pdb; pdb.set_trace()
         self.f = open(f"{self.save_dir}/log.txt", "a+")
          
 

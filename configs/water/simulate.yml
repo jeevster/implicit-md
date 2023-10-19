@@ -1,0 +1,15 @@
+includes:
+- configs/water/train.yml
+train: False
+eval_model: post
+rdf_mae_tol: 3.0 #Forces are Not Enough cutoff
+max_frac_unstable_threshold: 0.9
+eq_steps: 0
+steps: 1000 
+n_dump: 25 
+n_replicas: 64
+n_epochs: 300
+
+
+
+

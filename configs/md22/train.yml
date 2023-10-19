@@ -32,10 +32,10 @@ bond_dev_tol: 0.25 #decay this?
 max_frac_unstable_threshold: 0.75 #decay this?
 min_frac_unstable_threshold: 0.0 #increase this?
 eq_steps: 0
-steps: 200 # 1 picosecond per epoch
+steps: 2000 # 1 picosecond per epoch
 n_dump: 50
 n_dump_vacf: 2
-n_replicas: 2
+n_replicas: 128
 minibatch_size: 32
 adjoint: True
 only_learn_if_unstable_threshold_reached: True
@@ -46,7 +46,7 @@ use_mse_gradient: True
 shuffle: True
 optimizer: SGD
 reset_probability: 0.0
-n_epochs: 600 #corresponding to 300 ps
+n_epochs: 600
 lr: 0.001
 max_times_reduce_lr: 2 
 diameter_viz: 0.08
