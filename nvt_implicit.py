@@ -109,10 +109,10 @@ class ImplicitMDSimulator():
 
         #initialize datasets
         train_src = os.path.join(self.data_dir, self.name, self.molecule, self.size, 'train')
-        valid_src = os.path.join(self.data_dir, self.name, self.molecule, MAX_SIZES[self.name], 'test')
+        test_src = os.path.join(self.data_dir, self.name, self.molecule, MAX_SIZES[self.name], 'test')
         
         self.train_dataset = LmdbDataset({'src': train_src})
-        self.valid_dataset = LmdbDataset({'src': valid_src})
+        self.test_dataset = LmdbDataset({'src': test_src})
 
         #get random initial condition from dataset
         init_data = self.train_dataset.__getitem__(10)
@@ -218,7 +218,7 @@ class ImplicitMDSimulator():
         self.batch = torch.arange(self.n_replicas).repeat_interleave(self.n_atoms).to(self.device)
         self.ic_stddev = params.ic_stddev
 
-        dataset = self.train_dataset if self.train else self.valid_dataset
+        dataset = self.train_dataset if self.train else self.test_dataset
         samples = np.random.choice(np.arange(dataset.__len__()), self.n_replicas, replace=False)
         self.raw_atoms = [data_to_atoms(dataset.__getitem__(i)) for i in samples]
         self.cell = torch.Tensor(self.raw_atoms[0].cell).to(self.device)
@@ -244,6 +244,7 @@ class ImplicitMDSimulator():
         self.original_radii = self.radii.clone()
         self.original_velocities = self.velocities.clone()
         self.original_zeta = self.zeta.clone()
+        self.all_radii = []
         
         
         #assign velocities to atoms
@@ -534,6 +535,8 @@ class ImplicitMDSimulator():
                     if self.integrator == "Langevin":
                         self.running_noise.append(noise)
                 
+                    if step % self.n_dump == 0 and not self.train:
+                        self.all_radii.append(radii.detach().cpu()) #save whole trajectory without resetting at inference time
                 self.radii.copy_(radii)
                 self.velocities.copy_(velocities)
                     
@@ -931,6 +934,8 @@ if __name__ == "__main__":
         writer.add_scalar('Gradient Ratios (Observable vs Energy-Force)', ratios, global_step=epoch+1)
 
     writer.close()
+    if not params.train:
+        np.save(os.path.join(results_dir, 'full_traj.npy'), torch.stack(simulator.all_radii))
     print('Done!')
     
 
