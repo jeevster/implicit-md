@@ -292,7 +292,11 @@ class BoltzmannEstimator():
                     return compute_grad(inputs = list(model.parameters()), output = energy, grad_outputs = v, allow_unused = True, create_graph = False)
                 vectorized_vjp = vmap(get_vjp)
                 I_N = torch.eye(energy.shape[0]).unsqueeze(-1).to(self.simulator.device)
-                grads_vectorized = vectorized_vjp(I_N)
+                if self.simulator.model_type == 'forcenet': #dealing with device mismatch error
+                    #TODO: still doesn't work since structure of vectorized grads is different
+                    grads_vectorized = [compute_grad(inputs = list(model.parameters()), output = e, allow_unused = True, create_graph = False) for e in energy]
+                else:
+                    grads_vectorized = vectorized_vjp(I_N)
                 #flatten the gradients for vectorization
                 num_samples = energy.shape[0]
                 num_params = len(list(model.parameters()))

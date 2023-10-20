@@ -109,7 +109,7 @@ class ImplicitMDSimulator():
 
         #initialize datasets
         train_src = os.path.join(self.data_dir, self.name, self.molecule, self.size, 'train')
-        valid_src = os.path.join(self.data_dir, self.name, self.molecule, MAX_SIZES[self.name], 'val')
+        valid_src = os.path.join(self.data_dir, self.name, self.molecule, MAX_SIZES[self.name], 'test')
         
         self.train_dataset = LmdbDataset({'src': train_src})
         self.valid_dataset = LmdbDataset({'src': valid_src})
@@ -290,7 +290,6 @@ class ImplicitMDSimulator():
         os.makedirs(self.save_dir, exist_ok = True)
         dump_params_to_yml(self.params, self.save_dir)
         #File dump stuff
-        import pdb; pdb.set_trace()
         self.f = open(f"{self.save_dir}/log.txt", "a+")
          
 
