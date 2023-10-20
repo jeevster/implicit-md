@@ -17,7 +17,7 @@ import pstats
 import random
 import types
 from torch_geometric.nn import MessagePassing, radius_graph
-from torchmd.observable import generate_vol_bins, DifferentiableRDF, DifferentiableADF, DifferentiableVelHist, DifferentiableVACF, msd, DiffusionCoefficient
+from torchmd.observable import generate_vol_bins, DifferentiableRDF, DifferentiableADF, DifferentiableVelHist, DifferentiableVACF, SelfIntermediateScattering, msd, DiffusionCoefficient
 import time
 from torch.utils.tensorboard import SummaryWriter
 from functorch import vmap, vjp
@@ -109,7 +109,7 @@ class ImplicitMDSimulator():
 
         #initialize datasets
         train_src = os.path.join(self.data_dir, self.name, self.molecule, self.size, 'train')
-        valid_src = os.path.join(self.data_dir, self.name, self.molecule, MAX_SIZES[self.name], 'val')
+        valid_src = os.path.join(self.data_dir, self.name, self.molecule, MAX_SIZES[self.name], 'test')
         
         self.train_dataset = LmdbDataset({'src': train_src})
         self.valid_dataset = LmdbDataset({'src': valid_src})
@@ -290,7 +290,6 @@ class ImplicitMDSimulator():
         os.makedirs(self.save_dir, exist_ok = True)
         dump_params_to_yml(self.params, self.save_dir)
         #File dump stuff
-        import pdb; pdb.set_trace()
         self.f = open(f"{self.save_dir}/log.txt", "a+")
          
 
@@ -728,7 +727,7 @@ if __name__ == "__main__":
                 np.save(os.path.join(results_dir, f'gt_{_type}_rdf.npy'), _rdf.cpu())
         else:
             np.save(os.path.join(results_dir, 'gt_rdf.npy'), gt_rdf.cpu())
-        #np.save(os.path.join(results_dir, 'gt_adf.npy'), gt_adf.cpu())
+        np.save(os.path.join(results_dir, 'gt_adf.npy'), gt_adf.cpu())
         np.save(os.path.join(results_dir, 'gt_vacf.npy'), gt_vacf.cpu())
     
     min_lr = params.lr / (5 * params.max_times_reduce_lr)

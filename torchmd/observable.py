@@ -207,7 +207,6 @@ class DiffusionCoefficient(torch.nn.Module):
         n = msd_data.shape[0] # Number of training examples.
         X = torch.linspace(0, self.dt*n, n)
         X = torch.stack([X, torch.ones((n,))], dim = 1).to(self.device) #append column of ones for bias term
-
         # Compute slope using Normal Equation
         X_T = torch.transpose(X, 0, 1)
         X_T_X = torch.matmul(X_T, X)
@@ -219,15 +218,15 @@ class DiffusionCoefficient(torch.nn.Module):
         return 1/6 * theta[0]
 
 class SelfIntermediateScattering(torch.nn.Module):
-    # Note: k_mag should be the bin of the first RDF peak
-    def __init__(self, k_mag, device, n_vectors=30):
+    # Note: k_mag should be the distance in Angstroms of the first RDF peak
+    def __init__(self, params, device, n_vectors=30):
         super(SelfIntermediateScattering, self).__init__()
         self.device = device
-        self.k_mag = k_mag
+        self.k_mag = params.rdf_peak #distance in Angstroms of the first RDF peak
         # Generate random unit vectors
         random_vectors = torch.randn(n_vectors, 3, device=device)
         # Normalize the vectors to have unit length, then scale by k_mag
-        self.k_vectors = (random_vectors / torch.norm(random_vectors, dim=1, keepdim=True)) * k_mag
+        self.k_vectors = (random_vectors / torch.norm(random_vectors, dim=1, keepdim=True)) * self.k_mag
     def forward(self, trajectory):
         # Dimensions: timestep x replica x n_atoms x 3
         trajectory = trajectory.to(self.device)

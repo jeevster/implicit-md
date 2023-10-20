@@ -8,7 +8,7 @@ checkpoint_epoch: -1 #which model to start from
 model: nequip
 l_max: 1
 log_dir: /global/cfs/projectdirs/m4319/sanjeevr #/home/sanjeevr/implicit-md
-results_dir: 'results_nnip_continuous_new_nequip'
+results_dir: 'results_md22'
 model_dir: /pscratch/sd/s/sanjeevr/MODELPATH #'/pscratch/sd/s/sanjeevr/MODELPATH' /home/sanjeevr/MDsim/MODELPATH
 seed: 123
 dr: 0.02

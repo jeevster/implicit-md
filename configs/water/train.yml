@@ -1,12 +1,12 @@
 src: /data/sanjeevr #/pscratch/sd/s/sanjeevr
 name: water
-size: 10k
+size: 1k
 normalize_labels: False
 checkpoint_epoch: -1 #which model to start from
-model: schnet
+model: forcenet
 l_max: 3
 log_dir: /home/sanjeevr/implicit-md #/global/cfs/projectdirs/m4319/sanjeevr
-results_dir: 'results_nnip_continuous_new'
+results_dir: 'results_water'
 model_dir: /home/sanjeevr/MDsim/MODELPATH #/pscratch/sd/s/sanjeevr/MODELPATH
 seed: 123
 dr: 0.012
@@ -15,7 +15,7 @@ dv: 0.1
 angle_range: [0, 180]
 diameter_viz: 0.08
 gaussian_width: 0.01
-exp_name: "TEST_learnalways"
+exp_name: "TEST"
 integrator: NoseHoover
 integrator_config: {"timestep": 1., "temperature": 300., "ttime": 20., "gamma": 0.1}
 train: True
@@ -33,11 +33,11 @@ rdf_mae_tol: 0.8 #less than Forces are Not Enough cutoff
 max_frac_unstable_threshold: 0.5 #decay this?
 min_frac_unstable_threshold: 0.0 #increase this?
 eq_steps: 0
-steps: 200 # shorter interval for checking instability since failure happens more quickly
-n_dump: 5 #more frequent dump since failure happens more quickly
+steps: 400 # shorter interval for checking instability since failure happens more quickly
+n_dump: 10 #more frequent dump since failure happens more quickly
 n_dump_vacf: 2
-n_replicas: 64
-minibatch_size: 32
+n_replicas: 2
+minibatch_size: 4
 adjoint: True
 only_learn_if_unstable_threshold_reached: False
 only_train_on_unstable_replicas: False
