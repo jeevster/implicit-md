@@ -435,8 +435,6 @@ class Trainer(ABC):
             and hasattr(loader.dataset[0], "x")
             and loader.dataset[0].x is not None
             else None,
-            bond_feat_dim,
-            self.num_targets,
             **self.config["model_attributes"],
         ).to(self.device)
 
@@ -1137,7 +1135,6 @@ class Trainer(ABC):
             })
 
         out["natoms"] = natoms
-
         if self.config["task"].get("eval_on_free_atoms", True):
             fixed = torch.cat(
                 [batch.fixed.to(self.device) for batch in batch_list]

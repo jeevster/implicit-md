@@ -1,5 +1,6 @@
 import torch
 import os
+import yaml
 from mdsim.models.schnet import SchNetWrap
 from mdsim.models.dimenet_plus_plus import DimeNetPlusPlusWrap
 from mdsim.models.forcenet import ForceNet
@@ -10,18 +11,16 @@ def load_pretrained_model(model_type, path = None, ckpt_epoch = -1, device = "cp
     if train:
         cname = 'best_checkpoint.pt' if ckpt_epoch == -1 else f"checkpoint{ckpt_epoch}.pt"
         ckpt_and_config_path = os.path.join(path, "checkpoints", cname)
-        config = torch.load(ckpt_and_config_path, map_location=torch.device("cpu"))["config"]
+        
     else:
         #load the final checkpoint instead of the best one
         ckpt_and_config_path = os.path.join(path, "ckpt.pth") if \
                 os.path.exists(os.path.join(path, "ckpt.pth")) else os.path.join(path, "checkpoints", "best_checkpoint.pt")
-        config = torch.load(ckpt_and_config_path, map_location=torch.device("cpu"))["config"]
-    
     #load model
-    if "model_attributes" in config.keys():
-        model = registry.get_model_class(model_type)(**config["model_attributes"]).to(device)
-    else:
-        model = registry.get_model_class(model_type)(**config).to(device)
+    config = yaml.safe_load(open(os.path.join(path, "checkpoints", 'config.yml'), "r"))
+    name = config["model"].pop("name")
+    model = registry.get_model_class(model_type)(**config["model"]).to(device)
+    config["model"]["name"] = name
 
     #get checkpoint
     print(f'Loading model weights from {ckpt_and_config_path}')
@@ -36,8 +35,7 @@ def load_pretrained_model(model_type, path = None, ckpt_epoch = -1, device = "cp
     except:
         model.load_state_dict(checkpoint)
 
-        
-    return model, config["model_attributes"] if "model_attributes" in config.keys() else config
+    return model, ckpt_and_config_path, config
 
 
 

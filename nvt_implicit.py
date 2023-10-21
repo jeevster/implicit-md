@@ -20,6 +20,7 @@ from torch_geometric.nn import MessagePassing, radius_graph
 from torchmd.observable import generate_vol_bins, DifferentiableRDF, DifferentiableADF, DifferentiableVelHist, DifferentiableVACF, SelfIntermediateScattering, msd, DiffusionCoefficient
 import time
 from torch.utils.tensorboard import SummaryWriter
+from torch.utils.data import DataLoader
 from functorch import vmap, vjp
 import warnings
 warnings.filterwarnings("ignore")
@@ -33,6 +34,7 @@ from nequip.data.AtomicData import neighbor_list_and_relative_vec
 from nequip.utils.torch_geometric import Batch, Dataset
 from nequip.utils import atomic_write
 from ase.neighborlist import natural_cutoffs, NeighborList
+from mdsim.md.ase_utils import OCPCalculator
 from mdsim.common.utils import cleanup_atoms_batch, setup_imports, setup_logging, compute_bond_lengths, data_to_atoms, atoms_to_batch, atoms_to_state_dict, convert_atomic_numbers_to_types, process_gradient, compare_gradients, initialize_velocities, dump_params_to_yml
 from mdsim.common.custom_radius_graph import detach_numpy
 from mdsim.datasets.lmdb_dataset import LmdbDataset, data_list_collater
@@ -59,7 +61,7 @@ from boltzmann_estimator import BoltzmannEstimator
 MAX_SIZES = {'md17': '10k', 'md22': '100percent', 'water': '90k', 'lips': '20k'}
 
 class ImplicitMDSimulator():
-    def __init__(self, config, params, model, model_config, gt_rdf):
+    def __init__(self, config, params, model, model_path, model_config, gt_rdf):
         super(ImplicitMDSimulator, self).__init__()
         print("Initializing MD simulation environment")
         self.params = params
@@ -102,6 +104,7 @@ class ImplicitMDSimulator():
         self.n_dump_vacf = config["n_dump_vacf"]
 
         #Initialize model
+        self.curr_model_path = model_path
         self.model = model
         for param in self.model.parameters():
             param.requires_grad = True
@@ -113,6 +116,7 @@ class ImplicitMDSimulator():
         
         self.train_dataset = LmdbDataset({'src': train_src})
         self.test_dataset = LmdbDataset({'src': test_src})
+        self.test_dataloader = DataLoader(self.test_dataset, collate_fn=data_list_collater, batch_size = self.n_replicas)
 
         #get random initial condition from dataset
         init_data = self.train_dataset.__getitem__(10)
@@ -131,7 +135,7 @@ class ImplicitMDSimulator():
         self.atom_types = self.atoms.get_chemical_symbols()
         #atom type mapping
         if self.model_type == "nequip":
-            type_names = self.model_config[nequip.scripts.deploy.TYPE_NAMES_KEY]
+            type_names = self.model_config['model'][nequip.scripts.deploy.TYPE_NAMES_KEY]
             species_to_type_name = {s: s for s in ase.data.chemical_symbols}
             type_name_to_index = {n: i for i, n in enumerate(type_names)}
             chemical_symbol_to_type = {
@@ -145,11 +149,10 @@ class ImplicitMDSimulator():
             self.final_atom_types = torch.Tensor(self.typeid).repeat(self.n_replicas).to(self.device).to(torch.long).unsqueeze(-1)
 
         #extract ground truth energies, forces, and bond length deviation
-        DATAPATH_TRAIN = os.path.join(self.data_dir, self.name, self.molecule, self.size, 'train/nequip_npz.npz')
-        DATAPATH_TEST = os.path.join(self.data_dir, self.name, self.molecule, self.size, 'test/nequip_npz.npz')
-        
-        gt_data_test = np.load(DATAPATH_TEST)
-        gt_data_train = np.load(DATAPATH_TRAIN)
+        self.DATAPATH_TRAIN = os.path.join(self.data_dir, self.name, self.molecule, self.size, 'train') 
+        self.DATAPATH_TEST = os.path.join(self.data_dir, self.name, self.molecule, self.size, 'test')
+        gt_data_test = np.load(os.path.join(self.DATAPATH_TEST, 'nequip_npz.npz'))
+        gt_data_train = np.load(os.path.join(self.DATAPATH_TRAIN, 'nequip_npz.npz'))
         if self.name == 'water':
             pos_field_train = gt_data_train.f.wrapped_coords
             pos_field_test = gt_data_test.f.wrapped_coords
@@ -252,7 +255,7 @@ class ImplicitMDSimulator():
             self.raw_atoms[i].set_velocities(self.velocities[i].cpu().numpy())
         #create batch of atoms to be operated on
         self.r_max_key = "r_max" if self.model_type == "nequip" else "cutoff"
-        self.atoms_batch = [AtomicData.from_ase(atoms=a, r_max=self.model_config[self.r_max_key]) for a in self.raw_atoms]
+        self.atoms_batch = [AtomicData.from_ase(atoms=a, r_max=self.model_config['model'][self.r_max_key]) for a in self.raw_atoms]
         self.atoms_batch = Batch.from_data_list(self.atoms_batch) #DataBatch for non-Nequip models
         self.atoms_batch['natoms'] = torch.Tensor([self.n_atoms]).repeat(self.n_replicas).to(self.device)
         self.atoms_batch['cell'] = self.atoms_batch['cell'].to(self.device)
@@ -296,27 +299,20 @@ class ImplicitMDSimulator():
 
     '''compute energy/force error on test set'''
     def energy_force_error(self, batch_size):
-        with torch.no_grad():
-            
-            num_batches = math.ceil(self.gt_traj_test.shape[0]/ batch_size)
-            energies = []
-            forces = []
-            print(f"Computing bottom-up (energy-force) error on held-out test set of {num_batches * batch_size} samples")
-            for i in tqdm(range(num_batches)):
-                start = batch_size*i
-                end = batch_size*(i+1)
-                energy, force = self.force_calc(self.gt_traj_test[start:end])
-                energies.append(energy.detach())
-                forces.append(force.detach())
-            
-            energies = torch.cat(energies)
-            forces = torch.cat(forces)
-            prediction = {'energy': self.normalizer_train.denorm(energies) if not self.model_type=='nequip' else energies, 'forces': forces.reshape(-1, 3), 'natoms': torch.Tensor([self.n_atoms]).repeat(energies.shape[0]).to(self.device)}
-            metrics = self.evaluator.eval(prediction, self.target_test)
-            metrics = {k: v['metric'] for k, v in metrics.items()}
-            return metrics['energy_rmse'], metrics['forces_rmse']
+        import pdb; pdb.set_trace()
+        self.model_config['model']['name'] = self.model_type
+        #TODO: the way we're saving our checkpoints is not working, not able to restore it
+        #But we're able to compute the test metrics correctly from the original bottom-up checkpoint
+        self.calculator = OCPCalculator(config_yml=self.model_config, checkpoint=self.curr_model_path, 
+                                   test_data_src=self.DATAPATH_TEST, 
+                                   energy_units_to_eV=1.)
+        print(f"Computing bottom-up (energy-force) error on test set")
+        test_metrics = self.calculator.trainer.validate('test', max_points=1000)
+        test_metrics = {k: v['metric'] for k, v in test_metrics.items()}
+        return test_metrics['energy_rmse'], test_metrics['forces_rmse']
 
     def energy_force_gradient(self, batch_size):
+        #TODO: replace this with a call to trainer.train?
         num_batches = math.ceil(self.gt_traj_train.shape[0]/ batch_size)
         energy_gradients = []
         force_gradients = []
@@ -402,7 +398,7 @@ class ImplicitMDSimulator():
             if self.model_type == "nequip":
                 self.atoms_batch['atom_types'] = self.atoms_batch['atom_types'][0:self.n_atoms].repeat(batch_size, 1)
                 #recompute neighbor list
-                self.atoms_batch['edge_index'] = radius_graph(radii.reshape(-1, 3), r=self.model_config[self.r_max_key], batch=batch, max_num_neighbors=32)
+                self.atoms_batch['edge_index'] = radius_graph(radii.reshape(-1, 3), r=self.model_config['model'][self.r_max_key], batch=batch, max_num_neighbors=32)
                 #TODO: edge cell shift is nonzero for LiPS (non cubic cell)
                 self.atoms_batch['edge_cell_shift'] = torch.zeros((self.atoms_batch['edge_index'].shape[1], 3)).to(self.device)
                 atoms_updated = self.model(self.atoms_batch)
@@ -563,17 +559,15 @@ class ImplicitMDSimulator():
         checkpoint_path = os.path.join(self.save_dir, name)
         if self.model_type == "nequip":
             with atomic_write(checkpoint_path, blocking=True, binary=True) as write_to:
-                #torch.save(self.model.state_dict(), write_to)
                 torch.save(self.model, write_to)
-            #test = torch.load(checkpoint_path, map_location=self.device) #confirm we can load the checkpoint
         else:
-            torch.save({'model_state': self.model.state_dict(), 'config': self.model_config}, checkpoint_path)
-        
+            torch.save({'state_dict': self.model.state_dict(), 'config': self.model_config}, checkpoint_path)
+        self.curr_model_path = checkpoint_path #update model path
     def restore_checkpoint(self, best=False):
         name = "best_ckpt.pt" if best else "ckpt.pt"
         checkpoint_path = os.path.join(self.save_dir, name)
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
-        self.model.load_state_dict(checkpoint['model_state'])
+        self.model.load_state_dict(checkpoint['state_dict'])
 
     def create_frame(self, frame):
         # Particle positions, velocities, diameter
@@ -683,7 +677,7 @@ if __name__ == "__main__":
             model, model_config = Trainer.load_model_from_training_session(pretrained_model_path, \
                                     model_name = cname, device =  torch.device(device))
     else:
-        model, model_config = load_pretrained_model(model_type, path = pretrained_model_path, ckpt_epoch = config['checkpoint_epoch'], device = torch.device(device), train = params.train or params.eval_model == 'pre')
+        model, model_path, model_config = load_pretrained_model(model_type, path = pretrained_model_path, ckpt_epoch = config['checkpoint_epoch'], device = torch.device(device), train = params.train or params.eval_model == 'pre')
     #count number of trainable params
     model_parameters = filter(lambda p: p.requires_grad, model.parameters())
     num_params = sum([np.prod(p.size()) for p in model_parameters])
@@ -766,7 +760,7 @@ if __name__ == "__main__":
         
         if epoch==0: #draw IC from dataset
             #initialize simulator parameterized by a NN model
-            simulator = ImplicitMDSimulator(config, params, model, model_config, gt_rdf)
+            simulator = ImplicitMDSimulator(config, params, model, model_path, model_config, gt_rdf)
             #initialize Boltzmann_estimator
             boltzmann_estimator = BoltzmannEstimator(gt_rdf, gt_vacf, gt_adf, params, device)
             #initialize outer loop optimizer/scheduler

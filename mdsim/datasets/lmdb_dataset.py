@@ -107,14 +107,13 @@ class LmdbDataset(Dataset):
         else:
             self.env.close()
 
-def data_list_collater(data_list, otf_graph=False):
+def data_list_collater(data_list, otf_graph=True):
     batch = Batch.from_data_list(data_list)
 
     if not otf_graph:
         try:
             n_neighbors = []
             for i, data in enumerate(data_list):
-                import pdb; pdb.set_trace()
                 n_index = data.edge_index[1, :]
                 n_neighbors.append(n_index.shape[0])
             batch.neighbors = torch.tensor(n_neighbors)

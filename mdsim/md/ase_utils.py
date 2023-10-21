@@ -120,6 +120,7 @@ class OCPCalculator(Calculator):
 
         # Calculate the edge indices on the fly
         config["model"]["otf_graph"] = True
+        
 
         # Save config so obj can be transported over network (pkl)
         self.config = copy.deepcopy(config)
@@ -131,22 +132,19 @@ class OCPCalculator(Calculator):
         
         # config['dataset'].append(
         #     {'src': '/'.join(self.config['dataset'][1]['src'].split('/')[:-1] + ['test'])})
-
-        self.trainer = registry.get_trainer_class(
-            config.get("trainer", "energy")
-        )(
+        self.trainer = registry.get_trainer_class(config.get("trainer", "energy"))(
             task=config["task"],
             model=config["model"],
             dataset=config["dataset"],
             optimizer=config["optim"],
-            identifier=config["identifier"],
+            identifier=config.get("identifier", None),
             timestamp_id=config.get("timestamp_id", None),
             run_dir=config.get("run_dir", None),
             is_debug=config.get("is_debug", False),
             print_every=config.get("print_every", 100),
             seed=config.get("seed", 0),
             logger=config.get("logger", "wandb"),
-            local_rank=config["local_rank"],
+            local_rank=config.get("local_rank", 0),
             amp=config.get("amp", False),
             cpu=config.get("cpu", False),
             slurm=config.get("slurm", {}),
