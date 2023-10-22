@@ -23,6 +23,7 @@ from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader
 from functorch import vmap, vjp
 import warnings
+from collections import OrderedDict
 warnings.filterwarnings("ignore")
 #NNIP stuff:
 import ase
@@ -35,13 +36,13 @@ from nequip.utils.torch_geometric import Batch, Dataset
 from nequip.utils import atomic_write
 from ase.neighborlist import natural_cutoffs, NeighborList
 from mdsim.md.ase_utils import OCPCalculator
-from mdsim.common.utils import cleanup_atoms_batch, setup_imports, setup_logging, compute_bond_lengths, data_to_atoms, atoms_to_batch, atoms_to_state_dict, convert_atomic_numbers_to_types, process_gradient, compare_gradients, initialize_velocities, dump_params_to_yml
+from mdsim.common.registry import registry
+from mdsim.common.utils import save_checkpoint, cleanup_atoms_batch, setup_imports, setup_logging, compute_bond_lengths, data_to_atoms, atoms_to_batch, atoms_to_state_dict, convert_atomic_numbers_to_types, process_gradient, compare_gradients, initialize_velocities, dump_params_to_yml
 from mdsim.common.custom_radius_graph import detach_numpy
 from mdsim.datasets.lmdb_dataset import LmdbDataset, data_list_collater
 from mdsim.common.utils import load_config
 from mdsim.modules.evaluator import Evaluator
 from mdsim.modules.normalizer import Normalizer
-
 from mdsim.observables.md17_22 import BondLengthDeviation, radii_to_dists, find_hr_adf_from_file, distance_pbc
 from mdsim.observables.water import WaterRDFMAE, find_water_rdfs_diffusivity_from_file
 from mdsim.observables.lips import LiPSRDFMAE, find_lips_rdfs_diffusivity_from_file
@@ -151,6 +152,10 @@ class ImplicitMDSimulator():
         #extract ground truth energies, forces, and bond length deviation
         self.DATAPATH_TRAIN = os.path.join(self.data_dir, self.name, self.molecule, self.size, 'train') 
         self.DATAPATH_TEST = os.path.join(self.data_dir, self.name, self.molecule, self.size, 'test')
+        self.trainer = OCPCalculator(config_yml=self.model_config, checkpoint=self.curr_model_path, 
+                                   test_data_src=self.DATAPATH_TEST, 
+                                   energy_units_to_eV=1.).trainer
+        
         gt_data_test = np.load(os.path.join(self.DATAPATH_TEST, 'nequip_npz.npz'))
         gt_data_train = np.load(os.path.join(self.DATAPATH_TRAIN, 'nequip_npz.npz'))
         if self.name == 'water':
@@ -298,11 +303,9 @@ class ImplicitMDSimulator():
          
 
     '''compute energy/force error on test set'''
-    def energy_force_error(self, batch_size):
-        import pdb; pdb.set_trace()
+    def energy_force_error(self):
         self.model_config['model']['name'] = self.model_type
-        #TODO: the way we're saving our checkpoints is not working, not able to restore it
-        #But we're able to compute the test metrics correctly from the original bottom-up checkpoint
+        #TODO: also make this work for Nequip
         self.calculator = OCPCalculator(config_yml=self.model_config, checkpoint=self.curr_model_path, 
                                    test_data_src=self.DATAPATH_TEST, 
                                    energy_units_to_eV=1.)
@@ -313,6 +316,7 @@ class ImplicitMDSimulator():
 
     def energy_force_gradient(self, batch_size):
         #TODO: replace this with a call to trainer.train?
+        #Currently calculating the wrong gradients
         num_batches = math.ceil(self.gt_traj_train.shape[0]/ batch_size)
         energy_gradients = []
         force_gradients = []
@@ -555,14 +559,28 @@ class ImplicitMDSimulator():
         return self 
 
     def save_checkpoint(self, best=False):
-        name = "best_ckpt.pth" if best else "ckpt.pth"
+        name = "best_ckpt.pt" if best else "ckpt.pt"
         checkpoint_path = os.path.join(self.save_dir, name)
         if self.model_type == "nequip":
             with atomic_write(checkpoint_path, blocking=True, binary=True) as write_to:
                 torch.save(self.model, write_to)
         else:
-            torch.save({'state_dict': self.model.state_dict(), 'config': self.model_config}, checkpoint_path)
-        self.curr_model_path = checkpoint_path #update model path
+            new_state_dict = OrderedDict(("module."+k if "module" not in k else k, v) for k, v in self.model.state_dict().items())
+            torch.save({
+                        "epoch": self.epoch,
+                        "step": self.epoch,
+                        "state_dict": new_state_dict,
+                        "normalizers": {
+                            key: value.state_dict()
+                            for key, value in self.trainer.normalizers.items()
+                        },
+                        "config": self.model_config,
+                        "ema": self.trainer.ema.state_dict() if self.trainer.ema else None,
+                        "amp": self.trainer.scaler.state_dict()
+                        if self.trainer.scaler
+                        else None,
+                    }, checkpoint_path)
+        self.curr_model_path = checkpoint_path
     def restore_checkpoint(self, best=False):
         name = "best_ckpt.pt" if best else "ckpt.pt"
         checkpoint_path = os.path.join(self.save_dir, name)
@@ -902,7 +920,7 @@ if __name__ == "__main__":
         lrs.append(simulator.optimizer.param_groups[0]['lr'])
         #energy/force error
         if epoch == 0 or (simulator.optimizer.param_groups[0]['lr'] > 0 and params.train): #don't compute it unless we are in the learning phase
-            energy_rmse, force_rmse = simulator.energy_force_error(params.n_replicas)
+            energy_rmse, force_rmse = simulator.energy_force_error()
             energy_rmses.append(energy_rmse)
             force_rmses.append(force_rmse)
         sim_times.append(sim_time)
