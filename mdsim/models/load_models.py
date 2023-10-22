@@ -14,10 +14,14 @@ def load_pretrained_model(model_type, path = None, ckpt_epoch = -1, device = "cp
         
     else:
         #load the final checkpoint instead of the best one
-        ckpt_and_config_path = os.path.join(path, "ckpt.pth") if \
-                os.path.exists(os.path.join(path, "ckpt.pth")) else os.path.join(path, "checkpoints", "best_checkpoint.pt")
+        ckpt_and_config_path = os.path.join(path, "ckpt.pt") if \
+                os.path.exists(os.path.join(path, "ckpt.pt")) else os.path.join(path, "checkpoints", "best_checkpoint.pt")
     #load model
-    config = yaml.safe_load(open(os.path.join(path, "checkpoints", 'config.yml'), "r"))
+    if train:
+        config = yaml.safe_load(open(os.path.join(path, "checkpoints", 'config.yml'), "r"))
+    else:
+        config = yaml.safe_load(open(os.path.join(path, 'config.yml'), "r"))
+
     name = config["model"].pop("name")
     model = registry.get_model_class(model_type)(**config["model"]).to(device)
     config["model"]["name"] = name

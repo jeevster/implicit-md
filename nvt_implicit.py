@@ -5,6 +5,7 @@ import logging
 import gc
 import torch.nn as nn
 import math
+import shutil
 from nff.utils.scatter import compute_grad
 from YParams import YParams
 import argparse
@@ -633,6 +634,8 @@ if __name__ == "__main__":
     except:
         device = "cpu"
 
+   
+
     #set up model
     data_path = config['src']
     name = config['name']
@@ -640,6 +643,11 @@ if __name__ == "__main__":
     molecule_for_name = name if name =='water' or name == 'lips' else molecule
     size = config['size']
     model_type = config['model']
+
+    #make directories
+    results_dir = os.path.join(params.results_dir, f"IMPLICIT_{model_type}_{molecule_for_name}_{params.exp_name}") \
+                if params.train else os.path.join(params.results_dir, f"IMPLICIT_{model_type}_{molecule_for_name}_{params.exp_name}", "inference", params.eval_model)
+    os.makedirs(results_dir, exist_ok = True)
     
     print(f"Loading pretrained {model_type} model")
     lmax_string = f"lmax={params.l_max}_" if model_type == "nequip" else ""
@@ -681,6 +689,9 @@ if __name__ == "__main__":
                                     model_name = cname, device =  torch.device(device))
     else:
         model, model_path, model_config = load_pretrained_model(model_type, path = pretrained_model_path, ckpt_epoch = config['checkpoint_epoch'], device = torch.device(device), train = params.train or params.eval_model == 'pre')
+        #copy original model config to results directory
+        if params.train:
+            shutil.copy(os.path.join(pretrained_model_path, "checkpoints", 'config.yml'), os.path.join(results_dir, 'config.yml'))
     #count number of trainable params
     model_parameters = filter(lambda p: p.requires_grad, model.parameters())
     num_params = sum([np.prod(p.size()) for p in model_parameters])
@@ -693,9 +704,7 @@ if __name__ == "__main__":
     timestep = integrator_config["timestep"]
     ttime = integrator_config["ttime"]
     
-    results_dir = os.path.join(params.results_dir, f"IMPLICIT_{model_type}_{molecule_for_name}_{params.exp_name}") \
-                if params.train else os.path.join(params.results_dir, f"IMPLICIT_{model_type}_{molecule_for_name}_{params.exp_name}", "inference", params.eval_model)
-    os.makedirs(results_dir, exist_ok = True)
+    
 
     #load ground truth rdf and VACF
     print("Computing ground truth observables from datasets")
@@ -829,7 +838,6 @@ if __name__ == "__main__":
                 add_lists = lambda list1, list2, w1, w2: tuple([w1*l1 + w2*l2 \
                                                     for l1, l2 in zip(list1, list2)])
                 obs_grads = add_lists(rdf_grads, vacf_grads, params.rdf_loss_weight, params.vacf_loss_weight)
-                import pdb; pdb.set_trace()
                 cosine_similarity, ratio = compare_gradients(obs_grads, energy_force_grads)
                 grad_cosine_similarity.append(cosine_similarity)#compute gradient similarities
                 ratios.append(ratio)
