@@ -35,7 +35,7 @@ eq_steps: 0
 steps: 2000 # 1 picosecond per epoch
 n_dump: 50
 n_dump_vacf: 2
-n_replicas: 128
+n_replicas: 2
 minibatch_size: 40
 adjoint: True
 only_learn_if_unstable_threshold_reached: False

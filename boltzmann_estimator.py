@@ -109,7 +109,7 @@ class BoltzmannEstimator():
         
         #energy/force loss
         if (self.simulator.energy_force_loss_weight != 0 and self.simulator.train and simulator.optimizer.param_groups[0]['lr'] > 0):
-            energy_force_package = self.simulator.energy_force_gradient()
+            energy_force_package = (self.simulator.energy_force_gradient(),)
         else:
             energy_force_package = None
         
