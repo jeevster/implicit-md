@@ -117,7 +117,7 @@ class ImplicitMDSimulator():
         
         self.train_dataset = LmdbDataset({'src': train_src})
         self.test_dataset = LmdbDataset({'src': test_src})
-        self.test_dataloader = DataLoader(self.test_dataset, collate_fn=data_list_collater, batch_size = self.n_replicas)
+        self.train_dataloader = DataLoader(self.train_dataset, collate_fn=data_list_collater, batch_size = self.model_config['optim']['batch_size'])
 
         #get random initial condition from dataset
         init_data = self.train_dataset.__getitem__(10)
@@ -278,13 +278,7 @@ class ImplicitMDSimulator():
         self.rdf_loss_weight = params.rdf_loss_weight
         self.diffusion_loss_weight = params.diffusion_loss_weight
         self.vacf_loss_weight = params.vacf_loss_weight
-
-        #energy/force stuff
-        self.evaluator = Evaluator(task="s2ef") #s2ef: structure to energies/forces
-        self.energy_loss = torch.nn.MSELoss()
-        self.force_loss = torch.nn.MSELoss()
-        self.energy_loss_weight = params.energy_loss_weight
-        self.force_loss_weight = params.force_loss_weight
+        self.energy_force_loss_weight = params.energy_force_loss_weight
         
         #limit CPU usage
         torch.set_num_threads(10)
@@ -314,38 +308,29 @@ class ImplicitMDSimulator():
         test_metrics = {k: v['metric'] for k, v in test_metrics.items()}
         return test_metrics['energy_rmse'], test_metrics['forces_rmse']
 
-    def energy_force_gradient(self, batch_size):
-        #TODO: replace this with a call to trainer.train?
-        #Currently calculating the wrong gradients
-        num_batches = math.ceil(self.gt_traj_train.shape[0]/ batch_size)
-        energy_gradients = []
-        force_gradients = []
+    def energy_force_gradient(self):
         #store original shapes of model parameters
         original_numel = [param.data.numel() for param in self.model.parameters()]
         original_shapes = [param.data.shape for param in self.model.parameters()]
-        print(f"Computing gradients of bottom-up (energy-force) objective on {num_batches * batch_size} samples")
+        print(f"Computing gradients of bottom-up (energy-force) objective on {self.train_dataset.__len__()} samples")
+        gradients = []
+        self.trainer.model = self.model
         with torch.enable_grad():
-            for i in tqdm(range(num_batches)):
-                start = batch_size*i
-                end = batch_size*(i+1)
-                energy, force = self.force_calc(self.gt_traj_train[start:end], retain_grad = True)
-                #compute losses
-                gt_energy = self.gt_energies_train[start:end] if self.model_type == "nequip" \
-                                else self.normalizer_train.norm(self.gt_energies_train[start:end])
-                energy_loss = self.energy_loss(gt_energy, energy).mean()
-                force_loss = self.force_loss(self.gt_forces_train[start:end].reshape(-1, 3), force.reshape(-1, 3)).mean() 
-                energy_gradients.append(process_gradient(self.model.parameters(), torch.autograd.grad(energy_loss, self.model.parameters(), allow_unused = True, retain_graph = True), self.device))
-                force_gradients.append(process_gradient(self.model.parameters(), torch.autograd.grad(force_loss, self.model.parameters(), allow_unused = True), self.device))
-            num_params = len(list(self.model.parameters()))
-            #energy
-            energy_grads_flattened = torch.stack([torch.cat([energy_gradients[j][i].flatten().detach() for i in range(num_params)]) for j in range(num_batches)])
-            mean_energy_grads = energy_grads_flattened.mean(0)
-            final_energy_grads = tuple([g.reshape(shape) for g, shape in zip(mean_energy_grads.split(original_numel), original_shapes)])
-            #force
-            force_grads_flattened = torch.stack([torch.cat([force_gradients[j][i].flatten().detach() for i in range(num_params)]) for j in range(num_batches)])
-            mean_force_grads = force_grads_flattened.mean(0)
-            final_force_grads = tuple([g.reshape(shape) for g, shape in zip(mean_force_grads.split(original_numel), original_shapes)])
-            return final_energy_grads, final_force_grads
+            for batch in tqdm(self.train_dataloader):
+                with torch.cuda.amp.autocast(enabled=self.trainer.scaler is not None):
+                    for key in batch.keys:
+                        if isinstance(batch[key], torch.Tensor):
+                            batch[key] = batch[key].to(self.device)
+                    out = self.trainer._forward(batch)
+                    loss = self.trainer._compute_loss(out, [batch])
+                    loss = self.trainer.scaler.scale(loss) if self.trainer.scaler else loss
+                    grads = torch.autograd.grad(loss, self.model.parameters(), allow_unused = True)
+                    gradients.append(process_gradient(self.model.parameters(), grads, self.device))
+        grads_flattened = torch.stack([torch.cat([param.flatten().detach()\
+                                     for param in grad]) for grad in gradients])
+        mean_grads = grads_flattened.mean(0)
+        final_grads = tuple([g.reshape(shape) for g, shape in zip(mean_grads.split(original_numel), original_shapes)])
+        return final_grads
 
     def set_starting_states(self):
         #reset replicas which exceeded the stability criteria
@@ -813,13 +798,12 @@ if __name__ == "__main__":
         print('Collect MD Simulation Data')
         equilibriated_simulator = simulator.solve()
         #estimate gradients via Fabian method/adjoint
-        rdf_package, vacf_package, energy_force_package = \
+        rdf_package, vacf_package, energy_force_grad_batches = \
                     boltzmann_estimator.compute(equilibriated_simulator)
                 
         #unpack results
         rdf_grad_batches, mean_rdf, rdf_loss, mean_adf, adf_loss = rdf_package
         vacf_grad_batches, mean_vacf, vacf_loss = vacf_package
-        energy_grad_batches, force_grad_batches = energy_force_package
 
         #TODO: figure out why ADF loss is becoming NaN in some cases
         if torch.isnan(adf_loss):
@@ -833,26 +817,25 @@ if __name__ == "__main__":
             rdf_grad_batches = vacf_grad_batches
         if vacf_grad_batches is None:
             vacf_grad_batches = rdf_grad_batches
-        if energy_grad_batches is None and force_grad_batches is None:
-            energy_grad_batches = rdf_grad_batches
-            force_grad_batches = rdf_grad_batches
+        if energy_force_grad_batches is None:
+            energy_force_grad_batches = rdf_grad_batches
         
         #manual gradient updates for now
         if vacf_grad_batches or rdf_grad_batches:
             grad_cosine_similarity = []
             ratios = []
-            for rdf_grads, vacf_grads, energy_grads, force_grads in zip(rdf_grad_batches, vacf_grad_batches, energy_grad_batches, force_grad_batches): #loop through minibatches
+            for rdf_grads, vacf_grads, energy_force_grads in zip(rdf_grad_batches, vacf_grad_batches, energy_force_grad_batches): #loop through minibatches
                 simulator.optimizer.zero_grad()
                 add_lists = lambda list1, list2, w1, w2: tuple([w1*l1 + w2*l2 \
                                                     for l1, l2 in zip(list1, list2)])
                 obs_grads = add_lists(rdf_grads, vacf_grads, params.rdf_loss_weight, params.vacf_loss_weight)
-                ef_grads = add_lists(energy_grads, force_grads, params.energy_loss_weight, params.force_loss_weight)
-                cosine_similarity, ratio = compare_gradients(obs_grads, ef_grads)
+                import pdb; pdb.set_trace()
+                cosine_similarity, ratio = compare_gradients(obs_grads, energy_force_grads)
                 grad_cosine_similarity.append(cosine_similarity)#compute gradient similarities
                 ratios.append(ratio)
                 
                 #Loop through each group of parameters and set gradients
-                for param, obs_grad, ef_grad in zip(model.parameters(), obs_grads, ef_grads):
+                for param, obs_grad, ef_grad in zip(model.parameters(), obs_grads, energy_force_grads):
                     param.grad = obs_grad + ef_grad
                     
                 if params.gradient_clipping: #gradient clipping

@@ -1034,7 +1034,6 @@ class Trainer(ABC):
 
     def _compute_loss(self, out, batch_list):
         loss = []
-
         # Energy loss.
         if not self.no_energy:
             energy_target = torch.cat(

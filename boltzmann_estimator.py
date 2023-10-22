@@ -108,11 +108,10 @@ class BoltzmannEstimator():
         mean_vacf_loss = self.vacf_loss(mean_vacf) 
         
         #energy/force loss
-        if (self.simulator.energy_loss_weight != 0 or self.simulator.force_loss_weight!=0) and self.simulator.train and simulator.optimizer.param_groups[0]['lr'] > 0:
-            energy_grads, force_grads = self.simulator.energy_force_gradient(batch_size = self.simulator.n_replicas)
-            energy_force_package = ([energy_grads], [force_grads])
+        if (self.simulator.energy_force_loss_weight != 0 and self.simulator.train and simulator.optimizer.param_groups[0]['lr'] > 0):
+            energy_force_package = self.simulator.energy_force_gradient()
         else:
-            energy_force_package = (None, None)
+            energy_force_package = None
         
         #VACF stuff
         if self.params.vacf_loss_weight == 0 or not self.simulator.train or simulator.optimizer.param_groups[0]['lr'] == 0:

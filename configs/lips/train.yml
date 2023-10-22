@@ -22,8 +22,7 @@ diffusion_loss_weight: 0
 rdf_loss_weight: 1
 adf_loss_weight: 0
 vacf_loss_weight: 0
-energy_loss_weight: 0.05
-force_loss_weight: 0.95
+energy_force_loss_weight: 1
 diffusion_window: 1000
 vacf_window: 100
 ic_stddev: 0.0
