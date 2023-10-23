@@ -12,10 +12,10 @@
 
 # Define the path to your Python script
 script="/global/homes/s/sanjeevr/implicit-md/nvt_implicit.py"
-config_yml="/global/homes/s/sanjeevr/implicit-md/configs/$1/train.yml"
-command_train="python $script --config-yml $config_yml --model=$2 --rdf_loss_weight=$3 --vacf_loss_weight=$4 \
-               --energy_force_loss_weight=$5 --only_learn_if_unstable_threshold_reached=$6 --exp_name=$7"
-srun $command_train
+config_yml="/global/homes/s/sanjeevr/implicit-md/configs/$1/simulate.yml"
+command_inference="python $script --config-yml $config_yml --model=$2 --rdf_loss_weight=$3 --vacf_loss_weight=$4 \
+               --energy_force_loss_weight=$5 --eval_mode=$6 --exp_name=$7"
+srun $command_inference
 
     
 

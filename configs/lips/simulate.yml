@@ -1,7 +1,6 @@
 includes:
 - configs/lips/train.yml
 train: False
-eval_model: post
 rdf_mae_tol: 1.0 #Forces are Not Enough cutoff
 max_frac_unstable_threshold: 0.9
 eq_steps: 0

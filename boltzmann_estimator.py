@@ -32,7 +32,7 @@ class BoltzmannEstimator():
         self.diff_rdf = DifferentiableRDF(self.params, device)
         self.gt_rdf = gt_rdf
         if isinstance(self.gt_rdf, dict):
-            self.gt_rdf = torch.cat([rdf.flatten() for rdf in self.gt_rdf.values()])
+            self.gt_rdf = torch.cat([rdf.flatten() for rdf in self.gt_rdf.values()]) #combine RDFs together
         
         self.gt_vacf = gt_vacf
         self.gt_adf = gt_adf
@@ -236,7 +236,7 @@ class BoltzmannEstimator():
        
         ###RDF/ADF Stuff ###
         if self.simulator.name == "water":
-            rdfs = torch.cat([self.simulator.stability_criterion(s.unsqueeze(0))[0] for s in stacked_radii])
+            rdfs = torch.cat([self.simulator.stability_criterion(s.unsqueeze(0))[0] for s in stacked_radii]) #concatenate 3 RDFs together for water
             rdfs = rdfs.reshape(-1, self.simulator.n_replicas, rdfs.shape[-1])
             adfs = torch.zeros_like(rdfs) #TODO: fix
         else:

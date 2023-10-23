@@ -153,41 +153,23 @@ class ImplicitMDSimulator():
         #extract ground truth energies, forces, and bond length deviation
         self.DATAPATH_TRAIN = os.path.join(self.data_dir, self.name, self.molecule, self.size, 'train') 
         self.DATAPATH_TEST = os.path.join(self.data_dir, self.name, self.molecule, self.size, 'test')
-        self.trainer = OCPCalculator(config_yml=self.model_config, checkpoint=self.curr_model_path, 
-                                   test_data_src=self.DATAPATH_TEST, 
-                                   energy_units_to_eV=1.).trainer
         
-        gt_data_test = np.load(os.path.join(self.DATAPATH_TEST, 'nequip_npz.npz'))
         gt_data_train = np.load(os.path.join(self.DATAPATH_TRAIN, 'nequip_npz.npz'))
         if self.name == 'water':
             pos_field_train = gt_data_train.f.wrapped_coords
-            pos_field_test = gt_data_test.f.wrapped_coords
         elif self.name == 'lips':
             pos_field_train = gt_data_train.f.pos
-            pos_field_test = gt_data_test.f.pos
         else:
             pos_field_train = gt_data_train.f.R
-            pos_field_test = gt_data_test.f.R
-        
-        self.gt_traj_test = torch.FloatTensor(pos_field_test).to(self.device)
-        self.gt_energies_test = torch.FloatTensor(gt_data_test.f.energy if self.pbc else gt_data_test.f.E).to(self.device)
-        #TODO: force vs forces
-        self.gt_forces_test = torch.FloatTensor(gt_data_test.f.forces if self.pbc else gt_data_test.f.F).to(self.device)
-        self.target_test = {'energy': self.gt_energies_test, 'forces': self.gt_forces_test.reshape(-1, 3), \
-                            'natoms': torch.Tensor([self.n_atoms]).repeat(self.gt_energies_test.shape[0]).to(self.device)}
-        self.normalizer_test = Normalizer(tensor = self.gt_energies_test, device = self.device)
-        
         
         self.gt_traj_train = torch.FloatTensor(pos_field_train).to(self.device)
-        self.gt_energies_train = torch.FloatTensor(gt_data_train.f.energy if self.pbc else gt_data_train.f.E).to(self.device)
-        #TODO: force vs forces
-        self.gt_forces_train = torch.FloatTensor(gt_data_train.f.forces if self.pbc else gt_data_train.f.F).to(self.device)
-        self.target_train = {'energy': self.gt_energies_train, 'forces': self.gt_forces_train.reshape(-1, 3), \
-                                'natoms': torch.Tensor([self.n_atoms]).repeat(self.gt_energies_train.shape[0]).to(self.device)}
-        self.normalizer_train = Normalizer(tensor = self.gt_energies_train, device = self.device)
         self.mean_bond_lens = distance_pbc(
         self.gt_traj_train[:, self.bonds[:, 0]], self.gt_traj_train[:, self.bonds[:, 1]], \
                     torch.FloatTensor([30., 30., 30.]).to(self.device)).mean(dim=0)
+        #initialize trainer to calculate energy/force gradients
+        self.trainer = OCPCalculator(config_yml=self.model_config, checkpoint=self.curr_model_path, 
+                                   test_data_src=self.DATAPATH_TEST, 
+                                   energy_units_to_eV=1.).trainer
         self.instability_per_replica = torch.zeros((self.n_replicas,)).to(self.device)
         self.stable_time = torch.zeros((self.n_replicas,)).to(self.device)
         
@@ -569,11 +551,6 @@ class ImplicitMDSimulator():
                         else None,
                     }, checkpoint_path)
         self.curr_model_path = checkpoint_path
-    def restore_checkpoint(self, best=False):
-        name = "best_ckpt.pt" if best else "ckpt.pt"
-        checkpoint_path = os.path.join(self.save_dir, name)
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
-        self.model.load_state_dict(checkpoint['state_dict'])
 
     def create_frame(self, frame):
         # Particle positions, velocities, diameter
@@ -841,13 +818,15 @@ if __name__ == "__main__":
                 simulator.optimizer.zero_grad()
                 add_lists = lambda list1, list2, w1, w2: tuple([w1*l1 + w2*l2 \
                                                     for l1, l2 in zip(list1, list2)])
+                #modify gradients according to loss weights
                 obs_grads = add_lists(rdf_grads, vacf_grads, params.rdf_loss_weight, params.vacf_loss_weight)
-                cosine_similarity, ratio = compare_gradients(obs_grads, energy_force_grads)
+                ef_grads = tuple([params.energy_force_loss_weight * ef_grad for ef_grad in energy_force_grads])
+                cosine_similarity, ratio = compare_gradients(obs_grads, ef_grads)
                 grad_cosine_similarity.append(cosine_similarity)#compute gradient similarities
                 ratios.append(ratio)
                 
                 #Loop through each group of parameters and set gradients
-                for param, obs_grad, ef_grad in zip(model.parameters(), obs_grads, energy_force_grads):
+                for param, obs_grad, ef_grad in zip(model.parameters(), obs_grads, ef_grads):
                     param.grad = obs_grad + ef_grad
                     
                 if params.gradient_clipping: #gradient clipping
@@ -875,7 +854,6 @@ if __name__ == "__main__":
 
         end = time.time()
         sim_time = end - start
-        
         #save rdf, adf, and vacf at the end of the trajectory
         if name == 'water':
             for key, rdf in zip(gt_rdf.keys(), mean_rdf.split(500)):

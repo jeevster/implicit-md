@@ -1,7 +1,6 @@
 includes:
 - configs/md22/train.yml
 train: False
-eval_model: post
 bond_dev_tol: 0.5
 max_frac_unstable_threshold: 0.9
 n_epochs: 300 #corresponding to 300 ps
