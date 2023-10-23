@@ -141,7 +141,7 @@ class Flags:
             "--cutoff", type=float, help="reset radius cutoff"
         )
         self.parser.add_argument(
-            "--lr_patience", type=int, help="patience for lr scheduler"
+            "--patience", type=int, help="patience for lr scheduler"
         )
         self.parser.add_argument(
             "--max_epochs", type=int, help="maximum number of training epochs"

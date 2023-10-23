@@ -612,8 +612,8 @@ def build_config(args, args_override):
     if args.cutoff is not None:
         config["model"]["cutoff"] = args.cutoff
         
-    if args.lr_patience is not None:
-        config["optim"]["patience"] = args.lr_patience
+    if args.patience is not None:
+        config["optim"]["patience"] = args.patience
         
     if args.max_epochs:
         config["optim"]["max_epochs"] = args.max_epochs

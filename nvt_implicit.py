@@ -597,7 +597,9 @@ class ImplicitMDSimulator():
 if __name__ == "__main__":
     setup_logging() 
     parser = flags.get_parser()
+    import pdb; pdb.set_trace()
     args, override_args = parser.parse_known_args()
+    
     config = build_config(args, override_args)
     params = types.SimpleNamespace(**config)
     

@@ -1,6 +1,6 @@
 src: /pscratch/sd/s/sanjeevr/ #/data/sanjeevr 
 name: md17
-size: 10k
+size: 1k
 molecule: salicylic_acid
 normalize_labels: False
 checkpoint_epoch: -1 #which model to start from
