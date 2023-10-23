@@ -280,6 +280,8 @@ class ImplicitMDSimulator():
         self.diffusion_loss_weight = params.diffusion_loss_weight
         self.vacf_loss_weight = params.vacf_loss_weight
         self.energy_force_loss_weight = params.energy_force_loss_weight
+        if self.vacf_loss_weight != 0:
+            self.integrator = 'Langevin'
         
         #limit CPU usage
         torch.set_num_threads(10)
@@ -303,11 +305,11 @@ class ImplicitMDSimulator():
         #TODO: also make this work for Nequip
         self.calculator = OCPCalculator(config_yml=self.model_config, checkpoint=self.curr_model_path, 
                                    test_data_src=self.DATAPATH_TEST, 
-                                   energy_units_to_eV=1.)
+                                   energy_units_to_eV=1.) 
         print(f"Computing bottom-up (energy-force) error on test set")
-        test_metrics = self.calculator.trainer.validate('test', max_points=1000)
+        test_metrics = self.calculator.trainer.validate('test', max_points=10000)
         test_metrics = {k: v['metric'] for k, v in test_metrics.items()}
-        return test_metrics['energy_rmse'], test_metrics['forces_rmse']
+        return test_metrics['energy_rmse'], test_metrics['forces_rmse'], test_metrics['energy_mae'], test_metrics['forces_mae']
 
     def energy_force_gradient(self):
         #store original shapes of model parameters
@@ -750,6 +752,8 @@ if __name__ == "__main__":
     mean_instabilities = []
     energy_rmses = []
     force_rmses = []
+    energy_maes = []
+    force_maes = []
     grad_times = []
     sim_times = []
     grad_norms = []
@@ -911,9 +915,11 @@ if __name__ == "__main__":
         lrs.append(simulator.optimizer.param_groups[0]['lr'])
         #energy/force error
         if epoch == 0 or (simulator.optimizer.param_groups[0]['lr'] > 0 and params.train): #don't compute it unless we are in the learning phase
-            energy_rmse, force_rmse = simulator.energy_force_error()
+            energy_rmse, force_rmse, energy_mae, force_mae = simulator.energy_force_error()
             energy_rmses.append(energy_rmse)
             force_rmses.append(force_rmse)
+            energy_maes.append(energy_mae)
+            force_maes.append(force_mae)
         sim_times.append(sim_time)
         try:
             grad_norms.append(max_norm.item())
@@ -931,6 +937,8 @@ if __name__ == "__main__":
         writer.add_scalar('Learning Rate', lrs[-1], global_step=epoch+1)
         writer.add_scalar('Energy RMSE', energy_rmses[-1], global_step=epoch+1)
         writer.add_scalar('Force RMSE', force_rmses[-1], global_step=epoch+1)
+        writer.add_scalar('Energy MAE', energy_maes[-1], global_step=epoch+1)
+        writer.add_scalar('Force MAE', force_maes[-1], global_step=epoch+1)
         writer.add_scalar('Simulation Time', sim_times[-1], global_step=epoch+1)
         writer.add_scalar('Gradient Norm', grad_norms[-1], global_step=epoch+1)
         writer.add_scalar('Gradient Cosine Similarity (Observable vs Energy-Force)', grad_cosine_similarity, global_step=epoch+1)
