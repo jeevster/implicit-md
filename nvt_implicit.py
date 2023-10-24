@@ -3,6 +3,8 @@ import gsd.hoomd
 import torch
 import logging
 import gc
+from pathlib import Path
+import yaml
 import torch.nn as nn
 import math
 import shutil
@@ -118,8 +120,10 @@ class ImplicitMDSimulator():
         
         self.train_dataset = LmdbDataset({'src': train_src})
         self.test_dataset = LmdbDataset({'src': test_src})
-        self.train_dataloader = DataLoader(self.train_dataset, collate_fn=data_list_collater, batch_size = self.model_config['optim']['batch_size'])
-
+        self.train_dataloader = DataLoader(self.train_dataset, collate_fn=data_list_collater, \
+                                batch_size = self.model_config['optim']['batch_size'] \
+                                    if self.model_type!="nequip" else 1)
+ 
         #get random initial condition from dataset
         init_data = self.train_dataset.__getitem__(10)
         self.n_atoms = init_data['pos'].shape[0]
@@ -167,9 +171,10 @@ class ImplicitMDSimulator():
         self.gt_traj_train[:, self.bonds[:, 0]], self.gt_traj_train[:, self.bonds[:, 1]], \
                     torch.FloatTensor([30., 30., 30.]).to(self.device)).mean(dim=0)
         #initialize trainer to calculate energy/force gradients
-        self.trainer = OCPCalculator(config_yml=self.model_config, checkpoint=self.curr_model_path, 
-                                   test_data_src=self.DATAPATH_TEST, 
-                                   energy_units_to_eV=1.).trainer
+        if self.model_type !='nequip':
+            self.trainer = OCPCalculator(config_yml=self.model_config, checkpoint=self.curr_model_path, 
+                                    test_data_src=self.DATAPATH_TEST, 
+                                    energy_units_to_eV=1.).trainer
         self.instability_per_replica = torch.zeros((self.n_replicas,)).to(self.device)
         self.stable_time = torch.zeros((self.n_replicas,)).to(self.device)
         
@@ -284,12 +289,36 @@ class ImplicitMDSimulator():
     '''compute energy/force error on test set'''
     def energy_force_error(self):
         self.model_config['model']['name'] = self.model_type
-        #TODO: also make this work for Nequip
-        self.calculator = OCPCalculator(config_yml=self.model_config, checkpoint=self.curr_model_path, 
-                                   test_data_src=self.DATAPATH_TEST, 
-                                   energy_units_to_eV=1.) 
-        print(f"Computing bottom-up (energy-force) error on test set")
-        test_metrics = self.calculator.trainer.validate('test', max_points=10000)
+        if self.model_type == 'nequip':
+            import pdb; pdb.set_trace()
+            #deploy nequip model
+            os.system(f'nequip-deploy build --train-dir {os.path.dirname(self.curr_model_path)}/ {self.save_dir}/deployed_model.pth')
+            #TODO: need to get the data config from somewhere
+            data_config = config['nequip_data_config']        
+            # call nequip evaluation script.
+            os.system(f'nequip-evaluate --train-dir {os.path.dirname(self.curr_model_path)} --dataset-config {data_config} \
+                    --log {os.path.dirname(self.curr_model_path)}/test_metric.log --batch-size 4')
+            
+            with open(f'{os.path.dirname(self.curr_model_path)}/test_metric.log', 'r') as f:
+                test_log = f.read().splitlines()
+                for i, line in enumerate(test_log):
+                    if 'Final result' in line:
+                        test_log = test_log[(i+1):]
+                        break
+                test_metrics = {}
+                for line in test_log:
+                    k, v = line.split('=')
+                    k = k.strip()
+                    v = float(v.strip())
+                    test_metrics[k] = v
+        #non-Nequip models use OCP calculator
+        else:
+            self.calculator = OCPCalculator(config_yml=self.model_config, checkpoint=self.curr_model_path, 
+                                    test_data_src=self.DATAPATH_TEST, 
+                                    energy_units_to_eV=1.) 
+            print(f"Computing bottom-up (energy-force) error on test set")
+            test_metrics = self.calculator.trainer.validate('test', max_points=10000)
+        
         test_metrics = {k: v['metric'] for k, v in test_metrics.items()}
         return test_metrics['energy_rmse'], test_metrics['forces_rmse'], test_metrics['energy_mae'], test_metrics['forces_mae']
 
@@ -597,7 +626,6 @@ class ImplicitMDSimulator():
 if __name__ == "__main__":
     setup_logging() 
     parser = flags.get_parser()
-    import pdb; pdb.set_trace()
     args, override_args = parser.parse_known_args()
     
     config = build_config(args, override_args)
@@ -668,6 +696,10 @@ if __name__ == "__main__":
             print(f'Loading model weights from {os.path.join(pretrained_model_path, cname)}')
             model, model_config = Trainer.load_model_from_training_session(pretrained_model_path, \
                                     model_name = cname, device =  torch.device(device))
+            shutil.copy(os.path.join(pretrained_model_path, cname), os.path.join(results_dir, 'best_model.pth'))
+            shutil.copy(os.path.join(pretrained_model_path,'config.yaml'), os.path.join(results_dir, 'config.yaml'))
+        model_path = os.path.join(pretrained_model_path, cname)
+        model_config = {'model': model_config}
     else:
         model, model_path, model_config = load_pretrained_model(model_type, path = pretrained_model_path, ckpt_epoch = config['checkpoint_epoch'], device = torch.device(device), train = params.train or params.eval_model == 'pre')
         #copy original model config to results directory

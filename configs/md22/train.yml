@@ -1,5 +1,5 @@
 #TODO: specify different integrator configs for different molecules based on MD22 paper
-src: /pscratch/sd/s/sanjeevr #/data/sanjeevr 
+src: /data/sanjeevr #/pscratch/sd/s/sanjeevr
 name: md22
 size: 10percent
 molecule: ac_Ala3_NHMe
@@ -7,9 +7,9 @@ normalize_labels: False
 checkpoint_epoch: -1 #which model to start from
 model: nequip
 l_max: 1
-log_dir: /global/cfs/projectdirs/m4319/sanjeevr #/home/sanjeevr/implicit-md
+log_dir: /home/sanjeevr/implicit-md #/global/cfs/projectdirs/m4319/sanjeevr
 results_dir: 'results_md22'
-model_dir: /pscratch/sd/s/sanjeevr/MODELPATH #'/pscratch/sd/s/sanjeevr/MODELPATH' /home/sanjeevr/MDsim/MODELPATH
+model_dir: /home/sanjeevr/MDsim/MODELPATH #/pscratch/sd/s/sanjeevr/MODELPATH 
 seed: 123
 dr: 0.02
 max_rdf_dist: 10
@@ -31,10 +31,10 @@ bond_dev_tol: 0.25 #decay this?
 max_frac_unstable_threshold: 0.75 #decay this?
 min_frac_unstable_threshold: 0.0 #increase this?
 eq_steps: 0
-steps: 2000 # 1 picosecond per epoch
+steps: 200 # 1 picosecond per epoch
 n_dump: 50
 n_dump_vacf: 2
-n_replicas: 128
+n_replicas: 2
 minibatch_size: 32
 adjoint: True
 only_learn_if_unstable_threshold_reached: True
