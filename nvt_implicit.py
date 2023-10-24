@@ -290,15 +290,12 @@ class ImplicitMDSimulator():
     def energy_force_error(self):
         self.model_config['model']['name'] = self.model_type
         if self.model_type == 'nequip':
-            import pdb; pdb.set_trace()
-            #deploy nequip model
+            #call nequip deploy script
             os.system(f'nequip-deploy build --train-dir {os.path.dirname(self.curr_model_path)}/ {self.save_dir}/deployed_model.pth')
-            #TODO: need to get the data config from somewhere
-            data_config = config['nequip_data_config']        
+            data_config = f"configs/{self.name}/nequip_data_cfg/{self.molecule}.yml"
             # call nequip evaluation script.
             os.system(f'nequip-evaluate --train-dir {os.path.dirname(self.curr_model_path)} --dataset-config {data_config} \
                     --log {os.path.dirname(self.curr_model_path)}/test_metric.log --batch-size 4')
-            
             with open(f'{os.path.dirname(self.curr_model_path)}/test_metric.log', 'r') as f:
                 test_log = f.read().splitlines()
                 for i, line in enumerate(test_log):
@@ -311,6 +308,7 @@ class ImplicitMDSimulator():
                     k = k.strip()
                     v = float(v.strip())
                     test_metrics[k] = v
+            return test_metrics['e_mae'], test_metrics['f_rmse'], test_metrics['e_mae'], test_metrics['f_mae']
         #non-Nequip models use OCP calculator
         else:
             self.calculator = OCPCalculator(config_yml=self.model_config, checkpoint=self.curr_model_path, 
@@ -318,9 +316,9 @@ class ImplicitMDSimulator():
                                     energy_units_to_eV=1.) 
             print(f"Computing bottom-up (energy-force) error on test set")
             test_metrics = self.calculator.trainer.validate('test', max_points=10000)
-        
-        test_metrics = {k: v['metric'] for k, v in test_metrics.items()}
-        return test_metrics['energy_rmse'], test_metrics['forces_rmse'], test_metrics['energy_mae'], test_metrics['forces_mae']
+            test_metrics = {k: v['metric'] for k, v in test_metrics.items()}
+            return test_metrics['energy_rmse'], test_metrics['forces_rmse'], \
+                    test_metrics['energy_mae'], test_metrics['forces_mae']
 
     def energy_force_gradient(self):
         #store original shapes of model parameters
@@ -328,22 +326,29 @@ class ImplicitMDSimulator():
         original_shapes = [param.data.shape for param in self.model.parameters()]
         print(f"Computing gradients of bottom-up (energy-force) objective on {self.train_dataset.__len__()} samples")
         gradients = []
-        self.trainer.model = self.model
-        with torch.enable_grad():
-            for batch in tqdm(self.train_dataloader):
-                with torch.cuda.amp.autocast(enabled=self.trainer.scaler is not None):
-                    for key in batch.keys:
-                        if isinstance(batch[key], torch.Tensor):
-                            batch[key] = batch[key].to(self.device)
-                    out = self.trainer._forward(batch)
-                    loss = self.trainer._compute_loss(out, [batch])
-                    loss = self.trainer.scaler.scale(loss) if self.trainer.scaler else loss
-                    grads = torch.autograd.grad(loss, self.model.parameters(), allow_unused = True)
-                    gradients.append(process_gradient(self.model.parameters(), grads, self.device))
-        grads_flattened = torch.stack([torch.cat([param.flatten().detach()\
-                                     for param in grad]) for grad in gradients])
-        mean_grads = grads_flattened.mean(0)
-        final_grads = tuple([g.reshape(shape) for g, shape in zip(mean_grads.split(original_numel), original_shapes)])
+        if self.model_type == "nequip":
+            with torch.enable_grad():
+                for batch in tqdm(self.train_dataloader):
+                    import pdb; pdb.set_trace()
+                    x = 0
+
+        else:
+            self.trainer.model = self.model
+            with torch.enable_grad():
+                for batch in tqdm(self.train_dataloader):
+                    with torch.cuda.amp.autocast(enabled=self.trainer.scaler is not None):
+                        for key in batch.keys:
+                            if isinstance(batch[key], torch.Tensor):
+                                batch[key] = batch[key].to(self.device)
+                        out = self.trainer._forward(batch)
+                        loss = self.trainer._compute_loss(out, [batch])
+                        loss = self.trainer.scaler.scale(loss) if self.trainer.scaler else loss
+                        grads = torch.autograd.grad(loss, self.model.parameters(), allow_unused = True)
+                        gradients.append(process_gradient(self.model.parameters(), grads, self.device))
+            grads_flattened = torch.stack([torch.cat([param.flatten().detach()\
+                                        for param in grad]) for grad in gradients])
+            mean_grads = grads_flattened.mean(0)
+            final_grads = tuple([g.reshape(shape) for g, shape in zip(mean_grads.split(original_numel), original_shapes)])
         return final_grads
 
     def set_starting_states(self):
@@ -698,6 +703,7 @@ if __name__ == "__main__":
                                     model_name = cname, device =  torch.device(device))
             shutil.copy(os.path.join(pretrained_model_path, cname), os.path.join(results_dir, 'best_model.pth'))
             shutil.copy(os.path.join(pretrained_model_path,'config.yaml'), os.path.join(results_dir, 'config.yaml'))
+            shutil.copy(os.path.join(pretrained_model_path,'trainer.pth'), os.path.join(results_dir, 'trainer.pth'))
         model_path = os.path.join(pretrained_model_path, cname)
         model_config = {'model': model_config}
     else:
