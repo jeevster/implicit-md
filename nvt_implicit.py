@@ -33,10 +33,11 @@ import ase
 from ase import Atoms, units
 import nequip.scripts.deploy
 from nequip.train.trainer import Trainer
+from nequip.train.loss import Loss
 from nequip.data import AtomicData, AtomicDataDict
 from nequip.data.AtomicData import neighbor_list_and_relative_vec
 from nequip.utils.torch_geometric import Batch, Dataset
-from nequip.utils import atomic_write
+from nequip.utils import atomic_write, load_file
 from ase.neighborlist import natural_cutoffs, NeighborList
 from mdsim.md.ase_utils import OCPCalculator
 from mdsim.common.registry import registry
@@ -110,6 +111,12 @@ class ImplicitMDSimulator():
         #Initialize model
         self.curr_model_path = model_path
         self.model = model
+        if self.model_type == "nequip":
+            self.rescale_layers = []
+            outer_layer = self.model
+            while hasattr(outer_layer, "unscale"):
+                self.rescale_layers.append(outer_layer)
+                outer_layer = getattr(outer_layer, "model", None)
         for param in self.model.parameters():
             param.requires_grad = True
         self.model_config = model_config
@@ -170,11 +177,7 @@ class ImplicitMDSimulator():
         self.mean_bond_lens = distance_pbc(
         self.gt_traj_train[:, self.bonds[:, 0]], self.gt_traj_train[:, self.bonds[:, 1]], \
                     torch.FloatTensor([30., 30., 30.]).to(self.device)).mean(dim=0)
-        #initialize trainer to calculate energy/force gradients
-        if self.model_type !='nequip':
-            self.trainer = OCPCalculator(config_yml=self.model_config, checkpoint=self.curr_model_path, 
-                                    test_data_src=self.DATAPATH_TEST, 
-                                    energy_units_to_eV=1.).trainer
+        
         self.instability_per_replica = torch.zeros((self.n_replicas,)).to(self.device)
         self.stable_time = torch.zeros((self.n_replicas,)).to(self.device)
         
@@ -284,6 +287,19 @@ class ImplicitMDSimulator():
         dump_params_to_yml(self.params, self.save_dir)
         #File dump stuff
         self.f = open(f"{self.save_dir}/log.txt", "a+")
+
+        #initialize trainer to calculate energy/force gradients
+        if self.model_type == "nequip":
+            self.train_dict = load_file(
+            supported_formats=dict(torch=["pth", "pt"], yaml=["yaml"], json=["json"]),
+            filename=os.path.join(self.save_dir, "trainer.pth"),
+            enforced_format=None,
+            )
+            self.nequip_loss = Loss(coeffs = self.train_dict['loss_coeffs'])
+        else:
+            self.trainer = OCPCalculator(config_yml=self.model_config, checkpoint=self.curr_model_path, 
+                                    test_data_src=self.DATAPATH_TEST, 
+                                    energy_units_to_eV=1.).trainer
          
 
     '''compute energy/force error on test set'''
@@ -327,11 +343,32 @@ class ImplicitMDSimulator():
         print(f"Computing gradients of bottom-up (energy-force) objective on {self.train_dataset.__len__()} samples")
         gradients = []
         if self.model_type == "nequip":
+            
             with torch.enable_grad():
-                for batch in tqdm(self.train_dataloader):
-                    import pdb; pdb.set_trace()
+                for data in tqdm(self.train_dataloader):
+                    
                     x = 0
+                    # Do any target rescaling
+                    data = data.to(self.device)
+                    data = AtomicData.to_AtomicDataDict(data)
 
+                    data_unscaled = data
+                    for layer in self.rescale_layers:
+                        # This means that self.model is RescaleOutputs
+                        # this will normalize the targets
+                        # in validation (eval mode), it does nothing
+                        # in train mode, it normalizes the targets
+                        data_unscaled = layer.unscale(data_unscaled)    
+                    data_unscaled['atom_types'] = self.atoms_batch['atom_types'][:self.n_atoms]
+                    # Run model
+                    data_unscaled['edge_index'] = radius_graph(data_unscaled['pos'].reshape(-1, 3), r=self.model_config['model'][self.r_max_key], batch=data_unscaled['batch'], max_num_neighbors=32)
+                    data_unscaled['edge_cell_shift'] = torch.zeros((data_unscaled['edge_index'].shape[1], 3)).to(self.device)
+                    out = self.model(data_unscaled)
+                    data_unscaled['forces'] = data_unscaled['force']
+                    data_unscaled['total_energy'] = data_unscaled['y']
+                    loss, _ = self.nequip_loss(pred=out, ref=data_unscaled)
+                    grads = torch.autograd.grad(loss, self.model.parameters(), allow_unused = True)
+                    gradients.append(process_gradient(self.model.parameters(), grads, self.device))
         else:
             self.trainer.model = self.model
             with torch.enable_grad():
@@ -345,10 +382,10 @@ class ImplicitMDSimulator():
                         loss = self.trainer.scaler.scale(loss) if self.trainer.scaler else loss
                         grads = torch.autograd.grad(loss, self.model.parameters(), allow_unused = True)
                         gradients.append(process_gradient(self.model.parameters(), grads, self.device))
-            grads_flattened = torch.stack([torch.cat([param.flatten().detach()\
-                                        for param in grad]) for grad in gradients])
-            mean_grads = grads_flattened.mean(0)
-            final_grads = tuple([g.reshape(shape) for g, shape in zip(mean_grads.split(original_numel), original_shapes)])
+        grads_flattened = torch.stack([torch.cat([param.flatten().detach()\
+                                    for param in grad]) for grad in gradients])
+        mean_grads = grads_flattened.mean(0)
+        final_grads = tuple([g.reshape(shape) for g, shape in zip(mean_grads.split(original_numel), original_shapes)])
         return final_grads
 
     def set_starting_states(self):

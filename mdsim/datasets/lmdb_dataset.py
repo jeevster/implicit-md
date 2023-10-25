@@ -8,7 +8,9 @@ import lmdb
 import numpy as np
 import torch
 from torch.utils.data import Dataset
-from torch_geometric.data import Batch
+#from torch_geometric.data import Batch
+from nequip.utils.torch_geometric import Batch, Dataset
+
 
 from mdsim.common.registry import registry
 
@@ -121,5 +123,4 @@ def data_list_collater(data_list, otf_graph=True):
             logging.warning(
                 "LMDB does not contain edge index information, set otf_graph=True"
             )
-
     return batch
