@@ -128,8 +128,7 @@ class ImplicitMDSimulator():
         self.train_dataset = LmdbDataset({'src': train_src})
         self.test_dataset = LmdbDataset({'src': test_src})
         self.train_dataloader = DataLoader(self.train_dataset, collate_fn=data_list_collater, \
-                                batch_size = self.model_config['optim']['batch_size'] \
-                                    if self.model_type!="nequip" else 1)
+                                batch_size = self.minibatch_size)
  
         #get random initial condition from dataset
         init_data = self.train_dataset.__getitem__(10)
@@ -342,15 +341,18 @@ class ImplicitMDSimulator():
         original_shapes = [param.data.shape for param in self.model.parameters()]
         print(f"Computing gradients of bottom-up (energy-force) objective on {self.train_dataset.__len__()} samples")
         gradients = []
+        losses = []
         if self.model_type == "nequip":
             
             with torch.enable_grad():
                 for data in tqdm(self.train_dataloader):
-                    
-                    x = 0
                     # Do any target rescaling
                     data = data.to(self.device)
                     data = AtomicData.to_AtomicDataDict(data)
+                    actual_batch_size = int(data['pos'].shape[0]/self.n_atoms)
+                    data['cell'] = data['cell'][0].unsqueeze(0).repeat(actual_batch_size, 1, 1)
+                    data['pbc'] = self.atoms_batch['pbc'][0].unsqueeze(0).repeat(actual_batch_size, 1)
+                    data['atom_types'] = self.atoms_batch['atom_types'][0:self.n_atoms].repeat(actual_batch_size, 1)
 
                     data_unscaled = data
                     for layer in self.rescale_layers:
@@ -359,16 +361,16 @@ class ImplicitMDSimulator():
                         # in validation (eval mode), it does nothing
                         # in train mode, it normalizes the targets
                         data_unscaled = layer.unscale(data_unscaled)    
-                    data_unscaled['atom_types'] = self.atoms_batch['atom_types'][:self.n_atoms]
                     # Run model
                     data_unscaled['edge_index'] = radius_graph(data_unscaled['pos'].reshape(-1, 3), r=self.model_config['model'][self.r_max_key], batch=data_unscaled['batch'], max_num_neighbors=32)
                     data_unscaled['edge_cell_shift'] = torch.zeros((data_unscaled['edge_index'].shape[1], 3)).to(self.device)
                     out = self.model(data_unscaled)
                     data_unscaled['forces'] = data_unscaled['force']
-                    data_unscaled['total_energy'] = data_unscaled['y']
+                    data_unscaled['total_energy'] = data_unscaled['y'].unsqueeze(-1)
                     loss, _ = self.nequip_loss(pred=out, ref=data_unscaled)
                     grads = torch.autograd.grad(loss, self.model.parameters(), allow_unused = True)
                     gradients.append(process_gradient(self.model.parameters(), grads, self.device))
+                    losses.append(loss.detach())
         else:
             self.trainer.model = self.model
             with torch.enable_grad():
@@ -382,6 +384,7 @@ class ImplicitMDSimulator():
                         loss = self.trainer.scaler.scale(loss) if self.trainer.scaler else loss
                         grads = torch.autograd.grad(loss, self.model.parameters(), allow_unused = True)
                         gradients.append(process_gradient(self.model.parameters(), grads, self.device))
+                        losses.append(loss.detach())
         grads_flattened = torch.stack([torch.cat([param.flatten().detach()\
                                     for param in grad]) for grad in gradients])
         mean_grads = grads_flattened.mean(0)
