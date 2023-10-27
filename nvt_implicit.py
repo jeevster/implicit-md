@@ -23,6 +23,7 @@ from torch_geometric.nn import MessagePassing, radius_graph
 from torchmd.observable import generate_vol_bins, DifferentiableRDF, DifferentiableADF, DifferentiableVelHist, DifferentiableVACF, SelfIntermediateScattering, msd, DiffusionCoefficient
 import time
 from torch.utils.tensorboard import SummaryWriter
+from torch.utils.tensorboard.summary import hparams
 from torch.utils.data import DataLoader
 from functorch import vmap, vjp
 import warnings
@@ -280,7 +281,7 @@ class ImplicitMDSimulator():
         self.diff_vacf = vmap(DifferentiableVACF(params, self.device))
     
         molecule_for_name = self.name if self.name =='water' or self.name == 'lips' else self.molecule
-        name = f"IMPLICIT_{self.model_type}_{molecule_for_name}_{params.exp_name}"
+        name = f"IMPLICIT_{self.model_type}_{molecule_for_name}_{params.exp_name}_lr={params.lr}_efweight={params.energy_force_loss_weight}"
         self.save_dir = os.path.join(self.results_dir, name) if self.train else os.path.join(self.results_dir, name, 'inference', self.eval_model)
         os.makedirs(self.save_dir, exist_ok = True)
         dump_params_to_yml(self.params, self.save_dir)
@@ -700,8 +701,8 @@ if __name__ == "__main__":
     model_type = config['model']
 
     #make directories
-    results_dir = os.path.join(params.results_dir, f"IMPLICIT_{model_type}_{molecule_for_name}_{params.exp_name}") \
-                if params.train else os.path.join(params.results_dir, f"IMPLICIT_{model_type}_{molecule_for_name}_{params.exp_name}", "inference", params.eval_model)
+    results_dir = os.path.join(params.results_dir, f"IMPLICIT_{model_type}_{molecule_for_name}_{params.exp_name}_lr={params.lr}_efweight={params.energy_force_loss_weight}") \
+                if params.train else os.path.join(params.results_dir, f"IMPLICIT_{model_type}_{molecule_for_name}_{params.exp_name}_lr={params.lr}_efweight={params.energy_force_loss_weight}", "inference", params.eval_model)
     os.makedirs(results_dir, exist_ok = True)
     
     print(f"Loading pretrained {model_type} model")
@@ -720,7 +721,7 @@ if __name__ == "__main__":
         pretrained_model_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{size}_{new_lmax_string}{model_type}")  
 
     elif 'post' in config["eval_model"]: #load observable finetuned model
-        pretrained_model_path = os.path.join(params.results_dir, f"IMPLICIT_{model_type}_{molecule_for_name}_{params.exp_name}")
+        pretrained_model_path = os.path.join(params.results_dir, f"IMPLICIT_{model_type}_{molecule_for_name}_{params.exp_name}_lr={params.lr}_efweight={params.energy_force_loss_weight}")
     else:
         RuntimeError("Invalid eval model choice")
     
@@ -748,7 +749,7 @@ if __name__ == "__main__":
         model_path = os.path.join(pretrained_model_path, cname)
         model_config = {'model': model_config}
     else:
-        model, model_path, model_config = load_pretrained_model(model_type, path = pretrained_model_path, ckpt_epoch = config['checkpoint_epoch'], device = torch.device(device), train = params.train or params.eval_model == 'pre')
+        model, model_path, model_config = load_pretrained_model(model_type, path = pretrained_model_path, ckpt_epoch = config['checkpoint_epoch'], device = torch.device(device), train = params.train or params.eval_model != 'post')
         #copy original model config to results directory
         if params.train:
             shutil.copy(os.path.join(pretrained_model_path, "checkpoints", 'config.yml'), os.path.join(results_dir, 'config.yml'))
@@ -860,9 +861,6 @@ if __name__ == "__main__":
             #reset scheduler
             simulator.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(simulator.optimizer, mode='min', factor=0.2, patience=10)
             changed_lr = True
-            if not params.train:
-                np.save(os.path.join(results_dir, f'replicas_stable_time.npy'), simulator.stable_time.cpu().numpy())
-                simulator.stable_time = torch.zeros((simulator.n_replicas,)).to(simulator.device)
 
         start = time.time()
         #run simulation 
@@ -1003,9 +1001,27 @@ if __name__ == "__main__":
         writer.add_scalar('Gradient Cosine Similarity (Observable vs Energy-Force)', grad_cosine_similarity, global_step=epoch+1)
         writer.add_scalar('Gradient Ratios (Observable vs Energy-Force)', ratios, global_step=epoch+1)
 
-    writer.close()
-    if not params.train:
-        np.save(os.path.join(results_dir, 'full_traj.npy'), torch.stack(simulator.all_radii))
+        #add hyperparams and final metrics at inference time (do it each epoch in case we time-out)
+        if not params.train:
+            np.save(os.path.join(results_dir, f'replicas_stable_time.npy'), simulator.stable_time.cpu().numpy())
+            np.save(os.path.join(results_dir, 'full_traj.npy'), torch.stack(simulator.all_radii))
+            if params.eval_model == "post":
+                hyperparameters = {
+                    'lr': params.lr,
+                    'ef_loss_weight': params.energy_force_loss_weight
+                }
+                final_metrics = {
+                    'Energy MAE': energy_maes[-1],
+                    'Force MAE': force_maes[-1],
+                    'Stability': resets[75] if len(resets) > 75 else resets[-1],
+                    'RDF Loss': sum(rdf_losses[10:])/len(rdf_losses[10:]) if len(rdf_losses) > 10 else sum(rdf_losses)/len(rdf_losses),
+                    'VACF Loss': sum(vacf_losses[10:])/len(vacf_losses[10:]) if len(vacf_losses) > 10 else sum(vacf_losses)/len(vacf_losses),
+                }
+                hparams_logging = hparams(hyperparameters, final_metrics)
+                for i in hparams_logging:
+                    writer.file_writer.add_summary(i)
+    
+    writer.close()        
     print('Done!')
     
 
