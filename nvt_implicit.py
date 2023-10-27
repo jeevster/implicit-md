@@ -288,29 +288,29 @@ class ImplicitMDSimulator():
         self.f = open(f"{self.save_dir}/log.txt", "a+")
 
         #initialize trainer to calculate energy/force gradients
-        if self.model_type == "nequip":
-            self.train_dict = load_file(
-            supported_formats=dict(torch=["pth", "pt"], yaml=["yaml"], json=["json"]),
-            filename=os.path.join(self.save_dir, "trainer.pth"),
-            enforced_format=None,
-            )
-            self.nequip_loss = Loss(coeffs = self.train_dict['loss_coeffs'])
-        else:
-            self.trainer = OCPCalculator(config_yml=self.model_config, checkpoint=self.curr_model_path, 
-                                    test_data_src=self.DATAPATH_TEST, 
-                                    energy_units_to_eV=1.).trainer
+        if self.train:
+            if self.model_type == "nequip":
+                self.train_dict = load_file(
+                supported_formats=dict(torch=["pth", "pt"], yaml=["yaml"], json=["json"]),
+                filename=os.path.join(self.save_dir, "trainer.pth"),
+                enforced_format=None,
+                )
+                self.nequip_loss = Loss(coeffs = self.train_dict['loss_coeffs'])
+            else:
+                self.trainer = OCPCalculator(config_yml=self.model_config, checkpoint=self.curr_model_path, 
+                                        test_data_src=self.DATAPATH_TEST, 
+                                        energy_units_to_eV=1.).trainer
          
 
     '''compute energy/force error on test set'''
     def energy_force_error(self):
         self.model_config['model']['name'] = self.model_type
         if self.model_type == 'nequip':
-            #call nequip deploy script
-            os.system(f'nequip-deploy build --train-dir {os.path.dirname(self.curr_model_path)}/ {self.save_dir}/deployed_model.pth')
             data_config = f"configs/{self.name}/nequip_data_cfg/{self.molecule}.yml"
-            # call nequip evaluation script.
-            os.system(f'nequip-evaluate --train-dir {os.path.dirname(self.curr_model_path)} --dataset-config {data_config} \
-                    --log {os.path.dirname(self.curr_model_path)}/test_metric.log --batch-size 4')
+            # call nequip evaluation script
+            os.system(f'nequip-evaluate --train-dir {os.path.dirname(self.curr_model_path)} \
+                        --model {self.curr_model_path} --dataset-config {data_config} \
+                            --log {os.path.dirname(self.curr_model_path)}/test_metric.log --batch-size 4')
             with open(f'{os.path.dirname(self.curr_model_path)}/test_metric.log', 'r') as f:
                 test_log = f.read().splitlines()
                 for i, line in enumerate(test_log):
@@ -343,7 +343,6 @@ class ImplicitMDSimulator():
         gradients = []
         losses = []
         if self.model_type == "nequip":
-            
             with torch.enable_grad():
                 for data in tqdm(self.train_dataloader):
                     # Do any target rescaling
@@ -603,12 +602,14 @@ class ImplicitMDSimulator():
         return self 
 
     def save_checkpoint(self, best=False):
-        name = "best_ckpt.pt" if best else "ckpt.pt"
+        name = "best_ckpt.pth" if best else "ckpt.pth"
         checkpoint_path = os.path.join(self.save_dir, name)
         if self.model_type == "nequip":
             with atomic_write(checkpoint_path, blocking=True, binary=True) as write_to:
-                torch.save(self.model, write_to)
+                torch.save(self.model.state_dict(), write_to)
         else:
+            name = "best_ckpt.pt" if best else "ckpt.pt"
+            checkpoint_path = os.path.join(self.save_dir, name)
             new_state_dict = OrderedDict(("module."+k if "module" not in k else k, v) for k, v in self.model.state_dict().items())
             torch.save({
                         "epoch": self.epoch,
@@ -732,9 +733,9 @@ if __name__ == "__main__":
             _, model_config = Trainer.load_model_from_training_session(pre_path, \
                                     model_name = 'best_ckpt.pth', device =  torch.device(device))
             #get model from finetuned directory
-            # model, _ = Trainer.load_model_from_training_session(pretrained_model_path, \
-            #                         config_dictionary=model_config, model_name = cname, device =  torch.device(device))
-            model = torch.load(os.path.join(pretrained_model_path, cname), map_location = torch.device(device))
+            model, _ = Trainer.load_model_from_training_session(pretrained_model_path, \
+                                    config_dictionary=model_config, model_name = cname, device =  torch.device(device))
+            #model = torch.load(os.path.join(pretrained_model_path, cname), map_location = torch.device(device))
         else:
             ckpt_epoch = config['checkpoint_epoch']
             cname = 'best_ckpt.pth' if ckpt_epoch == -1 else f"ckpt{ckpt_epoch}.pth"
