@@ -739,7 +739,7 @@ if __name__ == "__main__":
             #model = torch.load(os.path.join(pretrained_model_path, cname), map_location = torch.device(device))
         else:
             ckpt_epoch = config['checkpoint_epoch']
-            cname = 'best_ckpt.pth' if ckpt_epoch == -1 else f"ckpt{ckpt_epoch}.pth"
+            cname = 'best_model.pth' if ckpt_epoch == -1 else f"ckpt{ckpt_epoch}.pth"
             print(f'Loading model weights from {os.path.join(pretrained_model_path, cname)}')
             model, model_config = Trainer.load_model_from_training_session(pretrained_model_path, \
                                     model_name = cname, device =  torch.device(device))

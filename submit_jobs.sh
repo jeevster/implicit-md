@@ -7,13 +7,13 @@
 # $4: energy/force loss weight
 # $5: exp_name
 
-system="md17"
-molecules_md17=('aspirin') # 'naphthalene' 'salicylic_acid')
-models=('schnet') #  'forcenet')
-lrs=(0.00001 0.00003 0.0001 0.0003 0.001)
-ef_weights=(1 3 10 30 100)
+system="md22"
+molecules_md22=('ac_Ala3_NHMe') # 'naphthalene' 'salicylic_acid')
+models=('nequip') #  'forcenet')
+lrs=(0.001) #(0.00001 0.00003 0.0001 0.0003 0.001)
+ef_weights=(1) # 3 10 30 100)
 # Always learn experiments
-for molecule in "${molecules_md17[@]}"; do
+for molecule in "${molecules_md22[@]}"; do
     for lr in "${lrs[@]}"; do
         for ef_weight in "${ef_weights[@]}"; do
             jid1=$(sbatch --parsable run_implicit.sh $system $molecule $lr 1 0 $ef_weight False)
@@ -25,8 +25,8 @@ for molecule in "${molecules_md17[@]}"; do
     lrtemp=0.00001
     ef_weighttemp=1
     sbatch --dependency=after:$jid1 run_implicit_simulate.sh $system $molecule $lrtemp 1 0 $ef_weighttemp 'pre'
-    sbatch --dependency=after:$jid1 run_implicit_simulate.sh $system $molecule $lrtemp 1 0 $ef_weighttemp '10k'
-    sbatch --dependency=after:$jid1 run_implicit_simulate.sh $system $molecule $lrtemp 1 0 $ef_weighttemp '50k'
+    sbatch --dependency=after:$jid1 run_implicit_simulate.sh $system $molecule $lrtemp 1 0 $ef_weighttemp '10percent'
+    sbatch --dependency=after:$jid1 run_implicit_simulate.sh $system $molecule $lrtemp 1 0 $ef_weighttemp '25percent'
 done
 
 

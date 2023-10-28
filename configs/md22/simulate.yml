@@ -3,4 +3,5 @@ includes:
 train: False
 bond_dev_tol: 0.5
 max_frac_unstable_threshold: 0.9
+n_replicas: 512
 n_epochs: 300 #corresponding to 300 ps
