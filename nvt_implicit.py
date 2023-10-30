@@ -732,7 +732,7 @@ if __name__ == "__main__":
             print(f'Loading model weights from {os.path.join(pretrained_model_path, cname)}')
             pre_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{size}_{lmax_string}{model_type}")
             _, model_config = Trainer.load_model_from_training_session(pre_path, \
-                                    model_name = 'best_ckpt.pth', device =  torch.device(device))
+                                    model_name = 'best_model.pth', device =  torch.device(device))
             #get model from finetuned directory
             model, _ = Trainer.load_model_from_training_session(pretrained_model_path, \
                                     config_dictionary=model_config, model_name = cname, device =  torch.device(device))
@@ -1005,21 +1005,21 @@ if __name__ == "__main__":
         if not params.train:
             np.save(os.path.join(results_dir, f'replicas_stable_time.npy'), simulator.stable_time.cpu().numpy())
             np.save(os.path.join(results_dir, 'full_traj.npy'), torch.stack(simulator.all_radii))
-            if params.eval_model == "post":
-                hyperparameters = {
-                    'lr': params.lr,
-                    'ef_loss_weight': params.energy_force_loss_weight
-                }
-                final_metrics = {
-                    'Energy MAE': energy_maes[-1],
-                    'Force MAE': force_maes[-1],
-                    'Stability': resets[75] if len(resets) > 75 else resets[-1],
-                    'RDF Loss': sum(rdf_losses[10:])/len(rdf_losses[10:]) if len(rdf_losses) > 10 else sum(rdf_losses)/len(rdf_losses),
-                    'VACF Loss': sum(vacf_losses[10:])/len(vacf_losses[10:]) if len(vacf_losses) > 10 else sum(vacf_losses)/len(vacf_losses),
-                }
-                hparams_logging = hparams(hyperparameters, final_metrics)
-                for i in hparams_logging:
-                    writer.file_writer.add_summary(i)
+            #if params.eval_model == "post":
+            hyperparameters = {
+                'lr': params.lr,
+                'ef_loss_weight': params.energy_force_loss_weight
+            }
+            final_metrics = {
+                'Energy MAE': energy_maes[-1],
+                'Force MAE': force_maes[-1],
+                'Stability': resets[75]+0.001 if len(resets) > 75 else resets[-1]+0.001,
+                'RDF Loss': sum(rdf_losses[10:])/len(rdf_losses[10:]) if len(rdf_losses) > 10 else sum(rdf_losses)/len(rdf_losses),
+                'VACF Loss': sum(vacf_losses[10:])/len(vacf_losses[10:]) if len(vacf_losses) > 10 else sum(vacf_losses)/len(vacf_losses),
+            }
+            hparams_logging = hparams(hyperparameters, final_metrics)
+            for i in hparams_logging:
+                writer.file_writer.add_summary(i)
     
     writer.close()        
     print('Done!')
