@@ -9,6 +9,7 @@ results_nnip_continuous_new_water/
 results_nnip_continuous_dynamics/
 results_nnip_continuous_dynamics_new/
 results*
+test_lj*
 nnip_continuous_dynamics_new/
 *.npy
 *.png
