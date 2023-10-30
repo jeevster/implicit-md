@@ -331,7 +331,7 @@ class ImplicitMDSimulator():
                                     test_data_src=self.DATAPATH_TEST, 
                                     energy_units_to_eV=1.) 
             print(f"Computing bottom-up (energy-force) error on test set")
-            test_metrics = self.calculator.trainer.validate('test', max_points=10000)
+            test_metrics = self.calculator.trainer.validate('test', max_points=1000)
             test_metrics = {k: v['metric'] for k, v in test_metrics.items()}
             return test_metrics['energy_rmse'], test_metrics['forces_rmse'], \
                     test_metrics['energy_mae'], test_metrics['forces_mae']
