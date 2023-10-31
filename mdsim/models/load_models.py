@@ -7,15 +7,12 @@ from mdsim.models.forcenet import ForceNet
 from mdsim.models.gemnet.gemnet import GemNetT
 from mdsim.common.registry import registry
 
-def load_pretrained_model(model_type, path = None, ckpt_epoch = -1, device = "cpu", train = True):
+def load_pretrained_model(model_type, path = None, ckpt_epoch = -1, cycle = None, device = "cpu", train = True):
     if train:
         cname = 'best_checkpoint.pt' if ckpt_epoch == -1 else f"checkpoint{ckpt_epoch}.pt"
         ckpt_and_config_path = os.path.join(path, "checkpoints", cname)
-        
-    else:
-        #load the final checkpoint instead of the best one
-        ckpt_and_config_path = os.path.join(path, "ckpt.pt") if \
-                os.path.exists(os.path.join(path, "ckpt.pt")) else os.path.join(path, "checkpoints", "best_checkpoint.pt")
+    else: #load from specified cycle if needed
+        ckpt_and_config_path = os.path.join(path, f"end_of_cycle{cycle}.pt" if cycle is not None else "ckpt.pt") 
     #load model
     if train:
         config = yaml.safe_load(open(os.path.join(path, "checkpoints", 'config.yml'), "r"))

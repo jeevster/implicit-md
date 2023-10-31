@@ -507,7 +507,6 @@ class ImplicitMDSimulator():
         return radii, velocities, forces, zeta
     
     def forward_langevin(self, radii, velocities, forces, retain_grad = False):
-        
         #full step in position
         radii = radii.detach() + self.dt*velocities
         #calculate force at new position
@@ -525,8 +524,7 @@ class ImplicitMDSimulator():
                 pass
         return radii, velocities, forces, noise
 
-      
-    #top level MD simulation code (i.e the "solver") that returns the optimal "parameter" -aka the equilibriated radii
+    #main MD loop
     def solve(self):
         self.mode = 'learning' if self.optimizer.param_groups[0]['lr'] > 0 else 'simulation'
         self.running_dists = []
@@ -602,14 +600,20 @@ class ImplicitMDSimulator():
                 pass
         return self 
 
-    def save_checkpoint(self, best=False):
-        name = "best_ckpt.pth" if best else "ckpt.pth"
-        checkpoint_path = os.path.join(self.save_dir, name)
+    def save_checkpoint(self, best=False, name_=None):
         if self.model_type == "nequip":
+            if name_ is not None:
+                name = f"{name_}.pth"
+            else:
+                name = "best_ckpt.pth" if best else "ckpt.pth"
+            checkpoint_path = os.path.join(self.save_dir, name)
             with atomic_write(checkpoint_path, blocking=True, binary=True) as write_to:
                 torch.save(self.model.state_dict(), write_to)
         else:
-            name = "best_ckpt.pt" if best else "ckpt.pt"
+            if name_ is not None:
+                name = f"{name_}.pt"
+            else:
+                name = "best_ckpt.pt" if best else "ckpt.pt"
             checkpoint_path = os.path.join(self.save_dir, name)
             new_state_dict = OrderedDict(("module."+k if "module" not in k else k, v) for k, v in self.model.state_dict().items())
             torch.save({
@@ -720,15 +724,18 @@ if __name__ == "__main__":
         new_lmax_string = config["eval_model"] + "_"
         pretrained_model_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{size}_{new_lmax_string}{model_type}")  
 
-    elif 'post' in config["eval_model"]: #load observable finetuned model
+    elif 'post' in config["eval_model"]: #load observable finetuned model at final checkpoint
         pretrained_model_path = os.path.join(params.results_dir, f"IMPLICIT_{model_type}_{molecule_for_name}_{params.exp_name}_lr={params.lr}_efweight={params.energy_force_loss_weight}")
+        load_cycle = None
+        if 'cycle' in config["eval_model"]: #load observable finetuned model at specified cycle
+            load_cycle = int(config["eval_model"].split("=")[-1]) #expects format "post_cycle=<n>"
     else:
         RuntimeError("Invalid eval model choice")
     
     if model_type == "nequip":
         if config['eval_model'] == 'post' and not params.train:
             #get config from pretrained directory
-            cname = 'ckpt.pth'
+            cname = f"end_of_cycle{load_cycle}.pth" if load_cycle is not None else "ckpt.pth"
             print(f'Loading model weights from {os.path.join(pretrained_model_path, cname)}')
             pre_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{size}_{lmax_string}{model_type}")
             _, model_config = Trainer.load_model_from_training_session(pre_path, \
@@ -749,7 +756,9 @@ if __name__ == "__main__":
         model_path = os.path.join(pretrained_model_path, cname)
         model_config = {'model': model_config}
     else:
-        model, model_path, model_config = load_pretrained_model(model_type, path = pretrained_model_path, ckpt_epoch = config['checkpoint_epoch'], device = torch.device(device), train = params.train or params.eval_model != 'post')
+        model, model_path, model_config = load_pretrained_model(model_type, path = pretrained_model_path, \
+                                                                ckpt_epoch = config['checkpoint_epoch'], cycle = load_cycle, \
+                                                                device = torch.device(device), train = params.train or params.eval_model != 'post')
         #copy original model config to results directory
         if params.train:
             shutil.copy(os.path.join(pretrained_model_path, "checkpoints", 'config.yml'), os.path.join(results_dir, 'config.yml'))
@@ -821,6 +830,7 @@ if __name__ == "__main__":
     best_outer_loss = 100
     writer = SummaryWriter(log_dir = results_dir)
     changed_lr = False
+    cycle = 0
 
     for epoch in range(params.n_epochs):
         
@@ -922,6 +932,10 @@ if __name__ == "__main__":
             simulator.all_unstable = False
             simulator.first_simulation = True
             changed_lr = False
+            cycle = cycle + 1
+            #save checkpoint at the end of learning cycle
+            if params.train:
+                simulator.save_checkpoint(name = f"end_of_cycle{cycle}")
             #reinitialize optimizer and scheduler with LR = 0
             if params.optimizer == 'Adam':
                 simulator.optimizer = torch.optim.Adam(list(simulator.model.parameters()), \
