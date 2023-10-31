@@ -467,34 +467,26 @@ class ImplicitMDSimulator():
     def forward_nosehoover(self, radii, velocities, forces, zeta, retain_grad=False):
         # get current accelerations
         accel = forces / self.masses
-
         # make full step in position 
         radii = radii + velocities * self.dt + \
             (accel - zeta * velocities) * (0.5 * self.dt ** 2)
-
         # record current KE
         KE_0 = 1/2 * (self.masses*torch.square(velocities)).sum(axis = (1,2), keepdims=True)
-        
         # make half a step in velocity
         velocities = velocities + 0.5 * self.dt * (accel - zeta * velocities)
         # make a full step in accelerations
         energy, forces = self.force_calc(radii, retain_grad)
         accel = forces / self.masses
-
         # make a half step in self.zeta
         zeta = zeta + 0.5 * self.dt * (1/self.Q) * (KE_0 - self.targeEkin)
-
         #get updated KE
         ke = 1/2 * (self.masses*torch.square(velocities)).sum(axis = (1,2), keepdims=True)
-
         # make another halfstep in self.zeta
         zeta = zeta + 0.5 * self.dt * \
             (1/self.Q) * (ke - self.targeEkin)
-
         # make another half step in velocity
         velocities = (velocities + 0.5 * self.dt * accel) / \
             (1 + 0.5 * self.dt * zeta)
-        
         # dump frames
         if self.step%self.n_dump == 0:
             print(self.step, self.thermo_log(energy), file=self.f)
@@ -503,7 +495,6 @@ class ImplicitMDSimulator():
                 self.t.append(self.create_frame(frame = step/self.n_dump))
             except:
                 pass
-
         return radii, velocities, forces, zeta
     
     def forward_langevin(self, radii, velocities, forces, retain_grad = False):
@@ -694,8 +685,6 @@ if __name__ == "__main__":
     except:
         device = "cpu"
 
-   
-
     #set up model
     data_path = config['src']
     name = config['name']
@@ -773,8 +762,6 @@ if __name__ == "__main__":
     integrator_config = INTEGRATOR_CONFIGS[molecule] if name == 'md22' else config['integrator_config']
     timestep = integrator_config["timestep"]
     ttime = integrator_config["ttime"]
-    
-    
 
     #load ground truth rdf and VACF
     print("Computing ground truth observables from datasets")
@@ -832,6 +819,7 @@ if __name__ == "__main__":
     changed_lr = False
     cycle = 0
 
+    #Begin Main Training Loop
     for epoch in range(params.n_epochs):
         
         #rdf = torch.zeros_like(gt_rdf).to(device)
