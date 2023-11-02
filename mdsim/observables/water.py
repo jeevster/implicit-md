@@ -98,7 +98,6 @@ def get_water_rdfs(data_seq, ptypes, lattices, bins, device='cpu'):
         data_pdist = distance_pbc_select(data_seq, lattices, indices0, indices1)
         data_pdist = data_pdist.flatten().cpu().numpy()
         data_shape = data_pdist.shape[0]
-            
         data_pdist = data_pdist[data_pdist != 0]
         data_hist, _ = np.histogram(data_pdist, bins)
         rho_data = data_shape / torch.prod(lattices).cpu().numpy()

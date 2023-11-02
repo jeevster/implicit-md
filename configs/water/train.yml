@@ -1,6 +1,6 @@
 src: /data/sanjeevr #/pscratch/sd/s/sanjeevr
 name: water
-size: 1k
+size: 10k
 normalize_labels: False
 checkpoint_epoch: -1 #which model to start from
 model: schnet
@@ -15,7 +15,7 @@ dv: 0.1
 angle_range: [0, 180]
 diameter_viz: 0.08
 gaussian_width: 0.01
-exp_name: "TEST_convergedmodel"
+exp_name: "TEST_10k"
 integrator: NoseHoover
 integrator_config: {"timestep": 1., "temperature": 300., "ttime": 20., "gamma": 0.1}
 train: True
@@ -28,14 +28,14 @@ energy_force_loss_weight: 1
 diffusion_window: 1000
 vacf_window: 100
 ic_stddev: 0.0
-rdf_mae_tol: 0.75 #less than Forces are Not Enough cutoff
-max_frac_unstable_threshold: 0.75 #decay this?
+rdf_mae_tol: 3.0 #less than Forces are Not Enough cutoff
+max_frac_unstable_threshold: 0.5 #decay this?
 min_frac_unstable_threshold: 0.0 #increase this?
 eq_steps: 0
 steps: 1000 # shorter interval for checking instability since failure happens more quickly
-n_dump: 25 #more frequent dump since failure happens more quickly
+n_dump: 100 #more frequent dump since failure happens more quickly
 n_dump_vacf: 2
-n_replicas: 32
+n_replicas: 1
 minibatch_size: 8
 adjoint: True
 only_learn_if_unstable_threshold_reached: True

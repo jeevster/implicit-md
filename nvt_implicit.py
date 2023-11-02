@@ -217,8 +217,10 @@ class ImplicitMDSimulator():
         self.batch = torch.arange(self.n_replicas).repeat_interleave(self.n_atoms).to(self.device)
         self.ic_stddev = params.ic_stddev
 
+        #dataset = self.test_dataset
         dataset = self.train_dataset if self.train else self.test_dataset
         samples = np.random.choice(np.arange(dataset.__len__()), self.n_replicas, replace=False)
+        #samples = [0]
         self.raw_atoms = [data_to_atoms(dataset.__getitem__(i)) for i in samples]
         self.cell = torch.Tensor(self.raw_atoms[0].cell).to(self.device)
         self.gt_rdf = gt_rdf
@@ -701,6 +703,8 @@ if __name__ == "__main__":
     print(f"Loading pretrained {model_type} model")
     lmax_string = f"lmax={params.l_max}_" if model_type == "nequip" else ""
     #load the correct checkpoint based on whether we're doing train or val
+    load_cycle = None
+    
     if params.train or config["eval_model"] == 'pre': #load energies/forces trained model
         pretrained_model_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{size}_{lmax_string}{model_type}") 
     
@@ -715,9 +719,8 @@ if __name__ == "__main__":
 
     elif 'post' in config["eval_model"]: #load observable finetuned model at final checkpoint
         pretrained_model_path = os.path.join(params.results_dir, f"IMPLICIT_{model_type}_{molecule_for_name}_{params.exp_name}_lr={params.lr}_efweight={params.energy_force_loss_weight}")
-        load_cycle = None
         if 'cycle' in config["eval_model"]: #load observable finetuned model at specified cycle
-            load_cycle = int(config["eval_model"].split("=")[-1]) #expects format "post_cycle=<n>"
+            load_cycle = int(config["eval_model"].split("cycle")[-1]) #expects format "post_cycle<n>"
     else:
         RuntimeError("Invalid eval model choice")
     
@@ -747,7 +750,7 @@ if __name__ == "__main__":
     else:
         model, model_path, model_config = load_pretrained_model(model_type, path = pretrained_model_path, \
                                                                 ckpt_epoch = config['checkpoint_epoch'], cycle = load_cycle, \
-                                                                device = torch.device(device), train = params.train or params.eval_model != 'post')
+                                                                device = torch.device(device), train = params.train or 'post' not in params.eval_model)
         #copy original model config to results directory
         if params.train:
             shutil.copy(os.path.join(pretrained_model_path, "checkpoints", 'config.yml'), os.path.join(results_dir, 'config.yml'))
@@ -785,12 +788,12 @@ if __name__ == "__main__":
     else:
         gt_traj = torch.FloatTensor(gt_data.f.R).to(device)
         gt_vels = gt_traj[1:] - gt_traj[:-1] #finite difference approx
-    
+
     gt_vacf = DifferentiableVACF(params, device)(gt_vels)
     if params.train:
         if isinstance(gt_rdf, dict):
             for _type, _rdf in gt_rdf.items():
-                np.save(os.path.join(results_dir, f'gt_{_type}_rdf.npy'), _rdf.cpu())
+                np.save(os.path.join(results_dir, f'gt_{_type}_rdf.npy'), _rdf[0].cpu())
         else:
             np.save(os.path.join(results_dir, 'gt_rdf.npy'), gt_rdf.cpu())
         np.save(os.path.join(results_dir, 'gt_adf.npy'), gt_adf.cpu())
@@ -923,7 +926,7 @@ if __name__ == "__main__":
             cycle = cycle + 1
             #save checkpoint at the end of learning cycle
             if params.train:
-                simulator.save_checkpoint(name = f"end_of_cycle{cycle}")
+                simulator.save_checkpoint(name_ = f"end_of_cycle{cycle}")
             #reinitialize optimizer and scheduler with LR = 0
             if params.optimizer == 'Adam':
                 simulator.optimizer = torch.optim.Adam(list(simulator.model.parameters()), \
