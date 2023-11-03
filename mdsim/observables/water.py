@@ -58,10 +58,11 @@ def get_diffusivity_traj(pos_seq, dilation=1):
 
 def get_smoothed_diffusivity(xyz):
     seq_len = xyz.shape[0] - 1
+    
     diff = torch.zeros(seq_len)
     for i in range(seq_len):
         diff[:seq_len-i] += get_diffusivity_traj(xyz[i:].transpose(0, 1).unsqueeze(0)).flatten()
-    diff = diff / torch.flip(torch.arange(seq_len),dims=[0])
+    diff = diff / torch.flip(torch.arange(seq_len)+1,dims=[0])
     return diff
 
 def distance_pbc_select(x, lattices, indices0, indices1):
@@ -114,14 +115,17 @@ def find_water_rdfs_diffusivity_from_file(base_path: str, size: str, params, dev
     bins = np.linspace(1e-6, xlim, n_bins + 1) # for computing RDF
 
     # get ground truth data
-    DATAPATH = os.path.join(base_path, 'water', size, 'val/nequip_npz.npz')
+    DATAPATH = os.path.join(base_path, 'water', size, 'test/nequip_npz.npz')
     gt_data = np.load(DATAPATH, allow_pickle=True)
     atom_types = torch.tensor(gt_data.f.atom_types)
     lattices = torch.tensor(gt_data.f.lengths[0]).float()
     gt_traj = torch.tensor(gt_data.f.unwrapped_coords)
-    gt_diffusivity = get_smoothed_diffusivity(gt_traj[0::100, atom_types==8])[:100].to(device) # track diffusivity of oxygen atoms, unit is A^2/ps
+    #TODO: this needs to be computed on the contiguous trajectories??
+    gt_data_continuous = np.load(os.path.join(base_path, 'contiguous-water', '90k', 'train/nequip_npz.npz'))
+    gt_traj_continuous = torch.tensor(gt_data_continuous.f.unwrapped_coords)
+    gt_diffusivity = get_smoothed_diffusivity(gt_traj_continuous[0::100, atom_types==8])[:100].to(device) # track diffusivity of oxygen atoms, unit is A^2/ps
     #recording frequency of underlying data is 10 fs. 
     #Want to match frequency of our data collection which is params.n_dump*params.integrator_config["dt"]
     keep_freq = math.ceil(params.n_dump*params.integrator_config["timestep"] / 10)
     gt_rdfs = get_water_rdfs(gt_traj[::keep_freq], atom_types, lattices, bins, device)
-    return gt_rdfs, gt_diffusivity
+    return gt_rdfs, gt_diffusivity, atom_types ==8

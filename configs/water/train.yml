@@ -1,6 +1,6 @@
 src: /data/sanjeevr #/pscratch/sd/s/sanjeevr
 name: water
-size: 10k
+size: 1k
 normalize_labels: False
 checkpoint_epoch: -1 #which model to start from
 model: schnet
@@ -15,7 +15,7 @@ dv: 0.1
 angle_range: [0, 180]
 diameter_viz: 0.08
 gaussian_width: 0.01
-exp_name: "TEST_10k"
+exp_name: "TEST_convergedmodel"
 integrator: NoseHoover
 integrator_config: {"timestep": 1., "temperature": 300., "ttime": 20., "gamma": 0.1}
 train: True

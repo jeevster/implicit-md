@@ -48,8 +48,8 @@ from mdsim.datasets.lmdb_dataset import LmdbDataset, data_list_collater
 from mdsim.common.utils import load_config
 from mdsim.modules.evaluator import Evaluator
 from mdsim.modules.normalizer import Normalizer
-from mdsim.observables.md17_22 import BondLengthDeviation, radii_to_dists, find_hr_adf_from_file, distance_pbc
-from mdsim.observables.water import WaterRDFMAE, find_water_rdfs_diffusivity_from_file
+from mdsim.observables.md17_22 import BondLengthDeviation, radii_to_dists, find_hr_adf_from_file, distance_pbc, get_hr
+from mdsim.observables.water import WaterRDFMAE, find_water_rdfs_diffusivity_from_file, get_water_rdfs, get_smoothed_diffusivity
 from mdsim.observables.lips import LiPSRDFMAE, find_lips_rdfs_diffusivity_from_file
 from mdsim.models.load_models import load_pretrained_model
 
@@ -64,7 +64,7 @@ from mdsim.common.utils import (
 from mdsim.common.flags import flags
 from boltzmann_estimator import BoltzmannEstimator
 
-MAX_SIZES = {'md17': '10k', 'md22': '100percent', 'water': '90k', 'lips': '20k'}
+MAX_SIZES = {'md17': '10k', 'md22': '100percent', 'water': '10k', 'lips': '20k'}
 
 class ImplicitMDSimulator():
     def __init__(self, config, params, model, model_path, model_config, gt_rdf):
@@ -227,10 +227,11 @@ class ImplicitMDSimulator():
         #choose the appropriate stability criterion based on the type of system
         if self.name == 'water':
             self.stability_criterion = WaterRDFMAE(self.data_dir, self.gt_rdf, self.n_atoms, self.n_replicas, self.params, self.device)
+            #self.bond_length_dev = BondLengthDeviation(self.bonds,self.mean_bond_lens,self.cell,self.device)
         elif self.name == 'lips':
             self.stability_criterion = LiPSRDFMAE(self.data_dir, self.gt_rdf, self.n_atoms, self.n_replicas, self.params, self.device)
         else:
-            self.stability_criterion = BondLengthDeviation(self.bonds,self.mean_bond_lens,self.cell, self.device)
+            self.stability_criterion = BondLengthDeviation(self.bonds,self.mean_bond_lens,self.cell,self.device)
                                         
         radii = torch.stack([torch.Tensor(atoms.get_positions()) for atoms in self.raw_atoms])
         self.radii = (radii + torch.normal(torch.zeros_like(radii), self.ic_stddev)).to(self.device)
@@ -300,9 +301,10 @@ class ImplicitMDSimulator():
                 )
                 self.nequip_loss = Loss(coeffs = self.train_dict['loss_coeffs'])
             else:
-                self.trainer = OCPCalculator(config_yml=self.model_config, checkpoint=self.curr_model_path, 
-                                        test_data_src=self.DATAPATH_TEST, 
-                                        energy_units_to_eV=1.).trainer
+                pass
+                # self.trainer = OCPCalculator(config_yml=self.model_config, checkpoint=self.curr_model_path, 
+                #                         test_data_src=self.DATAPATH_TEST, 
+                #                         energy_units_to_eV=1.).trainer
          
 
     '''compute energy/force error on test set'''
@@ -769,7 +771,7 @@ if __name__ == "__main__":
     #load ground truth rdf and VACF
     print("Computing ground truth observables from datasets")
     if name == 'water':
-        gt_rdf, gt_diffusivity = find_water_rdfs_diffusivity_from_file(data_path, MAX_SIZES[name], params, device)
+        gt_rdf, gt_diffusivity, oxygen_atoms_mask = find_water_rdfs_diffusivity_from_file(data_path, MAX_SIZES[name], params, device)
         gt_adf = torch.zeros((100,1)).to(device) #TODO: temporary
     elif name == 'lips':
         gt_rdf, gt_diffusivity = find_lips_rdfs_diffusivity_from_file(data_path, MAX_SIZES[name], params, device)
@@ -1006,22 +1008,51 @@ if __name__ == "__main__":
         writer.add_scalar('Gradient Cosine Similarity (Observable vs Energy-Force)', grad_cosine_similarity, global_step=epoch+1)
         writer.add_scalar('Gradient Ratios (Observable vs Energy-Force)', ratios, global_step=epoch+1)
 
-        #add hyperparams and final metrics at inference time (do it each epoch in case we time-out)
+        #add hyperparams and final metrics at inference time (do it each epoch in case we time-out before the end)
         if not params.train:
             np.save(os.path.join(results_dir, f'replicas_stable_time.npy'), simulator.stable_time.cpu().numpy())
-            np.save(os.path.join(results_dir, 'full_traj.npy'), torch.stack(simulator.all_radii))
+            full_traj = torch.stack(simulator.all_radii)
+            np.save(os.path.join(results_dir, 'full_traj.npy'), full_traj)
             #if params.eval_model == "post":
             hyperparameters = {
                 'lr': params.lr,
                 'ef_loss_weight': params.energy_force_loss_weight
             }
-            final_metrics = {
-                'Energy MAE': energy_maes[-1],
-                'Force MAE': force_maes[-1],
-                'Stability': resets[75]+0.001 if len(resets) > 75 else resets[-1]+0.001,
-                'RDF Loss': sum(rdf_losses[10:])/len(rdf_losses[10:]) if len(rdf_losses) > 10 else sum(rdf_losses)/len(rdf_losses),
-                'VACF Loss': sum(vacf_losses[10:])/len(vacf_losses[10:]) if len(vacf_losses) > 10 else sum(vacf_losses)/len(vacf_losses),
-            }
+            steps_per_epoch = int(simulator.nsteps/simulator.n_dump)
+            stable_steps = simulator.stable_time * steps_per_epoch
+            stable_trajs = [full_traj[i, :int(upper_step_limit)] for i, upper_step_limit in enumerate(stable_steps)]
+            stable_trajs_stacked = torch.cat(stable_trajs)
+            xlim = params.max_rdf_dist
+            n_bins = int(xlim/params.dr)
+            bins = np.linspace(1e-6, xlim, n_bins + 1) # for computing h(r)
+            if name == 'md17' or name == 'md22':
+                final_rdf = get_hr(stable_trajs_stacked, bins)
+                final_rdf_mae = xlim* torch.abs(gt_rdf - torch.Tensor(final_rdf).to(device)).mean()
+                final_metrics = {
+                    'Energy MAE': energy_maes[-1],
+                    'Force MAE': force_maes[-1],
+                    'Stability': resets[75]+0.001 if len(resets) > 75 else resets[-1]+0.001,
+                    'RDF MAE': final_rdf_mae,
+                    'VACF Loss': sum(vacf_losses[10:])/len(vacf_losses[10:]) if len(vacf_losses) > 10 else sum(vacf_losses)/len(vacf_losses)
+                }
+            elif name == "water":
+                final_rdfs = get_water_rdfs(stable_trajs_stacked, simulator.stability_criterion.ptypes, simulator.stability_criterion.lattices, simulator.stability_criterion.bins, device)
+                final_rdf_maes = {k: xlim* torch.abs(gt_rdf[k] - torch.Tensor(final_rdfs[k]).to(device)).mean().item() for k in gt_rdf.keys()}
+                import pdb; pdb.set_trace()
+                #TODO: fix this calculation
+                pred_diffusivity = torch.stack([get_smoothed_diffusivity(traj[::int(1000/params.n_dump), oxygen_atoms_mask])[:100] for traj in stable_trajs])
+                pred_diffusivity = pred_diffusivity.mean(0) #mean over replicas
+                diffusivity_mae = 10* float((gt_diffusivity[-1].to(device) - pred_diffusivity[-1].to(device)).abs())
+                final_metrics = {
+                    'Energy MAE': energy_maes[-1],
+                    'Force MAE': force_maes[-1],
+                    'Stability': resets[75]+0.001 if len(resets) > 75 else resets[-1]+0.001,
+                    'OO RDF MAE': final_rdf_maes['OO'],
+                    'HO RDF MAE': final_rdf_maes['OO'],
+                    'HH RDF MAE': final_rdf_maes['OO'],
+                    'Diffusivity MAE Loss (10^-9 m^2/s)': diffusivity_mae,
+                }
+            #TODO: compute final RDF MAE, VACF MAE, Diffusion Coefficient MAE, etc. here (only from the stable parts of the trajectories)
             hparams_logging = hparams(hyperparameters, final_metrics)
             for i in hparams_logging:
                 writer.file_writer.add_summary(i)
