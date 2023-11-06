@@ -302,9 +302,9 @@ class ImplicitMDSimulator():
                 self.nequip_loss = Loss(coeffs = self.train_dict['loss_coeffs'])
             else:
                 pass
-                # self.trainer = OCPCalculator(config_yml=self.model_config, checkpoint=self.curr_model_path, 
-                #                         test_data_src=self.DATAPATH_TEST, 
-                #                         energy_units_to_eV=1.).trainer
+                self.trainer = OCPCalculator(config_yml=self.model_config, checkpoint=self.curr_model_path, 
+                                        test_data_src=self.DATAPATH_TEST, 
+                                        energy_units_to_eV=1.).trainer
          
 
     '''compute energy/force error on test set'''
@@ -629,7 +629,16 @@ class ImplicitMDSimulator():
 
     def create_frame(self, frame):
         # Particle positions, velocities, diameter
-        partpos = detach_numpy(self.radii[0]).tolist()
+        radii = self.radii[0]
+        if self.pbc:
+            #wrap for visualization purposes
+            
+            cell = torch.diag(self.cell) #TODO: won't work for non-cubic cells
+            radii = torch.where(radii > cell, \
+                            radii-cell, \
+                            torch.where(radii < 0, \
+                            radii + cell, radii))
+        partpos = detach_numpy(radii).tolist()
         velocities = detach_numpy(self.velocities[0]).tolist()
         diameter = 10*self.diameter_viz*np.ones((self.n_atoms,))
         diameter = diameter.tolist()

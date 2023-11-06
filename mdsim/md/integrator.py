@@ -55,7 +55,6 @@ class NoseHoover(MolecularDynamics):
 
         
         accel = forces / self.masses
-        import pdb; pdb.set_trace()
 
         # make full step in position
         radii = radii + vel * self.dt + \

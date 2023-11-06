@@ -15,7 +15,7 @@ dv: 0.1
 angle_range: [0, 180]
 diameter_viz: 0.08
 gaussian_width: 0.01
-exp_name: "TEST_convergedmodel"
+exp_name: "TEST"
 integrator: NoseHoover
 integrator_config: {"timestep": 1., "temperature": 300., "ttime": 20., "gamma": 0.1}
 train: True
@@ -33,7 +33,7 @@ max_frac_unstable_threshold: 0.5 #decay this?
 min_frac_unstable_threshold: 0.0 #increase this?
 eq_steps: 0
 steps: 1000 # shorter interval for checking instability since failure happens more quickly
-n_dump: 100 #more frequent dump since failure happens more quickly
+n_dump: 2 #more frequent dump since failure happens more quickly
 n_dump_vacf: 2
 n_replicas: 1
 minibatch_size: 8
