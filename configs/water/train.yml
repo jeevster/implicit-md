@@ -3,7 +3,7 @@ name: water
 size: 1k
 normalize_labels: False
 checkpoint_epoch: -1 #which model to start from
-model: forcenet
+model: gemnet_t
 l_max: 3
 log_dir: /home/sanjeevr/implicit-md #/global/cfs/projectdirs/m4319/sanjeevr
 results_dir: 'results_water'
@@ -33,7 +33,7 @@ max_frac_unstable_threshold: 0.5 #decay this?
 min_frac_unstable_threshold: 0.0 #increase this?
 eq_steps: 0
 steps: 1000 # shorter interval for checking instability since failure happens more quickly
-n_dump: 2 #more frequent dump since failure happens more quickly
+n_dump: 100 #more frequent dump since failure happens more quickly
 n_dump_vacf: 2
 n_replicas: 1
 minibatch_size: 8

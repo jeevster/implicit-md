@@ -301,7 +301,6 @@ class ImplicitMDSimulator():
                 )
                 self.nequip_loss = Loss(coeffs = self.train_dict['loss_coeffs'])
             else:
-                pass
                 self.trainer = OCPCalculator(config_yml=self.model_config, checkpoint=self.curr_model_path, 
                                         test_data_src=self.DATAPATH_TEST, 
                                         energy_units_to_eV=1.).trainer
