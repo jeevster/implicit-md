@@ -632,12 +632,9 @@ class ImplicitMDSimulator():
         radii = self.radii[0]
         if self.pbc:
             #wrap for visualization purposes
-            
             cell = torch.diag(self.cell) #TODO: won't work for non-cubic cells
-            radii = torch.where(radii > cell, \
-                            radii-cell, \
-                            torch.where(radii < 0, \
-                            radii + cell, radii))
+            radii = torch.where(radii > cell or radii < cell, \
+                            radii%cell, radii)
         partpos = detach_numpy(radii).tolist()
         velocities = detach_numpy(self.velocities[0]).tolist()
         diameter = 10*self.diameter_viz*np.ones((self.n_atoms,))
