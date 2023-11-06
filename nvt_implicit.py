@@ -1020,7 +1020,7 @@ if __name__ == "__main__":
             }
             steps_per_epoch = int(simulator.nsteps/simulator.n_dump)
             stable_steps = simulator.stable_time * steps_per_epoch
-            stable_trajs = [full_traj[i, :int(upper_step_limit)] for i, upper_step_limit in enumerate(stable_steps)]
+            stable_trajs = [full_traj[:int(upper_step_limit), i] for i, upper_step_limit in enumerate(stable_steps)]
             stable_trajs_stacked = torch.cat(stable_trajs)
             xlim = params.max_rdf_dist
             n_bins = int(xlim/params.dr)
@@ -1038,11 +1038,12 @@ if __name__ == "__main__":
             elif name == "water":
                 final_rdfs = get_water_rdfs(stable_trajs_stacked, simulator.stability_criterion.ptypes, simulator.stability_criterion.lattices, simulator.stability_criterion.bins, device)
                 final_rdf_maes = {k: xlim* torch.abs(gt_rdf[k] - torch.Tensor(final_rdfs[k]).to(device)).mean().item() for k in gt_rdf.keys()}
-                import pdb; pdb.set_trace()
-                #TODO: fix this calculation
+                #Recording frequency is 1 ps for diffusion coefficient
                 pred_diffusivity = torch.stack([get_smoothed_diffusivity(traj[::int(1000/params.n_dump), oxygen_atoms_mask])[:100] for traj in stable_trajs])
                 pred_diffusivity = pred_diffusivity.mean(0) #mean over replicas
-                diffusivity_mae = 10* float((gt_diffusivity[-1].to(device) - pred_diffusivity[-1].to(device)).abs())
+                diffusivity_mae = 0
+                if len(gt_diffusivity) > 0:
+                    diffusivity_mae = 10* float((gt_diffusivity[-1].to(device) - pred_diffusivity[-1].to(device)).abs())
                 final_metrics = {
                     'Energy MAE': energy_maes[-1],
                     'Force MAE': force_maes[-1],
