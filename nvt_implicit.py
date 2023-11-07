@@ -1044,11 +1044,10 @@ if __name__ == "__main__":
                 final_rdfs = get_water_rdfs(stable_trajs_stacked, simulator.stability_criterion.ptypes, simulator.stability_criterion.lattices, simulator.stability_criterion.bins, device)
                 final_rdf_maes = {k: xlim* torch.abs(gt_rdf[k] - torch.Tensor(final_rdfs[k]).to(device)).mean().item() for k in gt_rdf.keys()}
                 #Recording frequency is 1 ps for diffusion coefficient
-                pred_diffusivity = torch.stack([get_smoothed_diffusivity(traj[::int(1000/params.n_dump), oxygen_atoms_mask])[:100] for traj in stable_trajs])
-                pred_diffusivity = pred_diffusivity.mean(0) #mean over replicas
-                diffusivity_mae = 0
-                if len(pred_diffusivity) > 0:
-                    diffusivity_mae = 10*float((gt_diffusivity[-1].to(device) - pred_diffusivity[-1].to(device)).abs())
+                all_diffusivities = [get_smoothed_diffusivity(traj[::int(1000/params.n_dump), oxygen_atoms_mask]) for traj in stable_trajs]
+                last_diffusivity = torch.cat([diff[-1] if len(diff) > 0 else torch.Tensor([0.]) for diff in all_diffusivities])
+                pred_diffusivity = last_diffusivity.mean() #mean over replicas
+                diffusivity_mae = 10*float((gt_diffusivity[-1].to(device) - pred_diffusivity.to(device)).abs())
                 final_metrics = {
                     'Energy MAE': energy_maes[-1],
                     'Force MAE': force_maes[-1],

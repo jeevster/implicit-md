@@ -10,6 +10,7 @@ results_nnip_continuous_dynamics/
 results_nnip_continuous_dynamics_new/
 results*
 test_lj*
+landscapes/
 nnip_continuous_dynamics_new/
 *.npy
 *.png
