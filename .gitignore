@@ -16,6 +16,7 @@ nnip_continuous_dynamics_new/
 logs/
 ground_truth_parallel/
 ground_truth_polylj/
+landscapes/
 log.txt
 test.gsd
 ground_truth/

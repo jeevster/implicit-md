@@ -1047,8 +1047,8 @@ if __name__ == "__main__":
                 pred_diffusivity = torch.stack([get_smoothed_diffusivity(traj[::int(1000/params.n_dump), oxygen_atoms_mask])[:100] for traj in stable_trajs])
                 pred_diffusivity = pred_diffusivity.mean(0) #mean over replicas
                 diffusivity_mae = 0
-                if len(gt_diffusivity) > 0:
-                    diffusivity_mae = 10* float((gt_diffusivity[-1].to(device) - pred_diffusivity[-1].to(device)).abs())
+                if len(pred_diffusivity) > 0:
+                    diffusivity_mae = 10*float((gt_diffusivity[-1].to(device) - pred_diffusivity[-1].to(device)).abs())
                 final_metrics = {
                     'Energy MAE': energy_maes[-1],
                     'Force MAE': force_maes[-1],
