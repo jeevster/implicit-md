@@ -10,9 +10,10 @@ import matplotlib.pyplot as plt
 from torchmd.observable import DifferentiableRDF, DifferentiableADF
 from mdsim.common.custom_radius_graph import detach_numpy
 from mdsim.common.utils import data_to_atoms
+from mdsim.observables.common import distance_pbc
 from mdsim.datasets.lmdb_dataset import LmdbDataset
 from ase.neighborlist import natural_cutoffs, NeighborList
-from mdsim.observables.md17_22 import radii_to_dists
+from mdsim.observables.common import radii_to_dists
 
 #Water utils
 class WaterRDFMAE(torch.nn.Module):
@@ -43,6 +44,28 @@ class WaterRDFMAE(torch.nn.Module):
             rdf_list.append(torch.cat([rdf.flatten() for rdf in rdfs.values()]))
         return torch.stack(rdf_list).to(self.device), torch.stack(max_maes).to(self.device)
   
+
+#minimum distance between two atoms on different water molecules
+class MinimumIntermolecularDistance(torch.nn.Module):
+    def __init__(self, bonds, cell, device):
+        super(MinimumIntermolecularDistance, self).__init__()
+        self.cell = cell
+        self.device = device
+        #construct a tensor containing all the intermolecular bonds 
+        num_nodes = 64
+        missing_edges = []
+        for i in range(num_nodes):
+            for j in range(i+1, num_nodes):
+                if not ((i % 3 == 0 and (j == i + 1 or j == i + 2)) or (j % 3 == 0 and (i == j + 1 or i == j + 2))):
+                    missing_edges.append([i, j])
+        self.not_bonds = torch.Tensor(missing_edges).to(torch.long)
+
+    def forward(self, stacked_radii):
+        intermolecular_distances = distance_pbc(stacked_radii[:, :, self.not_bonds[:, 0]], \
+                                                stacked_radii[:,:, self.not_bonds[:, 1]], \
+                                                torch.diag(self.cell)).to(self.device)
+        return intermolecular_distances.min(dim=-1)[0].min(dim=0)[0].detach()
+
 
 def get_diffusivity_traj(pos_seq, dilation=1):
     """

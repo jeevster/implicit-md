@@ -48,8 +48,9 @@ from mdsim.datasets.lmdb_dataset import LmdbDataset, data_list_collater
 from mdsim.common.utils import load_config
 from mdsim.modules.evaluator import Evaluator
 from mdsim.modules.normalizer import Normalizer
-from mdsim.observables.md17_22 import BondLengthDeviation, radii_to_dists, find_hr_adf_from_file, distance_pbc, get_hr
-from mdsim.observables.water import WaterRDFMAE, find_water_rdfs_diffusivity_from_file, get_water_rdfs, get_smoothed_diffusivity
+from mdsim.observables.common import distance_pbc, BondLengthDeviation, radii_to_dists
+from mdsim.observables.md17_22 import find_hr_adf_from_file, get_hr
+from mdsim.observables.water import WaterRDFMAE, MinimumIntermolecularDistance, find_water_rdfs_diffusivity_from_file, get_water_rdfs, get_smoothed_diffusivity
 from mdsim.observables.lips import LiPSRDFMAE, find_lips_rdfs_diffusivity_from_file
 from mdsim.models.load_models import load_pretrained_model
 
@@ -228,6 +229,7 @@ class ImplicitMDSimulator():
         if self.name == 'water':
             self.stability_criterion = WaterRDFMAE(self.data_dir, self.gt_rdf, self.n_atoms, self.n_replicas, self.params, self.device)
             self.bond_length_dev = BondLengthDeviation(self.bonds,self.mean_bond_lens,self.cell,self.device)
+            self.intermolecular_distance = MinimumIntermolecularDistance(self.bonds, self.cell, self.device)
         elif self.name == 'lips':
             self.stability_criterion = LiPSRDFMAE(self.data_dir, self.gt_rdf, self.n_atoms, self.n_replicas, self.params, self.device)
         else:
@@ -584,6 +586,9 @@ class ImplicitMDSimulator():
             if isinstance(self.instability_per_replica, tuple):
                 self.instability_per_replica = self.instability_per_replica[-1]
             self.mean_instability = self.instability_per_replica.mean()
+            if self.name == 'water':
+                self.mean_bond_length_dev = self.bond_length_dev(self.stacked_radii).mean()
+                self.mean_imd = self.intermolecular_distance(self.stacked_radii).mean()
             self.stacked_vels = torch.cat(self.running_vels)
         
         # self.f.close()
@@ -675,7 +680,6 @@ class ImplicitMDSimulator():
                                                       if self.pbc else instability.mean().item()}
         if self.pbc:
             results_dict['RDF MAE'] = instability.mean().item()
-            print(self.bond_length_dev(self.radii.unsqueeze(0)))
         return results_dict
 
 if __name__ == "__main__":
@@ -819,6 +823,8 @@ if __name__ == "__main__":
     diffusion_losses = []
     vacf_losses = []
     mean_instabilities = []
+    bond_length_devs = []
+    intermolecular_distances = []
     energy_rmses = []
     force_rmses = []
     energy_maes = []
@@ -984,6 +990,9 @@ if __name__ == "__main__":
         adf_losses.append(adf_loss.item())
         vacf_losses.append(vacf_loss.item())
         mean_instabilities.append(equilibriated_simulator.mean_instability)
+        if params.name == "water":
+            bond_length_devs.append(equilibriated_simulator.mean_bond_length_dev)
+            intermolecular_distances.append(equilibriated_simulator.mean_imd)
         resets.append(num_unstable_replicas)
         lrs.append(simulator.optimizer.param_groups[0]['lr'])
         #energy/force error
@@ -1006,6 +1015,10 @@ if __name__ == "__main__":
         writer.add_scalar('ADF Loss', adf_losses[-1], global_step=epoch+1)
         writer.add_scalar('VACF Loss', vacf_losses[-1], global_step=epoch+1)
         writer.add_scalar('RDF MAE' if name == 'water' else 'Max Bond Length Deviation', mean_instabilities[-1], global_step=epoch+1)
+        if params.name == 'water':
+            writer.add_scalar('Max Bond Length Deviation' , bond_length_devs[-1], global_step=epoch+1)
+            writer.add_scalar('Intermolecular Distances' , intermolecular_distances[-1], global_step=epoch+1)
+            
         writer.add_scalar('Fraction of Unstable Replicas', resets[-1], global_step=epoch+1)
         writer.add_scalar('Learning Rate', lrs[-1], global_step=epoch+1)
         writer.add_scalar('Energy RMSE', energy_rmses[-1], global_step=epoch+1)
@@ -1066,7 +1079,10 @@ if __name__ == "__main__":
             for i in hparams_logging:
                 writer.file_writer.add_summary(i)
     
-    writer.close()        
+    writer.close()      
+    if not params.train:
+        #close simulation file
+        equilibriated_simulator.t.close()  
     print('Done!')
     
 

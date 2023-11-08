@@ -19,7 +19,7 @@ from ase import Atoms, units
 from ase.calculators.calculator import Calculator
 from nequip.data import AtomicData, AtomicDataDict
 from mdsim.common.utils import setup_imports, setup_logging, compute_bond_lengths, data_to_atoms, atoms_to_batch, atoms_to_state_dict, convert_atomic_numbers_to_types, process_gradient, compare_gradients, initialize_velocities, dump_params_to_yml
-from mdsim.observables.md17_22 import radii_to_dists, distance_pbc
+from mdsim.observables.common import radii_to_dists, distance_pbc
 from mdsim.observables.water import WaterRDFMAE, find_water_rdfs_diffusivity_from_file
 from adjoints import get_adjoints, get_model_grads
 
