@@ -3,7 +3,7 @@ name: water
 size: 1k
 normalize_labels: False
 checkpoint_epoch: -1 #which model to start from
-model: schnet
+model: gemnet_t
 l_max: 3
 log_dir: /home/sanjeevr/implicit-md #/global/cfs/projectdirs/m4319/sanjeevr
 results_dir: 'results_water'

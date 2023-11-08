@@ -174,9 +174,6 @@ class ImplicitMDSimulator():
             pos_field_train = gt_data_train.f.R
         
         self.gt_traj_train = torch.FloatTensor(pos_field_train).to(self.device)
-        self.mean_bond_lens = distance_pbc(
-        self.gt_traj_train[:, self.bonds[:, 0]], self.gt_traj_train[:, self.bonds[:, 1]], \
-                    torch.FloatTensor([30., 30., 30.]).to(self.device)).mean(dim=0)
         
         self.instability_per_replica = torch.zeros((self.n_replicas,)).to(self.device)
         self.stable_time = torch.zeros((self.n_replicas,)).to(self.device)
@@ -223,11 +220,14 @@ class ImplicitMDSimulator():
         #samples = [0]
         self.raw_atoms = [data_to_atoms(dataset.__getitem__(i)) for i in samples]
         self.cell = torch.Tensor(self.raw_atoms[0].cell).to(self.device)
+        self.mean_bond_lens = distance_pbc(
+        self.gt_traj_train[:, self.bonds[:, 0]], self.gt_traj_train[:, self.bonds[:, 1]], \
+                    torch.diag(self.cell).to(self.device)).mean(dim=0)
         self.gt_rdf = gt_rdf
         #choose the appropriate stability criterion based on the type of system
         if self.name == 'water':
             self.stability_criterion = WaterRDFMAE(self.data_dir, self.gt_rdf, self.n_atoms, self.n_replicas, self.params, self.device)
-            #self.bond_length_dev = BondLengthDeviation(self.bonds,self.mean_bond_lens,self.cell,self.device)
+            self.bond_length_dev = BondLengthDeviation(self.bonds,self.mean_bond_lens,self.cell,self.device)
         elif self.name == 'lips':
             self.stability_criterion = LiPSRDFMAE(self.data_dir, self.gt_rdf, self.n_atoms, self.n_replicas, self.params, self.device)
         else:
@@ -667,12 +667,16 @@ class ImplicitMDSimulator():
         instability = self.stability_criterion(self.radii.unsqueeze(0))
         if isinstance(instability, tuple):
             instability = instability[-1]
-
-        return {"Temperature": temp.item(),
-                "Potential Energy": pe.mean().item(),
-                "Total Energy": (ke+pe).mean().item(),
-                "Momentum Magnitude": torch.norm(torch.sum(self.masses*self.velocities, axis =-2)).item(),
-                'RDF MAE' if self.pbc else 'Max Bond Length Deviation': instability.mean().item()}
+        results_dict = {"Temperature": temp.item(),
+                        "Potential Energy": pe.mean().item(),
+                        "Total Energy": (ke+pe).mean().item(),
+                        "Momentum Magnitude": torch.norm(torch.sum(self.masses*self.velocities, axis =-2)).item(),
+                        'Max Bond Length Deviation': self.bond_length_dev(self.radii.unsqueeze(0)) \
+                                                      if self.pbc else instability.mean().item()}
+        if self.pbc:
+            results_dict['RDF MAE'] = instability.mean().item()
+            print(self.bond_length_dev(self.radii.unsqueeze(0)))
+        return results_dict
 
 if __name__ == "__main__":
     setup_logging() 
@@ -1045,7 +1049,7 @@ if __name__ == "__main__":
                 final_rdf_maes = {k: xlim* torch.abs(gt_rdf[k] - torch.Tensor(final_rdfs[k]).to(device)).mean().item() for k in gt_rdf.keys()}
                 #Recording frequency is 1 ps for diffusion coefficient
                 all_diffusivities = [get_smoothed_diffusivity(traj[::int(1000/params.n_dump), oxygen_atoms_mask]) for traj in stable_trajs]
-                last_diffusivity = torch.cat([diff[-1] if len(diff) > 0 else torch.Tensor([0.]) for diff in all_diffusivities])
+                last_diffusivity = torch.cat([diff[-1].unsqueeze(-1) if len(diff) > 0 else torch.Tensor([0.]) for diff in all_diffusivities])
                 pred_diffusivity = last_diffusivity.mean() #mean over replicas
                 diffusivity_mae = 10*float((gt_diffusivity[-1].to(device) - pred_diffusivity.to(device)).abs())
                 final_metrics = {
