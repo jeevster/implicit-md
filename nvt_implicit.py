@@ -101,8 +101,7 @@ class ImplicitMDSimulator():
         self.use_mse_gradient = config["use_mse_gradient"]
         self.adjoint = config["adjoint"]
         #set stability criterion
-        self.stability_tol = config["rdf_mae_tol"] if self.pbc else config["bond_dev_tol"]
-        
+        self.stability_tol = config["imd_tol"] if self.pbc else config["bond_dev_tol"]
         self.max_frac_unstable_threshold = config["max_frac_unstable_threshold"]
         self.min_frac_unstable_threshold = config["min_frac_unstable_threshold"]
         self.results_dir = os.path.join(config["log_dir"], config["results_dir"])
@@ -176,7 +175,8 @@ class ImplicitMDSimulator():
         
         self.gt_traj_train = torch.FloatTensor(pos_field_train).to(self.device)
         
-        self.instability_per_replica = torch.zeros((self.n_replicas,)).to(self.device)
+        self.instability_per_replica = 100*torch.ones((self.n_replicas,)).to(self.device) if self.pbc \
+                                                    else torch.zeros((self.n_replicas,)).to(self.device)
         self.stable_time = torch.zeros((self.n_replicas,)).to(self.device)
         
         self.integrator = self.config["integrator"]
@@ -227,9 +227,9 @@ class ImplicitMDSimulator():
         self.gt_rdf = gt_rdf
         #choose the appropriate stability criterion based on the type of system
         if self.name == 'water':
-            self.stability_criterion = WaterRDFMAE(self.data_dir, self.gt_rdf, self.n_atoms, self.n_replicas, self.params, self.device)
+            self.stability_criterion = MinimumIntermolecularDistance(self.bonds, self.cell, self.device)
+            self.rdf_mae = WaterRDFMAE(self.data_dir, self.gt_rdf, self.n_atoms, self.n_replicas, self.params, self.device)
             self.bond_length_dev = BondLengthDeviation(self.bonds,self.mean_bond_lens,self.cell,self.device)
-            self.intermolecular_distance = MinimumIntermolecularDistance(self.bonds, self.cell, self.device)
         elif self.name == 'lips':
             self.stability_criterion = LiPSRDFMAE(self.data_dir, self.gt_rdf, self.n_atoms, self.n_replicas, self.params, self.device)
         else:
@@ -397,8 +397,8 @@ class ImplicitMDSimulator():
         return final_grads
 
     def set_starting_states(self):
-        #reset replicas which exceeded the stability criteria
-        reset_replicas = self.instability_per_replica > self.stability_tol
+        #find replicas which violate the stability criterion
+        reset_replicas = (self.instability_per_replica < self.stability_tol) if self.pbc else (self.instability_per_replica > self.stability_tol)
         num_unstable_replicas = reset_replicas.count_nonzero().item()
         if num_unstable_replicas / self.n_replicas >= self.max_frac_unstable_threshold: #threshold of unstable replicas reached
             if not self.all_unstable:
@@ -588,7 +588,7 @@ class ImplicitMDSimulator():
             self.mean_instability = self.instability_per_replica.mean()
             if self.name == 'water':
                 self.mean_bond_length_dev = self.bond_length_dev(self.stacked_radii).mean()
-                self.mean_imd = self.intermolecular_distance(self.stacked_radii).mean()
+                self.mean_rdf_mae = self.rdf_mae(self.stacked_radii)[-1].mean()
             self.stacked_vels = torch.cat(self.running_vels)
         
         # self.f.close()
@@ -637,8 +637,7 @@ class ImplicitMDSimulator():
         if self.pbc:
             #wrap for visualization purposes
             cell = torch.diag(self.cell) #TODO: won't work for non-cubic cells
-            radii = torch.where(radii > cell or radii < cell, \
-                            radii%cell, radii)
+            radii = radii % cell
         partpos = detach_numpy(radii).tolist()
         velocities = detach_numpy(self.velocities[0]).tolist()
         diameter = 10*self.diameter_viz*np.ones((self.n_atoms,))
@@ -676,10 +675,11 @@ class ImplicitMDSimulator():
                         "Potential Energy": pe.mean().item(),
                         "Total Energy": (ke+pe).mean().item(),
                         "Momentum Magnitude": torch.norm(torch.sum(self.masses*self.velocities, axis =-2)).item(),
-                        'Max Bond Length Deviation': self.bond_length_dev(self.radii.unsqueeze(0)) \
+                        'Max Bond Length Deviation': self.bond_length_dev(self.radii.unsqueeze(0)).item() \
                                                       if self.pbc else instability.mean().item()}
         if self.pbc:
-            results_dict['RDF MAE'] = instability.mean().item()
+            results_dict['Minimum Intermolecular Distance'] = instability.mean().item()
+            results_dict['RDF MAE'] = self.rdf_mae(self.radii.unsqueeze(0))[-1].item()
         return results_dict
 
 if __name__ == "__main__":
@@ -824,7 +824,7 @@ if __name__ == "__main__":
     vacf_losses = []
     mean_instabilities = []
     bond_length_devs = []
-    intermolecular_distances = []
+    rdf_maes = []
     energy_rmses = []
     force_rmses = []
     energy_maes = []
@@ -992,7 +992,7 @@ if __name__ == "__main__":
         mean_instabilities.append(equilibriated_simulator.mean_instability)
         if params.name == "water":
             bond_length_devs.append(equilibriated_simulator.mean_bond_length_dev)
-            intermolecular_distances.append(equilibriated_simulator.mean_imd)
+            rdf_maes.append(equilibriated_simulator.mean_rdf_mae)
         resets.append(num_unstable_replicas)
         lrs.append(simulator.optimizer.param_groups[0]['lr'])
         #energy/force error
@@ -1014,10 +1014,10 @@ if __name__ == "__main__":
         writer.add_scalar('RDF Loss', rdf_losses[-1], global_step=epoch+1)
         writer.add_scalar('ADF Loss', adf_losses[-1], global_step=epoch+1)
         writer.add_scalar('VACF Loss', vacf_losses[-1], global_step=epoch+1)
-        writer.add_scalar('RDF MAE' if name == 'water' else 'Max Bond Length Deviation', mean_instabilities[-1], global_step=epoch+1)
+        writer.add_scalar('Min Intermolecular Distances' if name == 'water' else 'Max Bond Length Deviation', mean_instabilities[-1], global_step=epoch+1)
         if params.name == 'water':
             writer.add_scalar('Max Bond Length Deviation' , bond_length_devs[-1], global_step=epoch+1)
-            writer.add_scalar('Intermolecular Distances' , intermolecular_distances[-1], global_step=epoch+1)
+            writer.add_scalar('RDF MAE' , rdf_maes[-1], global_step=epoch+1)
             
         writer.add_scalar('Fraction of Unstable Replicas', resets[-1], global_step=epoch+1)
         writer.add_scalar('Learning Rate', lrs[-1], global_step=epoch+1)

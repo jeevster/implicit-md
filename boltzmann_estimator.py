@@ -83,7 +83,7 @@ class BoltzmannEstimator():
         
         model = simulator.model
         #find which replicas are unstable
-        stable_replicas = self.simulator.instability_per_replica <= self.simulator.stability_tol
+        stable_replicas = (self.simulator.instability_per_replica > self.simulator.stability_tol) if self.simulator.pbc else (self.simulator.instability_per_replica <= self.simulator.stability_tol)
         #if focusing on accuracy, always only keep stable replicas for gradient calculation
         if not self.simulator.all_unstable:
             mask = stable_replicas
@@ -236,7 +236,7 @@ class BoltzmannEstimator():
        
         ###RDF/ADF Stuff ###
         if self.simulator.name == "water":
-            rdfs = torch.cat([self.simulator.stability_criterion(s.unsqueeze(0))[0] for s in stacked_radii]) #concatenate 3 RDFs together for water
+            rdfs = torch.cat([self.simulator.rdf_mae(s.unsqueeze(0))[0] for s in stacked_radii]) #concatenate 3 RDFs together for water
             rdfs = rdfs.reshape(-1, self.simulator.n_replicas, rdfs.shape[-1])
             adfs = torch.zeros_like(rdfs) #TODO: fix
         else:

@@ -52,18 +52,19 @@ class MinimumIntermolecularDistance(torch.nn.Module):
         self.cell = cell
         self.device = device
         #construct a tensor containing all the intermolecular bonds 
-        num_nodes = 64
+        num_atoms = 192
         missing_edges = []
-        for i in range(num_nodes):
-            for j in range(i+1, num_nodes):
+        for i in range(num_atoms):
+            for j in range(i+1, num_atoms):
                 if not ((i % 3 == 0 and (j == i + 1 or j == i + 2)) or (j % 3 == 0 and (i == j + 1 or i == j + 2))):
                     missing_edges.append([i, j])
         self.not_bonds = torch.Tensor(missing_edges).to(torch.long)
 
     def forward(self, stacked_radii):
+        stacked_radii = stacked_radii % torch.diag(self.cell) #wrap coords
         intermolecular_distances = distance_pbc(stacked_radii[:, :, self.not_bonds[:, 0]], \
                                                 stacked_radii[:,:, self.not_bonds[:, 1]], \
-                                                torch.diag(self.cell)).to(self.device)
+                                                torch.diag(self.cell)).to(self.device) #compute distances under minimum image convention
         return intermolecular_distances.min(dim=-1)[0].min(dim=0)[0].detach()
 
 

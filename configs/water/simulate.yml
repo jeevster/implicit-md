@@ -1,7 +1,7 @@
 includes:
 - configs/water/train.yml
 train: False
-rdf_mae_tol: 3.0 #Forces are Not Enough cutoff
+imd_tol: 1.0
 max_frac_unstable_threshold: 0.9
 eq_steps: 0
 steps: 1000

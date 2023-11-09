@@ -15,7 +15,7 @@ dv: 0.1
 angle_range: [0, 180]
 diameter_viz: 0.08
 gaussian_width: 0.01
-exp_name: "TEST_1k"
+exp_name: "TEST_imd_metric"
 integrator: NoseHoover
 integrator_config: {"timestep": 1., "temperature": 300., "ttime": 20., "gamma": 0.1}
 train: True
@@ -28,8 +28,8 @@ energy_force_loss_weight: 0
 diffusion_window: 1000
 vacf_window: 100
 ic_stddev: 0.0
-rdf_mae_tol: 0.9 #less than Forces are Not Enough cutoff
-max_frac_unstable_threshold: 0.5 #decay this?
+imd_tol: 1.0 #Tolerance for Minimum Intermolecular Distance
+max_frac_unstable_threshold: 0.75 #decay this?
 min_frac_unstable_threshold: 0.0 #increase this?
 eq_steps: 0
 steps: 1000
@@ -38,7 +38,7 @@ n_dump_vacf: 2
 n_replicas: 1
 minibatch_size: 4
 adjoint: True
-only_learn_if_unstable_threshold_reached: False
+only_learn_if_unstable_threshold_reached: True
 only_train_on_unstable_replicas: False
 allow_off_policy_updates: False
 gradient_clipping: True
