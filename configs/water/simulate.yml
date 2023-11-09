@@ -6,7 +6,7 @@ max_frac_unstable_threshold: 0.9
 eq_steps: 0
 steps: 1000
 n_dump: 100 
-n_replicas: 1
+n_replicas: 8
 n_epochs: 500
 
 

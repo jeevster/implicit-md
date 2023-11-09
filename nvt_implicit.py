@@ -675,11 +675,11 @@ class ImplicitMDSimulator():
                         "Potential Energy": pe.mean().item(),
                         "Total Energy": (ke+pe).mean().item(),
                         "Momentum Magnitude": torch.norm(torch.sum(self.masses*self.velocities, axis =-2)).item(),
-                        'Max Bond Length Deviation': self.bond_length_dev(self.radii.unsqueeze(0)).item() \
+                        'Max Bond Length Deviation': self.bond_length_dev(self.radii.unsqueeze(0)).mean().item() \
                                                       if self.pbc else instability.mean().item()}
         if self.pbc:
             results_dict['Minimum Intermolecular Distance'] = instability.mean().item()
-            results_dict['RDF MAE'] = self.rdf_mae(self.radii.unsqueeze(0))[-1].item()
+            results_dict['RDF MAE'] = self.rdf_mae(self.radii.unsqueeze(0))[-1].mean().item()
         return results_dict
 
 if __name__ == "__main__":
@@ -1058,7 +1058,7 @@ if __name__ == "__main__":
                     'VACF Loss': sum(vacf_losses[10:])/len(vacf_losses[10:]) if len(vacf_losses) > 10 else sum(vacf_losses)/len(vacf_losses)
                 }
             elif name == "water":
-                final_rdfs = get_water_rdfs(stable_trajs_stacked, simulator.stability_criterion.ptypes, simulator.stability_criterion.lattices, simulator.stability_criterion.bins, device)
+                final_rdfs = get_water_rdfs(stable_trajs_stacked, simulator.rdf_mae.ptypes, simulator.rdf_mae.lattices, simulator.rdf_mae.bins, device)
                 final_rdf_maes = {k: xlim* torch.abs(gt_rdf[k] - torch.Tensor(final_rdfs[k]).to(device)).mean().item() for k in gt_rdf.keys()}
                 #Recording frequency is 1 ps for diffusion coefficient
                 all_diffusivities = [get_smoothed_diffusivity(traj[::int(1000/params.n_dump), oxygen_atoms_mask]) for traj in stable_trajs]
