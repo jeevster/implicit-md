@@ -1082,7 +1082,8 @@ if __name__ == "__main__":
     writer.close()      
     if not params.train:
         #close simulation file
-        equilibriated_simulator.t.close()  
+        if hasattr(equilibriated_simulator, 't'):
+            equilibriated_simulator.t.close()  
     print('Done!')
     
 
