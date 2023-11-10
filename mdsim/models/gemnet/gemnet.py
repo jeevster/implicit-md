@@ -625,8 +625,8 @@ class GemNetT(torch.nn.Module):
                     F_t = -torch.autograd.grad(
                         E_t.sum(), pos, create_graph=True
                     )[0]
-                    # (nAtoms, 3)
-
+                    # (nAtoms, 3)   
+            
             return E_t, F_t  # (nMolecules, num_targets), (nAtoms, 3)
         else:
             return E_t

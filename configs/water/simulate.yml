@@ -1,12 +1,12 @@
 includes:
 - configs/water/train.yml
 train: False
-imd_tol: 1.0
+imd_tol: 0.2
 max_frac_unstable_threshold: 0.9
 eq_steps: 0
 steps: 1000
 n_dump: 100 
-n_replicas: 8
+n_replicas: 1
 n_epochs: 500
 
 

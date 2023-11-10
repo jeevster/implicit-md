@@ -6,7 +6,7 @@ checkpoint_epoch: -1 #which model to start from
 model: gemnet_t
 l_max: 3
 log_dir: /home/sanjeevr/implicit-md #/global/cfs/projectdirs/m4319/sanjeevr
-results_dir: 'results_water'
+results_dir: 'results_smallgemnet'
 model_dir: /home/sanjeevr/MDsim/MODELPATH #/pscratch/sd/s/sanjeevr/MODELPATH
 seed: 123
 dr: 0.012
@@ -15,7 +15,7 @@ dv: 0.1
 angle_range: [0, 180]
 diameter_viz: 0.08
 gaussian_width: 0.01
-exp_name: "TEST"
+exp_name: "TEST_vel_0sample"
 integrator: NoseHoover
 integrator_config: {"timestep": 1., "temperature": 300., "ttime": 20., "gamma": 0.1}
 train: True
@@ -35,10 +35,10 @@ eq_steps: 0
 steps: 1000
 n_dump: 25
 n_dump_vacf: 2
-n_replicas: 10
+n_replicas: 1
 minibatch_size: 4
 adjoint: True
-only_learn_if_unstable_threshold_reached: True
+only_learn_if_unstable_threshold_reached: False
 only_train_on_unstable_replicas: False
 allow_off_policy_updates: False
 gradient_clipping: True

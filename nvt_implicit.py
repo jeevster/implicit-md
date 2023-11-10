@@ -217,8 +217,8 @@ class ImplicitMDSimulator():
 
         #dataset = self.test_dataset
         dataset = self.train_dataset if self.train else self.test_dataset
-        samples = np.random.choice(np.arange(dataset.__len__()), self.n_replicas, replace=False)
-        #samples = [0]
+        #samples = np.random.choice(np.arange(dataset.__len__()), self.n_replicas, replace=False)
+        samples = [0]
         self.raw_atoms = [data_to_atoms(dataset.__getitem__(i)) for i in samples]
         self.cell = torch.Tensor(self.raw_atoms[0].cell).to(self.device)
         self.mean_bond_lens = distance_pbc(
@@ -237,7 +237,8 @@ class ImplicitMDSimulator():
                                         
         radii = torch.stack([torch.Tensor(atoms.get_positions()) for atoms in self.raw_atoms])
         self.radii = (radii + torch.normal(torch.zeros_like(radii), self.ic_stddev)).to(self.device)
-        self.velocities = torch.Tensor(initialize_velocities(self.n_atoms, self.masses, self.temp, self.n_replicas)).to(self.device)
+        self.velocities = torch.stack([torch.Tensor(atoms.get_velocities()) for atoms in self.raw_atoms]).to(self.device)
+        #self.velocities = torch.Tensor(initialize_velocities(self.n_atoms, self.masses, self.temp, self.n_replicas)).to(self.device)
         #initialize checkpoint states for resetting
         self.checkpoint_radii = []
         self.checkpoint_radii.append(self.radii)
@@ -559,6 +560,10 @@ class ImplicitMDSimulator():
                 self.step = step
                 #MD Step
                 if self.integrator == 'NoseHoover':
+                    np.save(f'our_radii{step}.npy', self.radii.cpu())
+                    np.save(f'our_forces{step}.npy', forces.cpu())
+                    np.save(f'our_velocities{step}.npy', self.velocities.cpu())
+                    np.save(f'our_zeta{step}.npy', zeta.cpu())
                     radii, velocities, forces, zeta = self.forward_nosehoover(self.radii, self.velocities, forces, zeta, retain_grad = False)
                 elif self.integrator == 'Langevin':
                     radii, velocities, forces, noise = self.forward_langevin(self.radii, self.velocities, forces, retain_grad = False)
@@ -1070,8 +1075,8 @@ if __name__ == "__main__":
                     'Force MAE': force_maes[-1],
                     'Stability': resets[75]+0.001 if len(resets) > 75 else resets[-1]+0.001,
                     'OO RDF MAE': final_rdf_maes['OO'],
-                    'HO RDF MAE': final_rdf_maes['OO'],
-                    'HH RDF MAE': final_rdf_maes['OO'],
+                    'HO RDF MAE': final_rdf_maes['HO'],
+                    'HH RDF MAE': final_rdf_maes['HH'],
                     'Diffusivity MAE Loss (10^-9 m^2/s)': diffusivity_mae,
                 }
             #TODO: compute final RDF MAE, VACF MAE, Diffusion Coefficient MAE, etc. here (only from the stable parts of the trajectories)
