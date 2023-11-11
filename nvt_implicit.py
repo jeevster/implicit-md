@@ -1070,8 +1070,8 @@ if __name__ == "__main__":
                     'Force MAE': force_maes[-1],
                     'Stability': resets[75]+0.001 if len(resets) > 75 else resets[-1]+0.001,
                     'OO RDF MAE': final_rdf_maes['OO'],
-                    'HO RDF MAE': final_rdf_maes['OO'],
-                    'HH RDF MAE': final_rdf_maes['OO'],
+                    'HO RDF MAE': final_rdf_maes['HO'],
+                    'HH RDF MAE': final_rdf_maes['HH'],
                     'Diffusivity MAE Loss (10^-9 m^2/s)': diffusivity_mae,
                 }
             #TODO: compute final RDF MAE, VACF MAE, Diffusion Coefficient MAE, etc. here (only from the stable parts of the trajectories)
