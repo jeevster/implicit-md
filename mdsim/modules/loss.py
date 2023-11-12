@@ -4,6 +4,12 @@ from torch import nn
 from mdsim.common import distutils
 
 
+class ObservableMSELoss(nn.Module):
+    def __init__(self, target_obs):
+        super().__init__()
+
+
+
 class L2MAELoss(nn.Module):
     def __init__(self, reduction="mean"):
         super().__init__()

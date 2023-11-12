@@ -12,6 +12,27 @@ from mdsim.common.utils import data_to_atoms
 from mdsim.datasets.lmdb_dataset import LmdbDataset
 from ase.neighborlist import natural_cutoffs, NeighborList
 
+class ObservableMSELoss(torch.nn.Module):
+    def __init__(self, target_obs):
+        super().__init__()
+        self.target_obs = target_obs
+    def forward(pred_obs):
+        return (pred_obs - self.target_obs).pow(2).mean()
+class ObservableMAELoss(torch.nn.Module):
+    def __init__(self, target_obs):
+        super().__init__()
+        self.target_obs = target_obs
+    def forward(pred_obs):
+        return (pred_obs - self.target_obs).abs().mean()
+class IMDHingeLoss(torch.nn.Module):
+    def __init__(self, lower_bound):
+        super().__init__()
+        assert(lower_bound.shape[0] == 0 and len(lower_bound.shape) == 1, "IMD target observable bound must be a scalar")
+        self.lower_bound = lower_bound
+    def forward(pred_obs):
+        return torch.exp(max(0, self.lower_bound - pred_obs)) - 1
+
+
 class BondLengthDeviation(torch.nn.Module):
     def __init__(self, bonds, mean_bond_lens, cell, device):
         super(BondLengthDeviation, self).__init__()
