@@ -19,7 +19,7 @@ from ase import Atoms, units
 from ase.calculators.calculator import Calculator
 from nequip.data import AtomicData, AtomicDataDict
 from mdsim.common.utils import setup_imports, setup_logging, compute_bond_lengths, data_to_atoms, atoms_to_batch, atoms_to_state_dict, convert_atomic_numbers_to_types, process_gradient, compare_gradients, initialize_velocities, dump_params_to_yml
-from mdsim.observables.common import radii_to_dists, distance_pbc
+from mdsim.observables.common import radii_to_dists, distance_pbc, ObservableMAELoss, ObservableMSELoss, IMDHingeLoss
 from mdsim.observables.water import WaterRDFMAE, find_water_rdfs_diffusivity_from_file
 from adjoints import get_adjoints, get_model_grads
 
@@ -39,12 +39,10 @@ class BoltzmannEstimator():
         self.gt_vacf = gt_vacf
         self.gt_adf = gt_adf
     
-    def rdf_loss(self, rdf):
-        return (rdf - self.gt_rdf).pow(2).mean()
-    def adf_loss(self, adf):
-        return (adf - self.gt_adf).pow(2).mean()
-    def vacf_loss(self, vacf):    
-        return (vacf - self.gt_vacf).pow(2).mean()
+        #define losses - need to set up config options to use others if needed
+        self.rdf_loss = IMDHingeLoss(self.gt_rdf)
+        self.adf_loss = ObservableMSELoss(self.gt_adf)
+        self.vacf_loss = ObservableMSELoss(self.gt_vacf)
     
     #define Onsager-Machlup Action ("energy" of each trajectory)
     #TODO: make this a torch.nn.Module in observable.py
