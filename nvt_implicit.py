@@ -3,6 +3,7 @@ import gsd.hoomd
 import torch
 import logging
 import gc
+import json
 from pathlib import Path
 import yaml
 import torch.nn as nn
@@ -217,8 +218,8 @@ class ImplicitMDSimulator():
 
         #dataset = self.test_dataset
         dataset = self.train_dataset if self.train else self.test_dataset
-        #samples = np.random.choice(np.arange(dataset.__len__()), self.n_replicas, replace=False)
-        samples = [0]
+        samples = np.random.choice(np.arange(dataset.__len__()), self.n_replicas, replace=False)
+        #samples = [0]
         self.raw_atoms = [data_to_atoms(dataset.__getitem__(i)) for i in samples]
         self.cell = torch.Tensor(self.raw_atoms[0].cell).to(self.device)
         self.mean_bond_lens = distance_pbc(
@@ -560,10 +561,6 @@ class ImplicitMDSimulator():
                 self.step = step
                 #MD Step
                 if self.integrator == 'NoseHoover':
-                    np.save(f'our_radii{step}.npy', self.radii.cpu())
-                    np.save(f'our_forces{step}.npy', forces.cpu())
-                    np.save(f'our_velocities{step}.npy', self.velocities.cpu())
-                    np.save(f'our_zeta{step}.npy', zeta.cpu())
                     radii, velocities, forces, zeta = self.forward_nosehoover(self.radii, self.velocities, forces, zeta, retain_grad = False)
                 elif self.integrator == 'Langevin':
                     radii, velocities, forces, noise = self.forward_langevin(self.radii, self.velocities, forces, retain_grad = False)
@@ -1079,6 +1076,8 @@ if __name__ == "__main__":
                     'HH RDF MAE': final_rdf_maes['HH'],
                     'Diffusivity MAE Loss (10^-9 m^2/s)': diffusivity_mae,
                 }
+            with open(os.path.join(results_dir, 'final_metrics.json'), 'w') as fp:
+                json.dump(final_metrics, fp, indent=4, separators=(',', ': '))
             #TODO: compute final RDF MAE, VACF MAE, Diffusion Coefficient MAE, etc. here (only from the stable parts of the trajectories)
             hparams_logging = hparams(hyperparameters, final_metrics)
             for i in hparams_logging:

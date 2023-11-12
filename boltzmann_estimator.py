@@ -264,20 +264,19 @@ class BoltzmannEstimator():
             rdfs = rdfs[:, mask].reshape(-1, rdfs.shape[-1])
             adfs = adfs[:, mask].reshape(-1, adfs.shape[-1])
             stacked_radii = stacked_radii[:, mask]
+            rdfs.requires_grad = True
+            adfs.requires_grad = True
             
-            rdf_loss_tensor = vmap(self.rdf_loss)(rdfs).unsqueeze(-1).unsqueeze(-1)
-            adf_loss_tensor = vmap(self.adf_loss)(adfs).unsqueeze(-1).unsqueeze(-1)
-        
-            #TODO: scale the estimator by temperature
+            
+            #TODO: scale the estimator by Kb*T
             start = time.time()
             stacked_radii = stacked_radii.reshape(-1, self.simulator.n_atoms, 3)
+            
             #shuffle the radii, rdfs, and losses
             if self.simulator.shuffle:   
                 shuffle_idx = torch.randperm(stacked_radii.shape[0])
                 stacked_radii = stacked_radii[shuffle_idx]
-                rdf_loss_tensor = rdf_loss_tensor[shuffle_idx]
                 rdfs = rdfs[shuffle_idx]
-                adf_loss_tensor = adf_loss_tensor[shuffle_idx]
                 adfs = adfs[shuffle_idx]
             
             num_blocks = math.ceil(stacked_radii.shape[0]/ (MINIBATCH_SIZE))
@@ -315,13 +314,20 @@ class BoltzmannEstimator():
                 adf_batch = adfs[start:end]
                 
                 #TODO: fix the case where we don't use the MSE gradient
-                grad_outputs_rdf = [2*(rdf.mean(0) - self.gt_rdf).unsqueeze(0) for rdf in rdf_batch]
+                with torch.enable_grad():
+                    _rdfs = rdfs[start:end]
+                    _adfs = adfs[start:end]
+                    rdf_loss = vmap(self.rdf_loss)(_rdfs).unsqueeze(-1).unsqueeze(-1)
+                    adf_loss = vmap(self.adf_loss)(_adfs).unsqueeze(-1).unsqueeze(-1)
+                    grad_outputs_rdf = [torch.autograd.grad(rdf_loss.mean(), _rdfs)[0]]
+                    grad_outputs_adf = [torch.autograd.grad(adf_loss.mean(), _adfs)[0]]
+                #grad_outputs_rdf = [2*(rdf.mean(0) - self.gt_rdf).unsqueeze(0) for rdf in rdf_batch]
                 # grad_outputs_rdf = [2*(rdf.mean(0) - gt_rdf).unsqueeze(0) \
                 #                     if self.simulator.use_mse_gradient else None \
                 #                     for rdf, gt_rdf in zip(rdf_batch, \
                 #                     self.gt_rdf.chunk(len(rdf_batch)))]
-                grad_outputs_adf = 2*(adf_batch.mean(0) - self.gt_adf).unsqueeze(0) \
-                                    if self.simulator.use_mse_gradient else None
+                # grad_outputs_adf = 2*(adf_batch.mean(0) - self.gt_adf).unsqueeze(0) \
+                #                     if self.simulator.use_mse_gradient else None
                 final_vjp = [self.estimator(rdf, grads_flattened, grad_output_rdf) for rdf, grad_output_rdf in zip(rdf_batch, grad_outputs_rdf)]
                 final_vjp = torch.stack(final_vjp).mean(0)
                 if self.params.adf_loss_weight !=0:

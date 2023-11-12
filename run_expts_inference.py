@@ -1,28 +1,8 @@
 import subprocess
 from itertools import product
 
-mol = 'aspirin'
-
-config_yml = '/home/sanjeevr/implicit-md/configs/md17/md17.yml'
-exp_name_1 = "TEST_original"
-exp_name_2 = "TEST_alwayslearn"
-
-# command = f"python nvt_implicit.py --config-yml {config_yml} \
-#             --name=md17 --molecule={mol} --train=False --eval_model=post\
-#             --exp_name={exp_name_1} --n_epochs=300 --bond_dev_tol=0.5"
-# subprocess.run(command.split(" "))
-
-command = f"python nvt_implicit.py --config-yml {config_yml} \
-            --name=md17 --molecule={mol} --train=False --eval_model=post\
-            --exp_name={exp_name_2} --n_epochs=300 --bond_dev_tol=0.5"
+command = f"python nvt_implicit.py --config-yml /home/sanjeevr/implicit-md/configs/water/simulate.yml --eval_model=pre --energy_force_loss_weight=0"
 subprocess.run(command.split(" "))
-
-command = f"python nvt_implicit.py --config-yml {config_yml} \
-                    --name=md17 --molecule={mol} --train=False --eval_model=pre\
-                    --exp_name={exp_name_1} --n_epochs=300 --bond_dev_tol=0.5"
-subprocess.run(command.split(" "))
-
-
-
-
-
+for i in range(4):
+    command = f"python nvt_implicit.py --config-yml /home/sanjeevr/implicit-md/configs/water/simulate.yml --eval_model=post_cycle{i+1} --energy_force_loss_weight=0"
+    subprocess.run(command.split(" "))
