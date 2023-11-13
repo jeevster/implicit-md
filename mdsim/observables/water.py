@@ -129,7 +129,6 @@ def get_water_rdfs(data_seq, ptypes, lattices, bins, device='cpu'):
         Z_data = rho_data * 4 / 3 * np.pi * (bins[1:] ** 3 - bins[:-1] ** 3)
         data_rdf = data_hist / Z_data
         all_rdfs[type1 + type2] = torch.Tensor([data_rdf]).to(device)
-        
     return all_rdfs
 
 
@@ -142,6 +141,7 @@ def find_water_rdfs_diffusivity_from_file(base_path: str, size: str, params, dev
     DATAPATH = os.path.join(base_path, 'water', size, 'test/nequip_npz.npz')
     gt_data = np.load(DATAPATH, allow_pickle=True)
     atom_types = torch.tensor(gt_data.f.atom_types)
+    oxygen_atoms_mask = atom_types==8
     lattices = torch.tensor(gt_data.f.lengths[0]).float()
     gt_traj = torch.tensor(gt_data.f.unwrapped_coords)
     gt_data_continuous = np.load(os.path.join(base_path, 'contiguous-water', '90k', 'train/nequip_npz.npz'))
@@ -151,4 +151,16 @@ def find_water_rdfs_diffusivity_from_file(base_path: str, size: str, params, dev
     #Want to match frequency of our data collection which is params.n_dump*params.integrator_config["dt"]
     keep_freq = math.ceil(params.n_dump*params.integrator_config["timestep"] / 10)
     gt_rdfs = get_water_rdfs(gt_traj[::keep_freq], atom_types, lattices, bins, device)
-    return gt_rdfs, gt_diffusivity, atom_types ==8
+    
+    #ADF
+    temp_data = LmdbDataset({'src': os.path.join(base_path, 'water', size, 'train')})
+    init_data = temp_data.__getitem__(0)
+    atoms = data_to_atoms(init_data)
+    #extract bond and atom type information
+    NL = NeighborList(natural_cutoffs(atoms), self_interaction=False)
+    NL.update(atoms)
+    bonds = torch.tensor(NL.get_connectivity_matrix().todense().nonzero()).to(device).T
+    gt_adf = DifferentiableADF(gt_traj.shape[-2], bonds, torch.diag(lattices).to(device), params, device)(gt_traj[0:2000][::keep_freq].to(torch.float).to(device))
+    #TODO: O-O conditioned RDF using oxygen_atoms_mask
+    #gt_adf = DifferentiableADF(gt_traj.shape[-2], bonds, torch.diag(lattices).to(device), params, device)(gt_traj[0:2000, oxygen_atoms_mask][::keep_freq].to(torch.float).to(device))
+    return gt_rdfs, gt_diffusivity, gt_adf, oxygen_atoms_mask

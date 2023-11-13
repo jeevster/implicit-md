@@ -79,7 +79,9 @@ class BoltzmannEstimator():
         diff_vacf = DifferentiableVACF(self.params, self.device)
         #diff_sisf = SelfIntermediateScattering(self.params, self.device)
         
-        running_radii = self.simulator.running_radii if self.simulator.optimizer.param_groups[0]['lr'] > 0 else self.simulator.running_radii[0:2]
+        #TODO: What were we doing here again?? Trying to save memory?? 
+        #this is probably the reason for the spiky behavior in the loss - also invalidates all of the previous inference observable results
+        running_radii = self.simulator.running_radii #if self.simulator.optimizer.param_groups[0]['lr'] > 0 else self.simulator.running_radii[0:2]
         
         model = simulator.model
         #find which replicas are unstable
@@ -239,9 +241,8 @@ class BoltzmannEstimator():
             #replace with RDF with IMD (didn't change variable name yet)
             rdfs = torch.cat([self.simulator.stability_criterion(s.unsqueeze(0)) for s in stacked_radii])
             rdfs = rdfs.reshape(-1, simulator.n_replicas, 1)
-            # rdfs = torch.cat([self.simulator.rdf_mae(s.unsqueeze(0))[0] for s in stacked_radii]) #concatenate 3 RDFs together for water
-            # rdfs = rdfs.reshape(-1, self.simulator.n_replicas, rdfs.shape[-1])
-            adfs = torch.zeros_like(rdfs) #TODO: fix
+            adfs = torch.stack([diff_adf(rad) for rad in stacked_radii.reshape(-1, self.simulator.n_atoms, 3)]).reshape(-1, self.simulator.n_replicas, self.gt_adf.shape[-1])
+
             
         else:
             r2d = lambda r: radii_to_dists(r, self.simulator.params)
@@ -319,19 +320,11 @@ class BoltzmannEstimator():
                     adf_loss = vmap(self.adf_loss)(_adfs).unsqueeze(-1).unsqueeze(-1)
                     grad_outputs_rdf = [torch.autograd.grad(rdf_loss.mean(), _rdfs)[0]]
                     grad_outputs_adf = [torch.autograd.grad(adf_loss.mean(), _adfs)[0]]
-                #grad_outputs_rdf = [2*(rdf.mean(0) - self.gt_rdf).unsqueeze(0) for rdf in rdf_batch]
-                # grad_outputs_rdf = [2*(rdf.mean(0) - gt_rdf).unsqueeze(0) \
-                #                     if self.simulator.use_mse_gradient else None \
-                #                     for rdf, gt_rdf in zip(rdf_batch, \
-                #                     self.gt_rdf.chunk(len(rdf_batch)))]
-                # grad_outputs_adf = 2*(adf_batch.mean(0) - self.gt_adf).unsqueeze(0) \
-                #                     if self.simulator.use_mse_gradient else None
                 final_vjp = [self.estimator(rdf, grads_flattened, grad_output_rdf) for rdf, grad_output_rdf in zip(rdf_batch, grad_outputs_rdf)]
                 final_vjp = torch.stack(final_vjp).mean(0)
                 if self.params.adf_loss_weight !=0:
                     gradient_estimator_adf = self.estimate(adf_batch, grads_flattened, grad_outputs_adf)
                     final_vjp+= self.params.adf_loss_weight*gradient_estimator_adf             
-
 
                 if not self.simulator.allow_off_policy_updates:
                     raw_grads.append(final_vjp)
