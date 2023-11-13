@@ -807,17 +807,15 @@ if __name__ == "__main__":
         gt_vels = gt_traj[1:] - gt_traj[:-1] #finite difference approx
 
     gt_vacf = DifferentiableVACF(params, device)(gt_vels)
-    if params.train:
-        if isinstance(gt_rdf, dict):
-            for _type, _rdf in gt_rdf.items():
-                np.save(os.path.join(results_dir, f'gt_{_type}_rdf.npy'), _rdf[0].cpu())
-        else:
-            np.save(os.path.join(results_dir, 'gt_rdf.npy'), gt_rdf.cpu())
-        np.save(os.path.join(results_dir, 'gt_adf.npy'), gt_adf.cpu())
-        np.save(os.path.join(results_dir, 'gt_vacf.npy'), gt_vacf.cpu())
+    if isinstance(gt_rdf, dict):
+        for _type, _rdf in gt_rdf.items():
+            np.save(os.path.join(results_dir, f'gt_{_type}_rdf.npy'), _rdf[0].cpu())
+    else:
+        np.save(os.path.join(results_dir, 'gt_rdf.npy'), gt_rdf.cpu())
+    np.save(os.path.join(results_dir, 'gt_adf.npy'), gt_adf.cpu())
+    np.save(os.path.join(results_dir, 'gt_vacf.npy'), gt_vacf.cpu())
     
-    min_lr = params.lr / (5 * params.max_times_reduce_lr)
-
+    min_lr = params.lr / (5 ** params.max_times_reduce_lr) #LR reduction factor is 0.2 each time
     #outer training loop
     losses = []
     rdf_losses = []
@@ -957,18 +955,6 @@ if __name__ == "__main__":
 
         end = time.time()
         sim_time = end - start
-        #save rdf, adf, and vacf at the end of the trajectory
-        if name == 'water':
-            for key, rdf in zip(gt_rdf.keys(), mean_rdf.split(500)):
-                filename = f"{key}rdf_epoch{epoch+1}.npy" 
-                np.save(os.path.join(results_dir, filename), rdf.cpu().detach().numpy())
-        else:
-            filename = f"rdf_epoch{epoch+1}.npy"        
-            np.save(os.path.join(results_dir, filename), mean_rdf.cpu().detach().numpy())
-        filename = f"adf_epoch{epoch+1}.npy"
-        np.save(os.path.join(results_dir, filename), mean_adf.cpu().detach().numpy())
-        filename = f"vacf_epoch{epoch+1}.npy"
-        np.save(os.path.join(results_dir, filename), mean_vacf.cpu().detach().numpy())
         
         #checkpointing
         if outer_loss < best_outer_loss:
@@ -1067,6 +1053,12 @@ if __name__ == "__main__":
                     'ADF MAE': final_adf_mae.item(),
                     'VACF Loss': final_vacf_mae.item()
                 }
+                #save rdf, adf, and vacf at the end of the trajectory
+                np.save(os.path.join(results_dir, "final_rdf.npy"), final_rdf.cpu())
+                np.save(os.path.join(results_dir, "final_adf.npy"), final_adf.cpu().detach().numpy())
+                np.save(os.path.join(results_dir, "final_vacf.npy"), final_vacf.cpu().detach().numpy())
+        
+      
             elif name == "water":
                 final_rdfs = get_water_rdfs(stable_trajs_stacked, simulator.rdf_mae.ptypes, simulator.rdf_mae.lattices, simulator.rdf_mae.bins, device)
                 final_rdf_maes = {k: xlim* torch.abs(gt_rdf[k] - torch.Tensor(final_rdfs[k]).to(device)).mean().item() for k in gt_rdf.keys()}
@@ -1088,6 +1080,13 @@ if __name__ == "__main__":
                     'ADF MAE': final_adf_mae.item(),
                     'Diffusivity MAE Loss (10^-9 m^2/s)': diffusivity_mae,
                 }
+                #save rdf, adf, and diffusivity at the end of the traj
+                for key, final_rdf in final_rdfs.items():
+                    np.save(os.path.join(results_dir, f"final_{key}_rdf.npy"), final_rdf[0].cpu())
+                np.save(os.path.join(results_dir, "final_adf.npy"), final_adf.cpu().detach().numpy())
+                np.save(os.path.join(results_dir, "final_diffusivity.npy"), pred_diffusivity.cpu().detach().numpy())
+
+            #save final metrics to JSON
             with open(os.path.join(results_dir, 'final_metrics.json'), 'w') as fp:
                 json.dump(final_metrics, fp, indent=4, separators=(',', ': '))
             #TODO: compute final RDF MAE, VACF MAE, Diffusion Coefficient MAE, etc. here (only from the stable parts of the trajectories)
