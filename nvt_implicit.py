@@ -1054,7 +1054,7 @@ if __name__ == "__main__":
                     'VACF Loss': final_vacf_mae.item()
                 }
                 #save rdf, adf, and vacf at the end of the trajectory
-                np.save(os.path.join(results_dir, "final_rdf.npy"), final_rdf.cpu())
+                np.save(os.path.join(results_dir, "final_rdf.npy"), final_rdf)
                 np.save(os.path.join(results_dir, "final_adf.npy"), final_adf.cpu().detach().numpy())
                 np.save(os.path.join(results_dir, "final_vacf.npy"), final_vacf.cpu().detach().numpy())
         
