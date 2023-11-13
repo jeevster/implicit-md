@@ -250,6 +250,7 @@ class ImplicitMDSimulator():
         self.original_velocities = self.velocities.clone()
         self.original_zeta = self.zeta.clone()
         self.all_radii = []
+        self.all_velocities = []
         
         
         #assign velocities to atoms
@@ -576,6 +577,7 @@ class ImplicitMDSimulator():
                 
                     if step % self.n_dump == 0 and not self.train:
                         self.all_radii.append(radii.detach().cpu()) #save whole trajectory without resetting at inference time
+                        self.all_velocities.append(velocities.detach().cpu())
                 self.radii.copy_(radii)
                 self.velocities.copy_(velocities)
                     
@@ -785,8 +787,7 @@ if __name__ == "__main__":
     #load ground truth rdf and VACF
     print("Computing ground truth observables from datasets")
     if name == 'water':
-        gt_rdf, gt_diffusivity, oxygen_atoms_mask = find_water_rdfs_diffusivity_from_file(data_path, MAX_SIZES[name], params, device)
-        gt_adf = torch.zeros((100,1)).to(device) #TODO: temporary
+        gt_rdf, gt_diffusivity, gt_adf, oxygen_atoms_mask = find_water_rdfs_diffusivity_from_file(data_path, MAX_SIZES[name], params, device)
     elif name == 'lips':
         gt_rdf, gt_diffusivity = find_lips_rdfs_diffusivity_from_file(data_path, MAX_SIZES[name], params, device)
         gt_adf = torch.zeros((100,1)).to(device) #TODO: temporary
@@ -1035,6 +1036,7 @@ if __name__ == "__main__":
         if not params.train:
             np.save(os.path.join(results_dir, f'replicas_stable_time.npy'), simulator.stable_time.cpu().numpy())
             full_traj = torch.stack(simulator.all_radii)
+            full_vel_traj = torch.stack(simulator.all_velocities)
             np.save(os.path.join(results_dir, 'full_traj.npy'), full_traj)
             #if params.eval_model == "post":
             hyperparameters = {
@@ -1045,19 +1047,25 @@ if __name__ == "__main__":
             stable_steps = simulator.stable_time * steps_per_epoch
             stable_trajs = [full_traj[:int(upper_step_limit), i] for i, upper_step_limit in enumerate(stable_steps)]
             stable_trajs_stacked = torch.cat(stable_trajs)
+            stable_vel_trajs = [full_vel_traj[:int(upper_step_limit), i] for i, upper_step_limit in enumerate(stable_steps)]
+            stable_vel_trajs_stacked = torch.cat(stable_vel_trajs)
             xlim = params.max_rdf_dist
             n_bins = int(xlim/params.dr)
             bins = np.linspace(1e-6, xlim, n_bins + 1) # for computing h(r)
             if name == 'md17' or name == 'md22':
                 final_rdf = get_hr(stable_trajs_stacked, bins)
                 final_rdf_mae = xlim* torch.abs(gt_rdf - torch.Tensor(final_rdf).to(device)).mean()
-                #TODO: log actu
+                final_adf = DifferentiableADF(simulator.n_atoms, simulator.bonds, simulator.cell, params, device)(stable_trajs_stacked.to(device))
+                final_adf_mae = torch.abs(gt_adf- final_adf).mean()
+                final_vacf = DifferentiableVACF(params, device)(stable_vel_trajs_stacked.to(device))
+                final_vacf_mae = torch.abs(gt_vacf - final_vacf).mean()
                 final_metrics = {
                     'Energy MAE': energy_maes[-1],
                     'Force MAE': force_maes[-1],
                     'Stability': resets[75]+0.001 if len(resets) > 75 else resets[-1]+0.001,
-                    'RDF MAE': final_rdf_mae,
-                    'VACF Loss': sum(vacf_losses[10:])/len(vacf_losses[10:]) if len(vacf_losses) > 10 else sum(vacf_losses)/len(vacf_losses)
+                    'RDF MAE': final_rdf_mae.item(),
+                    'ADF MAE': final_adf_mae.item(),
+                    'VACF Loss': final_vacf_mae.item()
                 }
             elif name == "water":
                 final_rdfs = get_water_rdfs(stable_trajs_stacked, simulator.rdf_mae.ptypes, simulator.rdf_mae.lattices, simulator.rdf_mae.bins, device)
@@ -1067,6 +1075,9 @@ if __name__ == "__main__":
                 last_diffusivity = torch.cat([diff[-1].unsqueeze(-1) if len(diff) > 0 else torch.Tensor([0.]) for diff in all_diffusivities])
                 pred_diffusivity = last_diffusivity.mean() #mean over replicas
                 diffusivity_mae = 10*float((gt_diffusivity[-1].to(device) - pred_diffusivity.to(device)).abs())
+                #TODO: compute O-O-conditioned ADF instead of full ADF
+                final_adf = DifferentiableADF(simulator.n_atoms, simulator.bonds, simulator.cell, params, device)(stable_trajs_stacked.to(device))
+                final_adf_mae = torch.abs(gt_adf-final_adf).mean()
                 final_metrics = {
                     'Energy MAE': energy_maes[-1],
                     'Force MAE': force_maes[-1],
@@ -1074,6 +1085,7 @@ if __name__ == "__main__":
                     'OO RDF MAE': final_rdf_maes['OO'],
                     'HO RDF MAE': final_rdf_maes['HO'],
                     'HH RDF MAE': final_rdf_maes['HH'],
+                    'ADF MAE': final_adf_mae.item(),
                     'Diffusivity MAE Loss (10^-9 m^2/s)': diffusivity_mae,
                 }
             with open(os.path.join(results_dir, 'final_metrics.json'), 'w') as fp:

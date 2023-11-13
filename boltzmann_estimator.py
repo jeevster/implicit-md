@@ -79,7 +79,9 @@ class BoltzmannEstimator():
         diff_vacf = DifferentiableVACF(self.params, self.simulator.device)
         #diff_sisf = SelfIntermediateScattering(self.params, self.simulator.device)
         
-        running_radii = self.simulator.running_radii if self.simulator.optimizer.param_groups[0]['lr'] > 0 else self.simulator.running_radii[0:2]
+        #TODO: What were we doing here again?? Trying to save memory?? 
+        #this is probably the reason for the spiky behavior in the loss - also invalidates all of the previous inference observable results
+        running_radii = self.simulator.running_radii #if self.simulator.optimizer.param_groups[0]['lr'] > 0 else self.simulator.running_radii[0:2]
         
         model = simulator.model
         #find which replicas are unstable
@@ -238,7 +240,8 @@ class BoltzmannEstimator():
         if self.simulator.name == "water":
             rdfs = torch.cat([self.simulator.rdf_mae(s.unsqueeze(0))[0] for s in stacked_radii]) #concatenate 3 RDFs together for water
             rdfs = rdfs.reshape(-1, self.simulator.n_replicas, rdfs.shape[-1])
-            adfs = torch.zeros_like(rdfs) #TODO: fix
+            adfs = torch.stack([diff_adf(rad) for rad in stacked_radii.reshape(-1, self.simulator.n_atoms, 3)]).reshape(-1, self.simulator.n_replicas, self.gt_adf.shape[-1])
+            
         else:
             r2d = lambda r: radii_to_dists(r, self.simulator.params)
             dists = vmap(r2d)(stacked_radii).reshape(-1, self.simulator.n_atoms, self.simulator.n_atoms-1, 1)
