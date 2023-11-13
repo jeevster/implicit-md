@@ -281,16 +281,18 @@ class BoltzmannEstimator():
                 rdfs = rdfs[shuffle_idx]
                 adfs = adfs[shuffle_idx]
             
-            num_blocks = math.ceil(stacked_radii.shape[0]/ (MINIBATCH_SIZE))
+            num_blocks = math.ceil(stacked_radii.shape[0]/ (self.simulator.n_replicas))
             start_time = time.time()
             rdf_gradient_estimators = []
             adf_gradient_estimators = []
             raw_grads = []
+            pe_grads_flattened = []
             print(f"Computing RDF/ADF gradients from {stacked_radii.shape[0]} structures in minibatches of size {MINIBATCH_SIZE}")
             num_params = len(list(model.parameters()))
+            #first compute gradients of potential energy (in batches of size n_replicas)
             for i in tqdm(range(num_blocks)):
-                start = MINIBATCH_SIZE*i
-                end = MINIBATCH_SIZE*(i+1)
+                start = self.simulator.n_replicas*i
+                end = self.simulator.n_replicas*(i+1)
                 with torch.enable_grad():
                     radii_in = stacked_radii[start:end]
                     radii_in.requires_grad = True
@@ -310,12 +312,19 @@ class BoltzmannEstimator():
                     grads_vectorized = vectorized_vjp(I_N)
                     #flatten the gradients for vectorization
                     grads_flattened= torch.stack([torch.cat([grads_vectorized[i][j].flatten().detach() for i in range(num_params)]) for j in range(num_samples)])
-                
+                pe_grads_flattened.append(grads_flattened)
+
+            
+            pe_grads_flattened = torch.cat(pe_grads_flattened)
+            #Now compute final gradient estimators in batches of size MINIBATCH_SIZE
+            num_blocks = math.ceil(stacked_radii.shape[0]/ (MINIBATCH_SIZE))
+            for i in tqdm(range(num_blocks)):
+                start = MINIBATCH_SIZE*i
+                end = MINIBATCH_SIZE*(i+1)
                 rdf_batch = [rdfs[start:end]] if self.simulator.training_observable == 'imd' else \
                             rdfs[start:end].chunk(3 if self.simulator.name == 'water' else 1, dim=1) # 3 separate RDFs for water
-                
+                pe_grads_batch = pe_grads_flattened[start:end]
                 adf_batch = adfs[start:end]
-                
                 #TODO: fix the case where we don't use the MSE gradient
                 with torch.enable_grad():
                     _rdfs = rdfs[start:end]
@@ -324,7 +333,7 @@ class BoltzmannEstimator():
                     adf_loss = vmap(self.adf_loss)(_adfs).unsqueeze(-1).unsqueeze(-1)
                     grad_outputs_rdf = [torch.autograd.grad(rdf_loss.mean(), _rdfs)[0].detach()]
                     grad_outputs_adf = [torch.autograd.grad(adf_loss.mean(), _adfs)[0].detach()]
-                final_vjp = [self.estimator(rdf, grads_flattened, grad_output_rdf) for rdf, grad_output_rdf in zip(rdf_batch, grad_outputs_rdf)]
+                final_vjp = [self.estimator(rdf, pe_grads_batch, grad_output_rdf) for rdf, grad_output_rdf in zip(rdf_batch, grad_outputs_rdf)]
                 final_vjp = torch.stack(final_vjp).mean(0)
                 if self.params.adf_loss_weight !=0:
                     gradient_estimator_adf = self.estimate(adf_batch, grads_flattened, grad_outputs_adf)

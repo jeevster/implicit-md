@@ -160,7 +160,7 @@ def find_water_rdfs_diffusivity_from_file(base_path: str, size: str, params, dev
     NL = NeighborList(natural_cutoffs(atoms), self_interaction=False)
     NL.update(atoms)
     bonds = torch.tensor(NL.get_connectivity_matrix().todense().nonzero()).to(device).T
-    gt_adf = DifferentiableADF(gt_traj.shape[-2], bonds, torch.diag(lattices).to(device), params, device)(gt_traj[0:2000][::keep_freq].to(torch.float).to(device))
+    gt_adf = DifferentiableADF(gt_traj.shape[-2], bonds, torch.diag(lattices).to(device), params, device)(gt_traj[0:200][::keep_freq].to(torch.float).to(device))
     #TODO: O-O conditioned RDF using oxygen_atoms_mask
     #gt_adf = DifferentiableADF(gt_traj.shape[-2], bonds, torch.diag(lattices).to(device), params, device)(gt_traj[0:2000, oxygen_atoms_mask][::keep_freq].to(torch.float).to(device))
     return gt_rdfs, gt_diffusivity, gt_adf, oxygen_atoms_mask
