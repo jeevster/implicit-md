@@ -274,6 +274,7 @@ class ImplicitMDSimulator():
             
         self.diameter_viz = params.diameter_viz
         self.exp_name = params.exp_name
+        self.training_observable = params.training_observable
         self.rdf_loss_weight = params.rdf_loss_weight
         self.diffusion_loss_weight = params.diffusion_loss_weight
         self.vacf_loss_weight = params.vacf_loss_weight

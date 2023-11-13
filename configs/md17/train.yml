@@ -21,6 +21,7 @@ integrator_config: {"timestep": 0.5, "temperature": 500., "ttime": 20., "gamma":
 train: True
 eval_model: pre
 diffusion_loss_weight: 0
+training_observable: rdf
 rdf_loss_weight: 1
 adf_loss_weight: 0
 vacf_loss_weight: 0
@@ -38,7 +39,7 @@ n_dump_vacf: 2
 n_replicas: 128
 minibatch_size: 40
 adjoint: True
-only_learn_if_unstable_threshold_reached: True
+only_learn_if_unstable_threshold_reached: False
 only_train_on_unstable_replicas: False
 allow_off_policy_updates: False
 gradient_clipping: True

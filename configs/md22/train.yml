@@ -20,6 +20,7 @@ integrator: NoseHoover
 train: True
 eval_model: lmax=2
 diffusion_loss_weight: 0
+training_observable: rdf
 rdf_loss_weight: 1
 adf_loss_weight: 0
 vacf_loss_weight: 0

@@ -21,6 +21,7 @@ integrator_config: {"timestep": 1., "temperature": 300., "ttime": 20., "gamma": 
 train: True
 eval_model: post
 diffusion_loss_weight: 0
+training_observable: imd
 rdf_loss_weight: 1
 adf_loss_weight: 0
 vacf_loss_weight: 0

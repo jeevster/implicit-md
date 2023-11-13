@@ -33,14 +33,16 @@ class BoltzmannEstimator():
         self.diff_rdf = DifferentiableRDF(self.params, device)
         self.gt_rdf = gt_rdf
         if isinstance(self.gt_rdf, dict):
-            #self.gt_rdf = torch.cat([rdf.flatten() for rdf in self.gt_rdf.values()]) #combine RDFs together
-            self.gt_rdf = torch.Tensor([1.44]).to(self.device) #ground truth min IMD
+            if params.training_observable == 'rdf':
+                self.gt_rdf = torch.cat([rdf.flatten() for rdf in self.gt_rdf.values()]) #combine RDFs together
+            else:
+                self.gt_rdf = torch.Tensor([1.44]).to(self.device) #ground truth min IMD
         
         self.gt_vacf = gt_vacf
         self.gt_adf = gt_adf
     
         #define losses - need to set up config options to use others if needed
-        self.rdf_loss = IMDHingeLoss(self.gt_rdf)
+        self.rdf_loss = IMDHingeLoss(self.gt_rdf) if params.training_observable == "imd" else ObservableMSELoss(self.gt_rdf)
         self.adf_loss = ObservableMSELoss(self.gt_adf)
         self.vacf_loss = ObservableMSELoss(self.gt_vacf)
     
@@ -66,7 +68,7 @@ class BoltzmannEstimator():
         #compute VJP with grad output
         if grad_outputs is not None:
             estimator = torch.mm(grad_outputs, estimator)[0] 
-        return estimator
+        return estimator.detach()
 
     def compute(self, simulator):
         self.simulator = simulator
@@ -239,11 +241,12 @@ class BoltzmannEstimator():
         ###RDF/ADF Stuff ###
         if self.simulator.name == "water":
             #replace with RDF with IMD (didn't change variable name yet)
-            rdfs = torch.cat([self.simulator.stability_criterion(s.unsqueeze(0)) for s in stacked_radii])
+            if self.simulator.training_observable == 'imd':
+                rdfs = torch.cat([self.simulator.stability_criterion(s.unsqueeze(0)) for s in stacked_radii])
+            else:
+                rdfs = torch.cat([self.simulator.rdf_mae(s.unsqueeze(0))[0] for s in stacked_radii])
             rdfs = rdfs.reshape(-1, simulator.n_replicas, 1)
             adfs = torch.stack([diff_adf(rad) for rad in stacked_radii.reshape(-1, self.simulator.n_atoms, 3)]).reshape(-1, self.simulator.n_replicas, self.gt_adf.shape[-1])
-
-            
         else:
             r2d = lambda r: radii_to_dists(r, self.simulator.params)
             dists = vmap(r2d)(stacked_radii).reshape(-1, self.simulator.n_atoms, self.simulator.n_atoms-1, 1)
@@ -307,9 +310,10 @@ class BoltzmannEstimator():
                     grads_vectorized = vectorized_vjp(I_N)
                     #flatten the gradients for vectorization
                     grads_flattened= torch.stack([torch.cat([grads_vectorized[i][j].flatten().detach() for i in range(num_params)]) for j in range(num_samples)])
-                rdf_batch = [rdfs[start:end]]
-                # rdf_batch = rdfs[start:end].chunk(3 \
-                #             if self.simulator.name == 'water' else 1, dim=1) # 3 separate RDFs for water
+                
+                rdf_batch = [rdfs[start:end]] if self.simulator.training_observable == 'imd' else \
+                            rdfs[start:end].chunk(3 if self.simulator.name == 'water' else 1, dim=1) # 3 separate RDFs for water
+                
                 adf_batch = adfs[start:end]
                 
                 #TODO: fix the case where we don't use the MSE gradient
@@ -318,8 +322,8 @@ class BoltzmannEstimator():
                     _adfs = adfs[start:end]
                     rdf_loss = vmap(self.rdf_loss)(_rdfs).unsqueeze(-1).unsqueeze(-1)
                     adf_loss = vmap(self.adf_loss)(_adfs).unsqueeze(-1).unsqueeze(-1)
-                    grad_outputs_rdf = [torch.autograd.grad(rdf_loss.mean(), _rdfs)[0]]
-                    grad_outputs_adf = [torch.autograd.grad(adf_loss.mean(), _adfs)[0]]
+                    grad_outputs_rdf = [torch.autograd.grad(rdf_loss.mean(), _rdfs)[0].detach()]
+                    grad_outputs_adf = [torch.autograd.grad(adf_loss.mean(), _adfs)[0].detach()]
                 final_vjp = [self.estimator(rdf, grads_flattened, grad_output_rdf) for rdf, grad_output_rdf in zip(rdf_batch, grad_outputs_rdf)]
                 final_vjp = torch.stack(final_vjp).mean(0)
                 if self.params.adf_loss_weight !=0:
