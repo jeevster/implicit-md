@@ -3,6 +3,7 @@ import gsd.hoomd
 import torch
 import logging
 import gc
+import json
 from pathlib import Path
 import yaml
 import torch.nn as nn
@@ -1050,6 +1051,7 @@ if __name__ == "__main__":
             if name == 'md17' or name == 'md22':
                 final_rdf = get_hr(stable_trajs_stacked, bins)
                 final_rdf_mae = xlim* torch.abs(gt_rdf - torch.Tensor(final_rdf).to(device)).mean()
+                #TODO: log actu
                 final_metrics = {
                     'Energy MAE': energy_maes[-1],
                     'Force MAE': force_maes[-1],
@@ -1074,6 +1076,8 @@ if __name__ == "__main__":
                     'HH RDF MAE': final_rdf_maes['HH'],
                     'Diffusivity MAE Loss (10^-9 m^2/s)': diffusivity_mae,
                 }
+            with open(os.path.join(results_dir, 'final_metrics.json'), 'w') as fp:
+                json.dump(final_metrics, fp, indent=4, separators=(',', ': '))
             #TODO: compute final RDF MAE, VACF MAE, Diffusion Coefficient MAE, etc. here (only from the stable parts of the trajectories)
             hparams_logging = hparams(hyperparameters, final_metrics)
             for i in hparams_logging:
@@ -1082,7 +1086,8 @@ if __name__ == "__main__":
     writer.close()      
     if not params.train:
         #close simulation file
-        equilibriated_simulator.t.close()  
+        if hasattr(equilibriated_simulator, 't'):
+            equilibriated_simulator.t.close()  
     print('Done!')
     
 
