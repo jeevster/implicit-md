@@ -245,7 +245,7 @@ class BoltzmannEstimator():
                 rdfs = torch.cat([self.simulator.stability_criterion(s.unsqueeze(0)) for s in stacked_radii])
             else:
                 rdfs = torch.cat([self.simulator.rdf_mae(s.unsqueeze(0))[0] for s in stacked_radii])
-            rdfs = rdfs.reshape(-1, simulator.n_replicas, 1)
+            rdfs = rdfs.reshape(-1, simulator.n_replicas, self.gt_rdf.shape[-1])
             adfs = torch.stack([diff_adf(rad) for rad in stacked_radii.reshape(-1, self.simulator.n_atoms, 3)]).reshape(-1, self.simulator.n_replicas, self.gt_adf.shape[-1])
         else:
             r2d = lambda r: radii_to_dists(r, self.simulator.params)
@@ -281,7 +281,8 @@ class BoltzmannEstimator():
                 rdfs = rdfs[shuffle_idx]
                 adfs = adfs[shuffle_idx]
             
-            num_blocks = math.ceil(stacked_radii.shape[0]/ (self.simulator.n_replicas))
+            bsize=1
+            num_blocks = math.ceil(stacked_radii.shape[0]/ bsize)
             start_time = time.time()
             rdf_gradient_estimators = []
             adf_gradient_estimators = []
@@ -291,8 +292,8 @@ class BoltzmannEstimator():
             num_params = len(list(model.parameters()))
             #first compute gradients of potential energy (in batches of size n_replicas)
             for i in tqdm(range(num_blocks)):
-                start = self.simulator.n_replicas*i
-                end = self.simulator.n_replicas*(i+1)
+                start = bsize*i
+                end = bsize*(i+1)
                 with torch.enable_grad():
                     radii_in = stacked_radii[start:end]
                     radii_in.requires_grad = True
@@ -314,7 +315,6 @@ class BoltzmannEstimator():
                     grads_flattened= torch.stack([torch.cat([grads_vectorized[i][j].flatten().detach() for i in range(num_params)]) for j in range(num_samples)])
                 pe_grads_flattened.append(grads_flattened)
 
-            
             pe_grads_flattened = torch.cat(pe_grads_flattened)
             #Now compute final gradient estimators in batches of size MINIBATCH_SIZE
             num_blocks = math.ceil(stacked_radii.shape[0]/ (MINIBATCH_SIZE))

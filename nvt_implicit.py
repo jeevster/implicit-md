@@ -823,6 +823,7 @@ if __name__ == "__main__":
     rdf_losses = []
     adf_losses = []
     diffusion_losses = []
+    vacfs = []
     vacf_losses = []
     mean_instabilities = []
     bond_length_devs = []
@@ -893,10 +894,8 @@ if __name__ == "__main__":
         #unpack results
         rdf_grad_batches, mean_rdf, rdf_loss, mean_adf, adf_loss = rdf_package
         vacf_grad_batches, mean_vacf, vacf_loss = vacf_package
-
-        #TODO: figure out why ADF loss is becoming NaN in some cases
-        if torch.isnan(adf_loss):
-            adf_loss = torch.zeros_like(adf_loss).to(device)
+        if not params.train:
+            vacfs.append(mean_vacf)
 
         outer_loss = params.rdf_loss_weight*rdf_loss + params.adf_loss_weight*adf_loss + diffusion_loss + params.vacf_loss_weight*vacf_loss
         print(f"Loss: RDF={rdf_loss.item()}+ADF={adf_loss.item()}+Diffusion={diffusion_loss.item()}+VACF={vacf_loss.item()}={outer_loss.item()}")
@@ -1042,26 +1041,26 @@ if __name__ == "__main__":
             bins = np.linspace(1e-6, xlim, n_bins + 1) # for computing h(r)
             if name == 'md17' or name == 'md22':
                 final_rdf = get_hr(stable_trajs_stacked, bins)
-                final_rdf_mae = xlim* torch.abs(gt_rdf - torch.Tensor(final_rdf).to(device)).mean()
+                gt_rdf = final_rdf.sum()*gt_rdf/ gt_rdf.sum() #normalize to be on the same scale
+                final_rdf_mae = xlim * torch.abs(gt_rdf - torch.Tensor(final_rdf).to(device)).mean()
                 #need to subsample the ADF a lot to avoid hanging - scales very poorly with number of structures
                 final_adf = DifferentiableADF(simulator.n_atoms, simulator.bonds, simulator.cell, params, device)(stable_trajs_stacked[::100].to(device))
                 final_adf_mae = torch.abs(gt_adf- final_adf).mean()
-                final_vacf = DifferentiableVACF(params, device)(stable_vel_trajs_stacked.to(device))
+                final_vacf = torch.stack(vacfs).mean(0).to(device)
                 final_vacf_mae = torch.abs(gt_vacf - final_vacf).mean()
                 final_metrics = {
                     'Energy MAE': energy_maes[-1],
                     'Force MAE': force_maes[-1],
-                    'Stability': resets[75]+0.001 if len(resets) > 75 else resets[-1]+0.001,
+                    'Median Stability (ps)': simulator.stable_time.median().item(),
                     'RDF MAE': final_rdf_mae.item(),
                     'ADF MAE': final_adf_mae.item(),
-                    'VACF Loss': final_vacf_mae.item()
+                    'VACF MAE': final_vacf_mae.item()
                 }
                 #save rdf, adf, and vacf at the end of the trajectory
                 np.save(os.path.join(results_dir, "final_rdf.npy"), final_rdf)
                 np.save(os.path.join(results_dir, "final_adf.npy"), final_adf.cpu().detach().numpy())
                 np.save(os.path.join(results_dir, "final_vacf.npy"), final_vacf.cpu().detach().numpy())
         
-      
             elif name == "water":
                 final_rdfs = get_water_rdfs(stable_trajs_stacked, simulator.rdf_mae.ptypes, simulator.rdf_mae.lattices, simulator.rdf_mae.bins, device)
                 final_rdf_maes = {k: xlim* torch.abs(gt_rdf[k] - torch.Tensor(final_rdfs[k]).to(device)).mean().item() for k in gt_rdf.keys()}
@@ -1071,12 +1070,12 @@ if __name__ == "__main__":
                 pred_diffusivity = last_diffusivity.mean() #mean over replicas
                 diffusivity_mae = 10*float((gt_diffusivity[-1].to(device) - pred_diffusivity.to(device)).abs())
                 #TODO: compute O-O-conditioned ADF instead of full ADF
-                final_adf = DifferentiableADF(simulator.n_atoms, simulator.bonds, simulator.cell, params, device)(stable_trajs_stacked.to(device))
+                final_adf = DifferentiableADF(simulator.n_atoms, simulator.bonds, simulator.cell, params, device)(stable_trajs_stacked[::100].to(device))
                 final_adf_mae = torch.abs(gt_adf-final_adf).mean()
                 final_metrics = {
                     'Energy MAE': energy_maes[-1],
                     'Force MAE': force_maes[-1],
-                    'Stability': resets[75]+0.001 if len(resets) > 75 else resets[-1]+0.001,
+                    'Median Stability (ps)': simulator.stable_time.median().item(),
                     'OO RDF MAE': final_rdf_maes['OO'],
                     'HO RDF MAE': final_rdf_maes['HO'],
                     'HH RDF MAE': final_rdf_maes['HH'],

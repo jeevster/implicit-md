@@ -222,8 +222,8 @@ class Trainer(ABC):
                 "checkpoint_every", -1
             )
 
-        if distutils.is_master():
-            print(yaml.dump(self.config, default_flow_style=False))
+        # if distutils.is_master():
+        #     print(yaml.dump(self.config, default_flow_style=False))
 
         self.load()
         self.evaluator = Evaluator(task=name, no_energy=no_energy)
