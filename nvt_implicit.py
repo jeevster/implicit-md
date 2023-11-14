@@ -1043,7 +1043,8 @@ if __name__ == "__main__":
             if name == 'md17' or name == 'md22':
                 final_rdf = get_hr(stable_trajs_stacked, bins)
                 final_rdf_mae = xlim* torch.abs(gt_rdf - torch.Tensor(final_rdf).to(device)).mean()
-                final_adf = DifferentiableADF(simulator.n_atoms, simulator.bonds, simulator.cell, params, device)(stable_trajs_stacked.to(device))
+                #need to subsample the ADF a lot to avoid hanging - scales very poorly with number of structures
+                final_adf = DifferentiableADF(simulator.n_atoms, simulator.bonds, simulator.cell, params, device)(stable_trajs_stacked[::100].to(device))
                 final_adf_mae = torch.abs(gt_adf- final_adf).mean()
                 final_vacf = DifferentiableVACF(params, device)(stable_vel_trajs_stacked.to(device))
                 final_vacf_mae = torch.abs(gt_vacf - final_vacf).mean()
