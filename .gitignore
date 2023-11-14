@@ -12,6 +12,7 @@ results*
 test_lj*
 landscapes/
 nnip_continuous_dynamics_new/
+*pyc
 *.npy
 *.png
 logs/
