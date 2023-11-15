@@ -216,10 +216,11 @@ class ImplicitMDSimulator():
         self.batch = torch.arange(self.n_replicas).repeat_interleave(self.n_atoms).to(self.device)
         self.ic_stddev = params.ic_stddev
 
-        #dataset = self.test_dataset
         dataset = self.train_dataset if self.train else self.test_dataset
-        samples = np.random.choice(np.arange(dataset.__len__()), self.n_replicas, replace=False)
-        #samples = [0]
+        #pick the first n_replicas ICs if doing simulation (so we can directly compare replicas' stabilities across models)
+        samples = np.random.choice(np.arange(dataset.__len__()), self.n_replicas, replace=False) \
+                                    if self.train else np.arange(self.n_replicas) 
+
         self.raw_atoms = [data_to_atoms(dataset.__getitem__(i)) for i in samples]
         self.cell = torch.Tensor(self.raw_atoms[0].cell).to(self.device)
         self.mean_bond_lens = distance_pbc(
@@ -553,9 +554,9 @@ class ImplicitMDSimulator():
         with torch.no_grad():
             self.step = -1
             _, forces = self.force_calc(self.radii)
-            if self.integrator == 'Langevin':
-                #half-step outside loop to ensure symplecticity
-                self.velocities = self.velocities + self.dt/2*(forces/self.masses - self.gamma*self.velocities) + self.noise_f/torch.sqrt(torch.tensor(2.0).to(self.device))*torch.randn_like(self.velocities)
+            # if self.integrator == 'Langevin':
+            #     #half-step outside loop to ensure symplecticity
+            #     self.velocities = self.velocities + self.dt/2*(forces/self.masses - self.gamma*self.velocities) + self.noise_f/torch.sqrt(torch.tensor(2.0).to(self.device))*torch.randn_like(self.velocities)
             zeta = self.zeta
             #Run MD
             print("Start MD trajectory", file=self.f)
@@ -823,7 +824,7 @@ if __name__ == "__main__":
     rdf_losses = []
     adf_losses = []
     diffusion_losses = []
-    vacfs = []
+    all_vacfs_per_replica = []
     vacf_losses = []
     mean_instabilities = []
     bond_length_devs = []
@@ -893,9 +894,9 @@ if __name__ == "__main__":
                 
         #unpack results
         rdf_grad_batches, mean_rdf, rdf_loss, mean_adf, adf_loss = rdf_package
-        vacf_grad_batches, mean_vacf, vacf_loss = vacf_package
+        vacf_grad_batches, vacfs_per_replica, vacf_loss = vacf_package
         if not params.train:
-            vacfs.append(mean_vacf)
+            all_vacfs_per_replica.append(vacfs_per_replica)
 
         outer_loss = params.rdf_loss_weight*rdf_loss + params.adf_loss_weight*adf_loss + diffusion_loss + params.vacf_loss_weight*vacf_loss
         print(f"Loss: RDF={rdf_loss.item()}+ADF={adf_loss.item()}+Diffusion={diffusion_loss.item()}+VACF={vacf_loss.item()}={outer_loss.item()}")
@@ -1040,28 +1041,37 @@ if __name__ == "__main__":
             n_bins = int(xlim/params.dr)
             bins = np.linspace(1e-6, xlim, n_bins + 1) # for computing h(r)
             if name == 'md17' or name == 'md22':
-                final_rdf = get_hr(stable_trajs_stacked, bins)
-                gt_rdf = final_rdf.sum()*gt_rdf/ gt_rdf.sum() #normalize to be on the same scale
-                final_rdf_mae = xlim * torch.abs(gt_rdf - torch.Tensor(final_rdf).to(device)).mean()
-                #need to subsample the ADF a lot to avoid hanging - scales very poorly with number of structures
-                final_adf = DifferentiableADF(simulator.n_atoms, simulator.bonds, simulator.cell, params, device)(stable_trajs_stacked[::100].to(device))
-                final_adf_mae = torch.abs(gt_adf- final_adf).mean()
-                final_vacf = torch.stack(vacfs).mean(0).to(device)
-                final_vacf_mae = torch.abs(gt_vacf - final_vacf).mean()
+                final_rdfs = torch.stack([torch.Tensor(get_hr(traj, bins)).to(device) for traj in stable_trajs])
+                gt_rdf = final_rdfs[0].sum()*gt_rdf/ gt_rdf.sum() #normalize to be on the same scale
+                
+                final_rdf_maes = xlim * torch.abs(gt_rdf.unsqueeze(0) -final_rdfs).mean(-1)
+                adf = DifferentiableADF(simulator.n_atoms, simulator.bonds, simulator.cell, params, device)
+                final_adfs = torch.stack([adf(traj[::2].to(device)) for traj in stable_trajs])
+                final_adf_maes = torch.abs(gt_adf.unsqueeze(0) - final_adfs).mean(-1)
+                count_per_replica = torch.stack(all_vacfs_per_replica).sum(0)[:, 0].unsqueeze(-1)+1e-8
+                final_vacfs = (torch.stack(all_vacfs_per_replica).sum(0) /count_per_replica).to(device)
+                final_vacf_maes = torch.abs(gt_vacf.unsqueeze(0) - final_vacfs).mean(-1)
                 final_metrics = {
                     'Energy MAE': energy_maes[-1],
                     'Force MAE': force_maes[-1],
                     'Median Stability (ps)': simulator.stable_time.median().item(),
-                    'RDF MAE': final_rdf_mae.item(),
-                    'ADF MAE': final_adf_mae.item(),
-                    'VACF MAE': final_vacf_mae.item()
+                    'Mean RDF MAE': final_rdf_maes.mean().item(),
+                    'Mean ADF MAE': final_adf_maes.mean().item(),
+                    'Mean VACF MAE': final_vacf_maes.mean().item(),
+                    'Std Dev RDF MAE': final_rdf_maes.std().item(),
+                    'Std Dev ADF MAE': final_adf_maes.std().item(),
+                    'Std Dev VACF MAE': final_vacf_maes.std().item()
                 }
-                #save rdf, adf, and vacf at the end of the trajectory
-                np.save(os.path.join(results_dir, "final_rdf.npy"), final_rdf)
-                np.save(os.path.join(results_dir, "final_adf.npy"), final_adf.cpu().detach().numpy())
-                np.save(os.path.join(results_dir, "final_vacf.npy"), final_vacf.cpu().detach().numpy())
+                #save rdfs, adfs, and vacfs at the end of the trajectory
+                np.save(os.path.join(results_dir, "final_rdfs.npy"), final_rdfs.cpu())
+                np.save(os.path.join(results_dir, "final_adfs.npy"), final_adfs.cpu())
+                np.save(os.path.join(results_dir, "final_vacfs.npy"), final_vacfs.cpu())
+                np.save(os.path.join(results_dir, "final_rdf_maes.npy"), final_rdf_maes.cpu())
+                np.save(os.path.join(results_dir, "final_adf_maes.npy"), final_adf_maes.cpu())
+                np.save(os.path.join(results_dir, "final_vacf_maes.npy"), final_vacf_maes.cpu())
         
             elif name == "water":
+                #TODO: compute rdfs per-replica like we did for MD17/MD22
                 final_rdfs = get_water_rdfs(stable_trajs_stacked, simulator.rdf_mae.ptypes, simulator.rdf_mae.lattices, simulator.rdf_mae.bins, device)
                 final_rdf_maes = {k: xlim* torch.abs(gt_rdf[k] - torch.Tensor(final_rdfs[k]).to(device)).mean().item() for k in gt_rdf.keys()}
                 #Recording frequency is 1 ps for diffusion coefficient

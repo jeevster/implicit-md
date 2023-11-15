@@ -28,7 +28,7 @@ def find_hr_adf_from_file(base_path: str, name: str, molecule: str, size: str, p
     n_bins = int(xlim/params.dr)
     bins = np.linspace(1e-6, xlim, n_bins + 1) # for computing h(r)
     # load ground truth data
-    DATAPATH = os.path.join(base_path, name, molecule, size, 'val/nequip_npz.npz')
+    DATAPATH = os.path.join(base_path, name, molecule, size, 'train/nequip_npz.npz')
     gt_data = np.load(DATAPATH)
     gt_traj = torch.FloatTensor(gt_data.f.R)
     hist_gt = get_hr(gt_traj, bins)
@@ -46,5 +46,5 @@ def find_hr_adf_from_file(base_path: str, name: str, molecule: str, size: str, p
     raw_atoms = data_to_atoms(temp_data.__getitem__(0))
     cell = torch.Tensor(raw_atoms.cell).to(device)
     diff_adf = DifferentiableADF(n_atoms, bonds, cell, params, device)
-    hist_adf = diff_adf(gt_traj[0:500].to(device))
+    hist_adf = diff_adf(gt_traj[:3000].to(device))
     return torch.Tensor(hist_gt).to(device), torch.Tensor(hist_adf).to(device)

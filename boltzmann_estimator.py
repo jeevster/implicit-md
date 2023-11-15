@@ -104,9 +104,12 @@ class BoltzmannEstimator():
         
         stacked_radii = radii_traj[::self.simulator.n_dump] #take i.i.d samples for RDF loss
         velocities_traj = torch.stack(simulator.running_vels).permute(1,0,2,3)
+        vacfs_per_replica = vmap(diff_vacf)(velocities_traj)
+        vacfs_per_replica[~stable_replicas] = torch.zeros(1, 100).to(self.device) #zero out the unstable replica vacfs
         #split into sub-trajectories of length = vacf_window
         velocities_traj = velocities_traj.reshape(velocities_traj.shape[0], -1, self.simulator.vacf_window, self.simulator.n_atoms, 3)
         velocities_traj = velocities_traj[:, ::self.simulator.n_dump_vacf] #sample i.i.d paths
+        
         vacfs = vmap(vmap(diff_vacf))(velocities_traj)
         mean_vacf = vacfs[stable_replicas].mean(dim = (0,1)) #only compute loss on stable replicas
         mean_vacf_loss = self.vacf_loss(mean_vacf) 
@@ -120,7 +123,7 @@ class BoltzmannEstimator():
         #VACF stuff
         if self.params.vacf_loss_weight == 0 or not self.simulator.train or simulator.optimizer.param_groups[0]['lr'] == 0:
             vacf_gradient_estimators = None
-            vacf_package = (vacf_gradient_estimators, mean_vacf, self.vacf_loss(mean_vacf).to(self.device))
+            vacf_package = (vacf_gradient_estimators, vacfs_per_replica, self.vacf_loss(mean_vacf).to(self.device))
         else:
             vacf_gradient_estimators = []
             if self.params.adjoint:
@@ -236,7 +239,7 @@ class BoltzmannEstimator():
                     #re-assemble flattened gradients into correct shape
                     gradient_estimator = tuple([g.reshape(shape) for g, shape in zip(mean_grads.split(original_numel), original_shapes)])
                     vacf_gradient_estimators.append(gradient_estimator)
-            vacf_package = (vacf_gradient_estimators, mean_vacf, mean_vacf_loss.to(self.device))
+            vacf_package = (vacf_gradient_estimators, vacfs_per_replica, mean_vacf_loss.to(self.device))
        
         ###RDF/ADF Stuff ###
         if self.simulator.name == "water":
