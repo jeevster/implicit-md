@@ -792,7 +792,7 @@ if __name__ == "__main__":
         gt_adf = torch.zeros((100,1)).to(device) #TODO: temporary
     else:
         gt_rdf, gt_adf = find_hr_adf_from_file(data_path, name, molecule, MAX_SIZES[name], params, device)
-    contiguous_path = os.path.join(data_path, f'contiguous-{name}', molecule, MAX_SIZES[name], 'train/nequip_npz.npz')
+    contiguous_path = os.path.join(data_path, f'contiguous-{name}', molecule, MAX_SIZES[name], 'val/nequip_npz.npz')
     gt_data = np.load(contiguous_path)
     #TODO: gt vacf doesn't look right - it's because the recording frequency of the data is 10 fs, not 0.5 as in MD17
     if name == 'water':
@@ -1038,7 +1038,7 @@ if __name__ == "__main__":
                     
                     final_rdf_maes = xlim * torch.abs(gt_rdf.unsqueeze(0) -final_rdfs).mean(-1)
                     adf = DifferentiableADF(simulator.n_atoms, simulator.bonds, simulator.cell, params, device)
-                    final_adfs = torch.stack([adf(traj.to(device)) for traj in stable_trajs])
+                    final_adfs = torch.stack([adf(traj[::2].to(device)) for traj in stable_trajs])
                     final_adf_maes = torch.abs(gt_adf.unsqueeze(0) - final_adfs).mean(-1)
                     count_per_replica = torch.stack(all_vacfs_per_replica).sum(0)[:, 0].unsqueeze(-1)+1e-8
                     final_vacfs = (torch.stack(all_vacfs_per_replica).sum(0) /count_per_replica).to(device)
