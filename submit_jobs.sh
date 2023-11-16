@@ -7,8 +7,8 @@
 # $4: energy/force loss weight
 # $5: exp_name
 
-system="md17"
-molecules_md22=('aspirin' 'salicylic_acid' 'ethanol' 'benzene' 'toluene' 'malonaldehyde' 'uracil' 'naphthalene') # 'naphthalene' 'salicylic_acid')
+system="md22"
+molecules_md22=('ac_Ala3_NHMe') # 'AT_AT') # 'naphthalene' 'salicylic_acid')
 models=('gemnet_t')
 lrs=(0.001) # 0.0003 0.001)
 ef_weights=(10) # 1) # 3 10 30 100)
@@ -26,9 +26,9 @@ for molecule in "${molecules_md22[@]}"; do
     #non-post inferences - once per model (can start after training starts)
     lrtemp=0.001
     ef_weighttemp=10
-    sbatch run_implicit_simulate.sh $system $molecule $lrtemp 1 0 $ef_weighttemp 'pre'
-    sbatch run_implicit_simulate.sh $system $molecule $lrtemp 1 0 $ef_weighttemp '10k'
-    sbatch run_implicit_simulate.sh $system $molecule $lrtemp 1 0 $ef_weighttemp '50k'
+    sbatch --dependency=after:$jid1 run_implicit_simulate.sh $system $molecule $lrtemp 1 0 $ef_weighttemp 'pre'
+    sbatch --dependency=after:$jid1 run_implicit_simulate.sh $system $molecule $lrtemp 1 0 $ef_weighttemp '10percent'
+    sbatch --dependency=after:$jid1 run_implicit_simulate.sh $system $molecule $lrtemp 1 0 $ef_weighttemp '25percent'
 done
 
 
