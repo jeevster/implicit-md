@@ -742,7 +742,7 @@ if __name__ == "__main__":
         RuntimeError("Invalid eval model choice")
     
     if model_type == "nequip":
-        if config['eval_model'] == 'post' and not params.train:
+        if "post" in config['eval_model'] and not params.train:
             #get config from pretrained directory
             cname = f"end_of_cycle{load_cycle}.pth" if load_cycle is not None else "ckpt.pth"
             print(f'Loading model weights from {os.path.join(pretrained_model_path, cname)}')
