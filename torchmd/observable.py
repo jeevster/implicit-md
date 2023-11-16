@@ -99,7 +99,7 @@ class DifferentiableADF(torch.nn.Module):
             start=start,
             stop=self.bins[-1],
             n_gaussians=self.nbins,
-            width=params.gaussian_width,
+            width=1.0,
             trainable=False
         ).to(self.device)
         self.width = (self.smear.width[0]).item()

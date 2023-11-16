@@ -239,8 +239,10 @@ class ImplicitMDSimulator():
                                         
         radii = torch.stack([torch.Tensor(atoms.get_positions()) for atoms in self.raw_atoms])
         self.radii = (radii + torch.normal(torch.zeros_like(radii), self.ic_stddev)).to(self.device)
-        #self.velocities = torch.stack([torch.Tensor(atoms.get_velocities()) for atoms in self.raw_atoms]).to(self.device)
         self.velocities = torch.Tensor(initialize_velocities(self.n_atoms, self.masses, self.temp, self.n_replicas)).to(self.device)
+        #assign velocities to atoms
+        for i in range(len(self.raw_atoms)):
+            self.raw_atoms[i].set_velocities(self.velocities[i].cpu().numpy())
         #initialize checkpoint states for resetting
         self.checkpoint_radii = []
         self.checkpoint_radii.append(self.radii)
@@ -252,12 +254,7 @@ class ImplicitMDSimulator():
         self.original_velocities = self.velocities.clone()
         self.original_zeta = self.zeta.clone()
         self.all_radii = []
-        self.all_velocities = []
         
-        
-        #assign velocities to atoms
-        for i in range(len(self.raw_atoms)):
-            self.raw_atoms[i].set_velocities(self.velocities[i].cpu().numpy())
         #create batch of atoms to be operated on
         self.r_max_key = "r_max" if self.model_type == "nequip" else "cutoff"
         self.atoms_batch = [AtomicData.from_ase(atoms=a, r_max=self.model_config['model'][self.r_max_key]) for a in self.raw_atoms]
@@ -580,7 +577,6 @@ class ImplicitMDSimulator():
                 
                     if step % self.n_dump == 0 and not self.train:
                         self.all_radii.append(radii.detach().cpu()) #save whole trajectory without resetting at inference time
-                        self.all_velocities.append(velocities.detach().cpu())
                 self.radii.copy_(radii)
                 self.velocities.copy_(velocities)
                     
@@ -794,10 +790,9 @@ if __name__ == "__main__":
     elif name == 'lips':
         gt_rdf, gt_diffusivity = find_lips_rdfs_diffusivity_from_file(data_path, MAX_SIZES[name], params, device)
         gt_adf = torch.zeros((100,1)).to(device) #TODO: temporary
-        
     else:
         gt_rdf, gt_adf = find_hr_adf_from_file(data_path, name, molecule, MAX_SIZES[name], params, device)
-    contiguous_path = os.path.join(data_path, f'contiguous-{name}', molecule, MAX_SIZES[name], 'val/nequip_npz.npz')
+    contiguous_path = os.path.join(data_path, f'contiguous-{name}', molecule, MAX_SIZES[name], 'train/nequip_npz.npz')
     gt_data = np.load(contiguous_path)
     #TODO: gt vacf doesn't look right - it's because the recording frequency of the data is 10 fs, not 0.5 as in MD17
     if name == 'water':
@@ -1024,7 +1019,6 @@ if __name__ == "__main__":
         if not params.train:
             np.save(os.path.join(results_dir, f'replicas_stable_time.npy'), simulator.stable_time.cpu().numpy())
             full_traj = torch.stack(simulator.all_radii)
-            full_vel_traj = torch.stack(simulator.all_velocities)
             np.save(os.path.join(results_dir, 'full_traj.npy'), full_traj)
             #if params.eval_model == "post":
             hyperparameters = {
@@ -1046,7 +1040,7 @@ if __name__ == "__main__":
                 
                 final_rdf_maes = xlim * torch.abs(gt_rdf.unsqueeze(0) -final_rdfs).mean(-1)
                 adf = DifferentiableADF(simulator.n_atoms, simulator.bonds, simulator.cell, params, device)
-                final_adfs = torch.stack([adf(traj[::2].to(device)) for traj in stable_trajs])
+                final_adfs = torch.stack([adf(traj.to(device)) for traj in stable_trajs])
                 final_adf_maes = torch.abs(gt_adf.unsqueeze(0) - final_adfs).mean(-1)
                 count_per_replica = torch.stack(all_vacfs_per_replica).sum(0)[:, 0].unsqueeze(-1)+1e-8
                 final_vacfs = (torch.stack(all_vacfs_per_replica).sum(0) /count_per_replica).to(device)
@@ -1054,7 +1048,8 @@ if __name__ == "__main__":
                 final_metrics = {
                     'Energy MAE': energy_maes[-1],
                     'Force MAE': force_maes[-1],
-                    'Median Stability (ps)': simulator.stable_time.median().item(),
+                    'Mean Stability (ps)': simulator.stable_time.mean().item(),
+                    'Std Dev Stability (ps)': simulator.stable_time.std().item(),
                     'Mean RDF MAE': final_rdf_maes.mean().item(),
                     'Mean ADF MAE': final_adf_maes.mean().item(),
                     'Mean VACF MAE': final_vacf_maes.mean().item(),
@@ -1085,7 +1080,8 @@ if __name__ == "__main__":
                 final_metrics = {
                     'Energy MAE': energy_maes[-1],
                     'Force MAE': force_maes[-1],
-                    'Median Stability (ps)': simulator.stable_time.median().item(),
+                    'Mean Stability (ps)': simulator.stable_time.median().item(),
+                    'Std Dev Stability (ps)': simulator.stable_time.std().item(),
                     'OO RDF MAE': final_rdf_maes['OO'],
                     'HO RDF MAE': final_rdf_maes['HO'],
                     'HH RDF MAE': final_rdf_maes['HH'],
