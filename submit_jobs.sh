@@ -8,7 +8,7 @@
 # $5: exp_name
 
 system="md22"
-molecules_md22=('ac_Ala3_NHMe') # 'AT_AT') # 'naphthalene' 'salicylic_acid')
+molecules_md22=('DHA' 'AT_AT') # 'naphthalene' 'salicylic_acid')
 models=('gemnet_t')
 lrs=(0.001) # 0.0003 0.001)
 ef_weights=(10) # 1) # 3 10 30 100)
