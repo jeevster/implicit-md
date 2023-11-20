@@ -5,6 +5,7 @@ from scipy.stats import maxwell
 import math
 import yaml
 import os
+import json
 import gc
 import matplotlib.pyplot as plt
 from torchmd.observable import DifferentiableRDF, DifferentiableADF
@@ -12,9 +13,11 @@ from mdsim.common.utils import data_to_atoms
 from mdsim.datasets.lmdb_dataset import LmdbDataset
 from ase.neighborlist import natural_cutoffs, NeighborList
 from mdsim.models.schnet import SchNetWrap
+from mdsim.observables.md17_22 import get_hr
+from mdsim.observables.water import get_water_rdfs, get_smoothed_diffusivity
+
 
 def load_schnet_model(path = None, ckpt_epoch = -1, num_interactions = None, device = "cpu", from_pretrained=True, train = True):
-    
     if train:
         cname = 'best_checkpoint.pt' if ckpt_epoch == -1 else f"checkpoint{ckpt_epoch}.pt"
         ckpt_and_config_path = os.path.join(path, "checkpoints", cname)
