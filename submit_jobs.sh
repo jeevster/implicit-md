@@ -8,10 +8,10 @@
 # $5: exp_name
 
 system="md22"
-molecules_md22=('DHA' 'AT_AT') # 'naphthalene' 'salicylic_acid')
+molecules_md22=('AT_AT')
 models=('gemnet_t')
 lrs=(0.001) # 0.0003 0.001)
-ef_weights=(10) # 1) # 3 10 30 100)
+ef_weights=(30) # 1) # 3 10 30 100)
 for molecule in "${molecules_md22[@]}"; do
     for lr in "${lrs[@]}"; do
         for ef_weight in "${ef_weights[@]}"; do
@@ -25,10 +25,10 @@ for molecule in "${molecules_md22[@]}"; do
     done
     #non-post inferences - once per model (can start after training starts)
     lrtemp=0.001
-    ef_weighttemp=10
-    sbatch --dependency=after:$jid1 run_implicit_simulate.sh $system $molecule $lrtemp 1 0 $ef_weighttemp 'pre'
-    sbatch --dependency=after:$jid1 run_implicit_simulate.sh $system $molecule $lrtemp 1 0 $ef_weighttemp '10percent'
-    sbatch --dependency=after:$jid1 run_implicit_simulate.sh $system $molecule $lrtemp 1 0 $ef_weighttemp '25percent'
+    ef_weighttemp=30
+    # sbatch --dependency=after:$jid1 run_implicit_simulate.sh $system $molecule $lrtemp 1 0 $ef_weighttemp 'pre'
+    # sbatch --dependency=after:$jid1 run_implicit_simulate.sh $system $molecule $lrtemp 1 0 $ef_weighttemp '10percent'
+    # sbatch --dependency=after:$jid1 run_implicit_simulate.sh $system $molecule $lrtemp 1 0 $ef_weighttemp '25percent'
 done
 
 

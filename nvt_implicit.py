@@ -565,7 +565,7 @@ class ImplicitMDSimulator():
                 elif self.integrator == 'Langevin':
                     radii, velocities, forces, noise = self.forward_langevin(self.radii, self.velocities, forces, retain_grad = False)
                 else:
-                    RuntimeError("Must choose either NoseHoover or Langevin as integrator")
+                    raise RuntimeError("Must choose either NoseHoover or Langevin as integrator")
                 
                 #save trajectory for gradient calculation
                 if step >= self.eq_steps:# and step % self.n_dump == 0:
@@ -1024,7 +1024,7 @@ if __name__ == "__main__":
                 'lr': params.lr,
                 'ef_loss_weight': params.energy_force_loss_weight
             }
-            if epoch % 5 == 0: #to save time
+            if epoch % 5 == 0 and epoch > 100: #to save time
                 steps_per_epoch = int(simulator.nsteps/simulator.n_dump)
                 stable_steps = simulator.stable_time * steps_per_epoch
                 stable_trajs = [full_traj[:int(upper_step_limit), i] for i, upper_step_limit in enumerate(stable_steps)]
