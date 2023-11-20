@@ -31,8 +31,7 @@ from torch_geometric.utils import remove_self_loops
 from torch_scatter import segment_coo, segment_csr
 from torch_cluster import radius_graph as pyg_radius_graph
 from ase.data import atomic_masses
-from mdsim.observables.md17_22 import get_hr
-from mdsim.observables.water import get_water_rdfs, get_smoothed_diffusivity
+from torchmd.observable import generate_vol_bins, DifferentiableRDF, DifferentiableADF
 
 
 HARTREE_TO_KCAL_MOL = 627.509
@@ -67,88 +66,6 @@ OFFSET_LIST = [
     [1, 1, 0],
     [1, 1, 1],
 ]
-
-
-#calculate simulation metrics
-def calculate_final_metrics(simulator, params, results_dir, energy_maes, force_maes, gt_rdf, gt_adf=None, gt_vacf=None, gt_diffusivity=None):
-    np.save(os.path.join(results_dir, f'replicas_stable_time.npy'), simulator.stable_time.cpu().numpy())
-    full_traj = torch.stack(simulator.all_radii)
-    np.save(os.path.join(results_dir, 'full_traj.npy'), full_traj)
-    hyperparameters = {
-        'lr': params.lr,
-        'ef_loss_weight': params.energy_force_loss_weight
-    }
-    steps_per_epoch = int(simulator.nsteps/simulator.n_dump)
-    stable_steps = simulator.stable_time * steps_per_epoch
-    stable_trajs = [full_traj[:int(upper_step_limit), i] for i, upper_step_limit in enumerate(stable_steps)]
-    stable_trajs_stacked = torch.cat(stable_trajs)
-    xlim = params.max_rdf_dist
-    n_bins = int(xlim/params.dr)
-    bins = np.linspace(1e-6, xlim, n_bins + 1) # for computing h(r)
-    if params.name == 'md17' or params.name == 'md22':
-        final_rdfs = torch.stack([torch.Tensor(get_hr(traj, bins)).to(device) for traj in stable_trajs])
-        gt_rdf = final_rdfs[0].sum()*gt_rdf/ gt_rdf.sum() #normalize to be on the same scale
-        
-        final_rdf_maes = xlim * torch.abs(gt_rdf.unsqueeze(0) -final_rdfs).mean(-1)
-        adf = DifferentiableADF(simulator.n_atoms, simulator.bonds, simulator.cell, params, device)
-        final_adfs = torch.stack([adf(traj[::2].to(device)) for traj in stable_trajs])
-        final_adf_maes = torch.abs(gt_adf.unsqueeze(0) - final_adfs).mean(-1)
-        count_per_replica = torch.stack(all_vacfs_per_replica).sum(0)[:, 0].unsqueeze(-1)+1e-8
-        final_vacfs = (torch.stack(all_vacfs_per_replica).sum(0) /count_per_replica).to(device)
-        final_vacf_maes = torch.abs(gt_vacf.unsqueeze(0) - final_vacfs).mean(-1)
-        final_metrics = {
-            'Energy MAE': energy_maes[-1],
-            'Force MAE': force_maes[-1],
-            'Mean Stability (ps)': simulator.stable_time.mean().item(),
-            'Std Dev Stability (ps)': simulator.stable_time.std().item(),
-            'Mean RDF MAE': final_rdf_maes.mean().item(),
-            'Mean ADF MAE': final_adf_maes.mean().item(),
-            'Mean VACF MAE': final_vacf_maes.mean().item(),
-            'Std Dev RDF MAE': final_rdf_maes.std().item(),
-            'Std Dev ADF MAE': final_adf_maes.std().item(),
-            'Std Dev VACF MAE': final_vacf_maes.std().item()
-        }
-        #save rdfs, adfs, and vacfs at the end of the trajectory
-        np.save(os.path.join(results_dir, "final_rdfs.npy"), final_rdfs.cpu())
-        np.save(os.path.join(results_dir, "final_adfs.npy"), final_adfs.cpu())
-        np.save(os.path.join(results_dir, "final_vacfs.npy"), final_vacfs.cpu())
-        np.save(os.path.join(results_dir, "final_rdf_maes.npy"), final_rdf_maes.cpu())
-        np.save(os.path.join(results_dir, "final_adf_maes.npy"), final_adf_maes.cpu())
-        np.save(os.path.join(results_dir, "final_vacf_maes.npy"), final_vacf_maes.cpu())
-
-    elif params.name == "water":
-        #TODO: compute rdfs per-replica like we did for MD17/MD22
-        final_rdfs = get_water_rdfs(stable_trajs_stacked, simulator.rdf_mae.ptypes, simulator.rdf_mae.lattices, simulator.rdf_mae.bins, device)
-        final_rdf_maes = {k: xlim* torch.abs(gt_rdf[k] - torch.Tensor(final_rdfs[k]).to(device)).mean().item() for k in gt_rdf.keys()}
-        #Recording frequency is 1 ps for diffusion coefficient
-        all_diffusivities = [get_smoothed_diffusivity(traj[::int(1000/params.n_dump), oxygen_atoms_mask]) for traj in stable_trajs]
-        last_diffusivity = torch.cat([diff[-1].unsqueeze(-1) if len(diff) > 0 else torch.Tensor([0.]) for diff in all_diffusivities])
-        pred_diffusivity = last_diffusivity.mean() #mean over replicas
-        diffusivity_mae = 10*float((gt_diffusivity[-1].to(device) - pred_diffusivity.to(device)).abs())
-        #TODO: compute O-O-conditioned ADF instead of full ADF
-        final_adf = DifferentiableADF(simulator.n_atoms, simulator.bonds, simulator.cell, params, device)(stable_trajs_stacked[::100].to(device))
-        final_adf_mae = torch.abs(gt_adf-final_adf).mean()
-        final_metrics = {
-            'Energy MAE': energy_maes[-1],
-            'Force MAE': force_maes[-1],
-            'Mean Stability (ps)': simulator.stable_time.median().item(),
-            'Std Dev Stability (ps)': simulator.stable_time.std().item(),
-            'OO RDF MAE': final_rdf_maes['OO'],
-            'HO RDF MAE': final_rdf_maes['HO'],
-            'HH RDF MAE': final_rdf_maes['HH'],
-            'ADF MAE': final_adf_mae.item(),
-            'Diffusivity MAE Loss (10^-9 m^2/s)': diffusivity_mae,
-        }
-        #save rdf, adf, and diffusivity at the end of the traj
-        for key, final_rdf in final_rdfs.items():
-            np.save(os.path.join(results_dir, f"final_{key}_rdf.npy"), final_rdf[0].cpu())
-        np.save(os.path.join(results_dir, "final_adf.npy"), final_adf.cpu().detach().numpy())
-        np.save(os.path.join(results_dir, "final_diffusivity.npy"), pred_diffusivity.cpu().detach().numpy())
-
-    #save final metrics to JSON
-    with open(os.path.join(results_dir, 'final_metrics.json'), 'w') as fp:
-        json.dump(final_metrics, fp, indent=4, separators=(',', ': '))
-    return hparams(hyperparameters, final_metrics)
 
 def cleanup_atoms_batch(atoms_batch):
     for key in ["cell_offsets", "edge_cell_shift", "edge_index", "neighbors", "ptr"]:

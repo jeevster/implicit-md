@@ -43,12 +43,13 @@ from nequip.utils import atomic_write, load_file
 from ase.neighborlist import natural_cutoffs, NeighborList
 from mdsim.md.ase_utils import OCPCalculator
 from mdsim.common.registry import registry
-from mdsim.common.utils import calculate_final_metrics, save_checkpoint, cleanup_atoms_batch, setup_imports, setup_logging, compute_bond_lengths, data_to_atoms, atoms_to_batch, atoms_to_state_dict, convert_atomic_numbers_to_types, process_gradient, compare_gradients, initialize_velocities, dump_params_to_yml
+from mdsim.common.utils import save_checkpoint, cleanup_atoms_batch, setup_imports, setup_logging, compute_bond_lengths, data_to_atoms, atoms_to_batch, atoms_to_state_dict, convert_atomic_numbers_to_types, process_gradient, compare_gradients, initialize_velocities, dump_params_to_yml
 from mdsim.common.custom_radius_graph import detach_numpy
 from mdsim.datasets.lmdb_dataset import LmdbDataset, data_list_collater
 from mdsim.common.utils import load_config
 from mdsim.modules.evaluator import Evaluator
 from mdsim.modules.normalizer import Normalizer
+from utils import calculate_final_metrics
 from mdsim.observables.common import distance_pbc, BondLengthDeviation, radii_to_dists
 from mdsim.observables.md17_22 import find_hr_adf_from_file, get_hr
 from mdsim.observables.water import WaterRDFMAE, MinimumIntermolecularDistance, find_water_rdfs_diffusivity_from_file, get_water_rdfs, get_smoothed_diffusivity
@@ -1019,18 +1020,18 @@ if __name__ == "__main__":
         if not params.train:
             if epoch % 5 == 0 and epoch > 100: #to save time
                 if name == "md17" or name == "md22":
-                    hparams_logging = calculate_final_metrics(simulator, params, results_dir, energy_maes, force_maes, gt_rdf, gt_adf, gt_vacf)
+                    hparams_logging = calculate_final_metrics(simulator, params, device, results_dir, energy_maes, force_maes, gt_rdf, gt_adf, gt_vacf, all_vacfs_per_replica = all_vacfs_per_replica)
                 elif name == "water":
-                    hparams_logging = calculate_final_metrics(simulator, params, results_dir, energy_maes, force_maes, gt_rdf, gt_adf, gt_diffusivity = gt_diffusivity)
+                    hparams_logging = calculate_final_metrics(simulator, params, device, results_dir, energy_maes, force_maes, gt_rdf, gt_adf, gt_diffusivity = gt_diffusivity, oxygen_atoms_mask = oxygen_atoms_mask)
                 for i in hparams_logging:
                     writer.file_writer.add_summary(i)
     
     #save metrics at end too
     if not params.train:
         if name == "md17" or name == "md22":
-            hparams_logging = calculate_final_metrics(simulator, params, results_dir, energy_maes, force_maes, gt_rdf, gt_adf, gt_vacf)
+            hparams_logging = calculate_final_metrics(simulator, params, device, results_dir, energy_maes, force_maes, gt_rdf, gt_adf, gt_vacf, all_vacfs_per_replica = all_vacfs_per_replica)
         elif name == "water":
-            hparams_logging = calculate_final_metrics(simulator, params, results_dir, energy_maes, force_maes, gt_rdf, gt_adf, gt_diffusivity = gt_diffusivity)
+            hparams_logging = calculate_final_metrics(simulator, params, device, results_dir, energy_maes, force_maes, gt_rdf, gt_adf, gt_diffusivity = gt_diffusivity, oxygen_atoms_mask = oxygen_atoms_mask)
         for i in hparams_logging:
             writer.file_writer.add_summary(i)
 
