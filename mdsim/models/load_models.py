@@ -11,9 +11,14 @@ def load_pretrained_model(model_type, path = None, ckpt_epoch = -1, cycle = None
     if train:
         cname = 'best_checkpoint.pt' if ckpt_epoch == -1 else f"checkpoint{ckpt_epoch}.pt"
         ckpt_and_config_path = os.path.join(path, "checkpoints", cname)
-    else: #load from specified cycle or epoch if needed
-        ckpt_and_config_path = os.path.join(path, f"end_of_cycle{cycle}.pt" if cycle is not None else "ckpt.pt") 
-        ckpt_and_config_path = os.path.join(path, f"epoch{post_epoch}.pt") if post_epoch is not None else ckpt_and_config_path
+    else: #load from specified cycle and/or epoch if needed
+        if cycle is not None:
+            if post_epoch is not None:
+                ckpt_and_config_path = os.path.join(path, f"cycle{cycle}_epoch{post_epoch}.pt")
+            else:
+                ckpt_and_config_path = os.path.join(path, f"end_of_cycle{cycle}.pt")
+        else:
+            ckpt_and_config_path = os.path.join(path,"ckpt.pt") 
     #load model
     if train:
         config = yaml.safe_load(open(os.path.join(path, "checkpoints", 'config.yml'), "r"))

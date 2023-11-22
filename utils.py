@@ -98,60 +98,6 @@ def calculate_final_metrics(simulator, params, device, results_dir, energy_maes,
         json.dump(final_metrics, fp, indent=4, separators=(',', ': '))
     return hparams(hyperparameters, final_metrics)
 
-def load_schnet_model(path = None, ckpt_epoch = -1, num_interactions = None, device = "cpu", from_pretrained=True, train = True):
-    if train:
-        cname = 'best_checkpoint.pt' if ckpt_epoch == -1 else f"checkpoint{ckpt_epoch}.pt"
-        ckpt_and_config_path = os.path.join(path, "checkpoints", cname)
-        schnet_config = torch.load(ckpt_and_config_path, map_location=torch.device("cpu"))["config"]
-    else:
-        #load the final checkpoint instead of the best one
-        ckpt_and_config_path = os.path.join(path, "ckpt.pth") if \
-                os.path.exists(os.path.join(path, "ckpt.pth")) else os.path.join(path, "checkpoints", "best_checkpoint.pt")
-        #temp hardcoded path since we haven't been saving the model config
-        schnet_config = torch.load('/pscratch/sd/s/sanjeevr/MODELPATH/schnet/md17-ethanol_1k_schnet/checkpoints/best_checkpoint.pt', \
-                            map_location=torch.device("cpu"))["config"]
-    
-    if num_interactions: #manual override
-        schnet_config["model_attributes"]["num_interactions"] = num_interactions
-    # keep = list(schnet_config["model_attributes"].keys())
-    # args = {k: schnet_config["model_attributes"][k] for k in keep}
-    model = SchNetWrap(**schnet_config["model_attributes"]).to(device)
-
-    if from_pretrained:
-        #get checkpoint
-        print(f'Loading model weights from {ckpt_and_config_path}')
-        try:
-            checkpoint = {k: v.to(device) for k,v in torch.load(ckpt_and_config_path, map_location = torch.device("cpu"))['model_state'].items()}
-        except:
-            checkpoint = {k: v.to(device) for k,v in torch.load(ckpt_and_config_path, map_location = torch.device("cpu"))['state_dict'].items()}
-        #checkpoint =  torch.load(ckpt_path, map_location = device)["state_dict"]
-        try:
-            new_dict = {k[7:]: v for k, v in checkpoint.items()}
-            model.load_state_dict(new_dict)
-        except:
-            model.load_state_dict(checkpoint)
-
-        
-    return model, schnet_config["model_attributes"] 
-
-def radii_to_dists(radii, params):
-    #Get rij matrix
-    r = radii.unsqueeze(-3) - radii.unsqueeze(-2)
-    
-    # #Enforce minimum image convention
-    # r = -1*torch.where(r > 0.5*params.box, r-params.box, torch.where(r<-0.5*params.box, r+params.box, r))
-
-    #get rid of diagonal 0 entries of r matrix (for gradient stability)
-    r = r[:, ~torch.eye(r.shape[1],dtype=bool)].reshape(r.shape[0], r.shape[1], -1, 3)
-    try:
-        r.requires_grad = True
-    except RuntimeError:
-        pass
-
-    #compute distance matrix:
-    return torch.sqrt(torch.sum(r**2, axis=-1)).unsqueeze(-1)
-
-
 # Initialize configuration
 # Radii
 # FCC lattice
@@ -172,32 +118,11 @@ def fcc_positions(n_particle, box, device):
                 return torch.Tensor(radius_ - box/2).to(device) # convert to -L/2 to L/2 space for ease with PBC
 
 
-   
-# Procedure to initialize velocities
-def initialize_velocities(n_particle, masses, temp, n_replicas):
-
-    masses = masses.cpu().numpy()
-    vel_dist = maxwell()
-    momenta = masses * vel_dist.rvs(size = (n_replicas, n_particle, 3))
-    #shift so that initial momentum is zero
-    momenta -= np.mean(momenta, axis = -2, keepdims=True)
-
-    #scale velocities to match desired temperature
-    ke = (momenta**2 / (2*masses)).sum(axis = (1,2), keepdims=True)
-    targeEkin = 0.5 * (3.0 * n_particle) * temp
-    correction_factor = np.sqrt(targeEkin / ke)
-    momenta *= correction_factor
-    velocities = momenta/masses
-    return torch.Tensor(velocities)
 
 #inverse cdf for power law with exponent 'power' and min value y_min
 def powerlaw_inv_cdf(y, power, y_min):
     return y_min*((1-y)**(1/(1-power)))
-    
 
-def dump_params_to_yml(params, filepath):
-    with open(os.path.join(filepath, "config.yaml"), 'w') as f:
-        yaml.dump(params, f)
 
 
 def print_active_torch_tensors():

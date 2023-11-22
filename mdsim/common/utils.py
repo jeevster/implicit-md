@@ -7,6 +7,7 @@ import itertools
 import json
 import logging
 import os
+import re
 import sys
 import time
 from bisect import bisect
@@ -66,6 +67,20 @@ OFFSET_LIST = [
     [1, 1, 0],
     [1, 1, 1],
 ]
+
+def extract_cycle_epoch(s):
+    # Regular expression to match the pattern
+    pattern = r"post_cycle(\d+)(?:_epoch(\d+))?"
+    
+    # Search for matches
+    match = re.search(pattern, s)
+    
+    if match:
+        cycle = match.group(1)
+        epoch = match.group(2) if match.group(2) else None
+        return cycle, epoch
+    else:
+        return None, None
 
 def cleanup_atoms_batch(atoms_batch):
     for key in ["cell_offsets", "edge_cell_shift", "edge_index", "neighbors", "ptr"]:
@@ -501,7 +516,7 @@ def create_dict_from_args(args: list, sep: str = "."):
     for arg in args:
         arg = arg.strip("--")
         try:
-            keys_concat, val = arg.split("=")
+            keys_concat, val = arg.split("=", 1)
             val = parse_value(val)
             key_sequence = keys_concat.split(sep)
             dict_set_recursively(return_dict, key_sequence, val)

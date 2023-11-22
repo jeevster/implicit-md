@@ -43,7 +43,7 @@ from nequip.utils import atomic_write, load_file
 from ase.neighborlist import natural_cutoffs, NeighborList
 from mdsim.md.ase_utils import OCPCalculator
 from mdsim.common.registry import registry
-from mdsim.common.utils import save_checkpoint, cleanup_atoms_batch, setup_imports, setup_logging, compute_bond_lengths, data_to_atoms, atoms_to_batch, atoms_to_state_dict, convert_atomic_numbers_to_types, process_gradient, compare_gradients, initialize_velocities, dump_params_to_yml
+from mdsim.common.utils import extract_cycle_epoch, save_checkpoint, cleanup_atoms_batch, setup_imports, setup_logging, compute_bond_lengths, data_to_atoms, atoms_to_batch, atoms_to_state_dict, convert_atomic_numbers_to_types, process_gradient, compare_gradients, initialize_velocities, dump_params_to_yml
 from mdsim.common.custom_radius_graph import detach_numpy
 from mdsim.datasets.lmdb_dataset import LmdbDataset, data_list_collater
 from mdsim.common.utils import load_config
@@ -55,7 +55,6 @@ from mdsim.observables.md17_22 import find_hr_adf_from_file, get_hr
 from mdsim.observables.water import WaterRDFMAE, MinimumIntermolecularDistance, find_water_rdfs_diffusivity_from_file, get_water_rdfs, get_smoothed_diffusivity
 from mdsim.observables.lips import LiPSRDFMAE, find_lips_rdfs_diffusivity_from_file
 from mdsim.models.load_models import load_pretrained_model
-
 from mdsim.common.utils import (
     build_config,
     create_grid,
@@ -746,17 +745,20 @@ if __name__ == "__main__":
     elif 'post' in config["eval_model"]: #load observable finetuned model at some point in training
         pretrained_model_path = os.path.join(params.results_dir, f"IMPLICIT_{model_type}_{molecule_for_name}_{params.exp_name}_lr={params.lr}_efweight={params.energy_force_loss_weight}")
         if 'cycle' in config["eval_model"]: #load observable finetuned model at specified cycle
-            load_cycle = int(config["eval_model"].split("cycle")[-1]) #expects format "post_cycle<n>"
-        elif 'epoch' in config["eval_model"]: #load observable finetuned model at specified epoch
-            load_epoch = int(config["eval_model"].split("epoch")[-1]) #expects format "post_epoch<n>"
+            load_cycle, load_epoch = extract_cycle_epoch(config["eval_model"])
     else:
         RuntimeError("Invalid eval model choice")
     
     if model_type == "nequip":
         if "post" in config['eval_model'] and not params.train:
             #get config from pretrained directory
-            cname = f"end_of_cycle{load_cycle}.pth" if load_cycle is not None else "ckpt.pth"
-            cname = f"epoch{load_epoch}.pth" if load_epoch is not None else cname
+            if load_cycle is not None:
+                if load_epoch is not None:
+                    cname = f"cycle{load_cycle}_epoch{load_epoch}.pth"
+                else:
+                    cname = f"end_of_cycle{load_cycle}.pth"
+            else:
+                cname = "ckpt.pth"
             print(f'Loading model weights from {os.path.join(pretrained_model_path, cname)}')
             pre_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{size}_{lmax_string}{model_type}")
             _, model_config = Trainer.load_model_from_training_session(pre_path, \
@@ -846,10 +848,10 @@ if __name__ == "__main__":
     grad_norms = []
     lrs = []
     resets = []
-    best_outer_loss = 100
     writer = SummaryWriter(log_dir = results_dir)
     changed_lr = False
     cycle = 0
+    learning_epochs_in_cycle = 0
 
     #Begin Main Training Loop
     for epoch in range(params.n_epochs):
@@ -951,6 +953,7 @@ if __name__ == "__main__":
             simulator.first_simulation = True
             changed_lr = False
             cycle = cycle + 1
+            learning_epochs_in_cycle = 0
             #save checkpoint at the end of learning cycle
             if params.train:
                 simulator.save_checkpoint(name_ = f"end_of_cycle{cycle}")
@@ -967,11 +970,9 @@ if __name__ == "__main__":
         sim_time = end - start
         
         #checkpointing
-        if outer_loss < best_outer_loss:
-            best_outer_loss = outer_loss
-            best = True
         if params.train and simulator.mode =='learning':
-            simulator.save_checkpoint(name_ = f"epoch{epoch}.pt")
+            simulator.save_checkpoint(name_ = f"cycle{cycle+1}_epoch{learning_epochs_in_cycle+1}")
+            learning_epochs_in_cycle +=1
         
         torch.cuda.empty_cache()
         gc.collect()
