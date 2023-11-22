@@ -121,10 +121,6 @@ class DifferentiableADF(torch.nn.Module):
         
         norm = count.sum()   # normalization factor for histogram 
         count = count / (norm)  # normalize 
-        # if torch.any(torch.isnan(count)):
-        #     import pdb; pdb.set_trace()
-        #     x = 0
-        
         return count
 
 class DifferentiableVelHist(torch.nn.Module):
@@ -171,7 +167,6 @@ class DifferentiableVACF(torch.nn.Module):
 
         # can be implemented in parallel
         vacf += [((vel[t:] * vel[:-t]).mean() / average_vel_sq)[None] for t in self.t_window]
-
         return torch.stack(vacf).reshape(-1)
 
 ''''Explicitly BATCHED over replicas'''

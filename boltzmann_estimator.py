@@ -103,7 +103,9 @@ class BoltzmannEstimator():
         radii_traj = torch.stack(running_radii)
         
         stacked_radii = radii_traj[::self.simulator.n_dump] #take i.i.d samples for RDF loss
-        velocities_traj = torch.stack(simulator.running_vels).permute(1,0,2,3)
+        
+        velocity_subsample_ratio = int(self.simulator.gt_data_spacing_fs / (self.simulator.dt / units.fs)) #make the vacf spacing the same as the underlying GT data
+        velocities_traj = torch.stack(simulator.running_vels).permute(1,0,2,3)[:, ::velocity_subsample_ratio]
         vacfs_per_replica = vmap(diff_vacf)(velocities_traj)
         vacfs_per_replica[~stable_replicas] = torch.zeros(1, 100).to(self.device) #zero out the unstable replica vacfs
         #split into sub-trajectories of length = vacf_window

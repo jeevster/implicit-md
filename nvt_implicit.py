@@ -170,12 +170,19 @@ class ImplicitMDSimulator():
         gt_data_train = np.load(os.path.join(self.DATAPATH_TRAIN, 'nequip_npz.npz'))
         if self.name == 'water':
             pos_field_train = gt_data_train.f.wrapped_coords
+            self.gt_data_spacing_fs = 10
         elif self.name == 'lips':
             pos_field_train = gt_data_train.f.pos
+            self.gt_data_spacing_fs = 2.0 #TODO: check this
         else:
             pos_field_train = gt_data_train.f.R
+            if self.name == "md17":
+                self.gt_data_spacing_fs = 0.5
+            else:
+                self.gt_data_spacing_fs = 1
         
         self.gt_traj_train = torch.FloatTensor(pos_field_train).to(self.device)
+        
         
         self.instability_per_replica = 100*torch.ones((self.n_replicas,)).to(self.device) if self.pbc \
                                                     else torch.zeros((self.n_replicas,)).to(self.device)
@@ -722,6 +729,7 @@ if __name__ == "__main__":
     lmax_string = f"lmax={params.l_max}_" if model_type == "nequip" else ""
     #load the correct checkpoint based on whether we're doing train or val
     load_cycle = None
+    load_epoch = None
     
     if params.train or config["eval_model"] == 'pre': #load energies/forces trained model
         pretrained_model_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{size}_{lmax_string}{model_type}") 
@@ -735,10 +743,12 @@ if __name__ == "__main__":
         new_lmax_string = config["eval_model"] + "_"
         pretrained_model_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{size}_{new_lmax_string}{model_type}")  
 
-    elif 'post' in config["eval_model"]: #load observable finetuned model at final checkpoint
+    elif 'post' in config["eval_model"]: #load observable finetuned model at some point in training
         pretrained_model_path = os.path.join(params.results_dir, f"IMPLICIT_{model_type}_{molecule_for_name}_{params.exp_name}_lr={params.lr}_efweight={params.energy_force_loss_weight}")
         if 'cycle' in config["eval_model"]: #load observable finetuned model at specified cycle
             load_cycle = int(config["eval_model"].split("cycle")[-1]) #expects format "post_cycle<n>"
+        elif 'epoch' in config["eval_model"]: #load observable finetuned model at specified epoch
+            load_epoch = int(config["eval_model"].split("epoch")[-1]) #expects format "post_epoch<n>"
     else:
         RuntimeError("Invalid eval model choice")
     
@@ -746,6 +756,7 @@ if __name__ == "__main__":
         if "post" in config['eval_model'] and not params.train:
             #get config from pretrained directory
             cname = f"end_of_cycle{load_cycle}.pth" if load_cycle is not None else "ckpt.pth"
+            cname = f"epoch{load_epoch}.pth" if load_epoch is not None else cname
             print(f'Loading model weights from {os.path.join(pretrained_model_path, cname)}')
             pre_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{size}_{lmax_string}{model_type}")
             _, model_config = Trainer.load_model_from_training_session(pre_path, \
@@ -767,7 +778,7 @@ if __name__ == "__main__":
         model_config = {'model': model_config}
     else:
         model, model_path, model_config = load_pretrained_model(model_type, path = pretrained_model_path, \
-                                                                ckpt_epoch = config['checkpoint_epoch'], cycle = load_cycle, \
+                                                                ckpt_epoch = config['checkpoint_epoch'], cycle = load_cycle, post_epoch = load_epoch, \
                                                                 device = torch.device(device), train = params.train or 'post' not in params.eval_model)
         #copy original model config to results directory
         if params.train:
@@ -804,6 +815,7 @@ if __name__ == "__main__":
     else:
         gt_traj = torch.FloatTensor(gt_data.f.R).to(device)
         gt_vels = gt_traj[1:] - gt_traj[:-1] #finite difference approx
+
 
     gt_vacf = DifferentiableVACF(params, device)(gt_vels)
     if isinstance(gt_rdf, dict):
@@ -958,8 +970,8 @@ if __name__ == "__main__":
         if outer_loss < best_outer_loss:
             best_outer_loss = outer_loss
             best = True
-        if params.train:
-            simulator.save_checkpoint(best = best)
+        if params.train and simulator.mode =='learning':
+            simulator.save_checkpoint(name_ = f"epoch{epoch}.pt")
         
         torch.cuda.empty_cache()
         gc.collect()

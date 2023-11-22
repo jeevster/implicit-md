@@ -18,7 +18,7 @@ if [ "$1" == "water" ]; then
                --energy_force_loss_weight=$6 --eval_model=$7"
 else 
     command_inference="python $script --config-yml $config_yml --molecule=$2 --lr=$3 --rdf_loss_weight=$4 --vacf_loss_weight=$5 \
-               --energy_force_loss_weight=$6 --eval_model=$7"
+               --energy_force_loss_weight=$6 --eval_model=$7 --integrator=Langevin"
 fi
 srun $command_inference
 

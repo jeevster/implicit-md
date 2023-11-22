@@ -12,7 +12,7 @@ results_dir: 'results_md22_correctedlogging_l=1'
 model_dir: /pscratch/sd/s/sanjeevr/MODELPATH #/home/sanjeevr/MDsim/MODELPATH
 seed: 123
 dr: 0.02
-max_rdf_dist: 10
+max_rdf_dist: 15
 dv: 0.1
 angle_range: [0, 180]
 exp_name: "TEST_correctedlogging" #"TEST_lmax1_10percent_resumestrategy0.25_learn_continuous"
