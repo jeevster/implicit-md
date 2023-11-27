@@ -17,7 +17,7 @@ from mdsim.observables.md17_22 import get_hr
 from mdsim.observables.water import get_water_rdfs, get_smoothed_diffusivity
 from torch.utils.tensorboard.summary import hparams
 
-#calculate simulation metrics
+#calculate simulation metrics from stable parts of all trajectories
 def calculate_final_metrics(simulator, params, device, results_dir, energy_maes, force_maes, gt_rdf, gt_adf=None, gt_vacf=None, gt_diffusivity=None, oxygen_atoms_mask=None, all_vacfs_per_replica=None):
     np.save(os.path.join(results_dir, f'replicas_stable_time.npy'), simulator.stable_time.cpu().numpy())
     full_traj = torch.stack(simulator.all_radii)
@@ -39,7 +39,7 @@ def calculate_final_metrics(simulator, params, device, results_dir, energy_maes,
         
         final_rdf_maes = xlim * torch.abs(gt_rdf.unsqueeze(0) -final_rdfs).mean(-1)
         adf = DifferentiableADF(simulator.n_atoms, simulator.bonds, simulator.cell, params, device)
-        final_adfs = torch.stack([adf(traj[::2].to(device)) for traj in stable_trajs])
+        final_adfs = torch.stack([adf(traj[::5].to(device)) for traj in stable_trajs])
         final_adf_maes = torch.abs(gt_adf.unsqueeze(0) - final_adfs).mean(-1)
         count_per_replica = torch.stack(all_vacfs_per_replica).sum(0)[:, 0].unsqueeze(-1)+1e-8
         final_vacfs = (torch.stack(all_vacfs_per_replica).sum(0) /count_per_replica).to(device)
@@ -118,12 +118,9 @@ def fcc_positions(n_particle, box, device):
                 return torch.Tensor(radius_ - box/2).to(device) # convert to -L/2 to L/2 space for ease with PBC
 
 
-
 #inverse cdf for power law with exponent 'power' and min value y_min
 def powerlaw_inv_cdf(y, power, y_min):
     return y_min*((1-y)**(1/(1-power)))
-
-
 
 def print_active_torch_tensors():
     count = 0
@@ -175,63 +172,6 @@ def solve_continuity_system(device, x_c, n, m, epsilon):
     c = torch.linalg.solve(A, B)
 
     return c[0], c[1], c[2]
-
-#MD17 utils
-def get_hr(traj, bins):
-    '''
-    compute h(r) (the RDF) for MD17 simulations.
-    traj: T x N_atoms x 3
-    '''
-    pdist = torch.cdist(traj, traj).flatten()
-    hist, _ = np.histogram(pdist[:].flatten().numpy(), bins, density=True)
-    return hist
-    
-def find_hr_adf_from_file(base_path: str, name: str, molecule: str, size: str, params, device):
-    #RDF plotting parameters
-    xlim = params.max_rdf_dist
-    n_bins = int(xlim/params.dr)
-    bins = np.linspace(1e-6, xlim, n_bins + 1) # for computing h(r)
-    # load ground truth data
-    DATAPATH = os.path.join(base_path, name, molecule, size, 'val/nequip_npz.npz')
-    gt_data = np.load(DATAPATH)
-    gt_traj = torch.FloatTensor(gt_data.f.wrapped_coords if name == 'water' else gt_data.f.R)
-    hist_gt = get_hr(gt_traj, bins)
-    hist_gt = 100*hist_gt/ hist_gt.sum()
-
-    #ADF
-    temp_data = LmdbDataset({'src': os.path.join(base_path, name, molecule, size, 'train')})
-    init_data = temp_data.__getitem__(0)
-    n_atoms = init_data['pos'].shape[0]
-    atoms = data_to_atoms(init_data)
-    #extract bond and atom type information
-    NL = NeighborList(natural_cutoffs(atoms), self_interaction=False)
-    NL.update(atoms)
-    bonds = torch.tensor(NL.get_connectivity_matrix().todense().nonzero()).to(device).T
-    raw_atoms = data_to_atoms(temp_data.__getitem__(0))
-    cell = torch.Tensor(raw_atoms.cell).to(device)
-    diff_adf = DifferentiableADF(n_atoms, bonds, cell, params, device)
-    hist_adf = diff_adf(gt_traj[0:1].to(device))
-    return torch.Tensor(hist_gt).to(device), torch.Tensor(hist_adf).to(device)
-
-
-def distance_pbc(x0, x1, lattices):
-    delta = torch.abs(x0 - x1)
-    lattices = lattices.view(-1,1,3)
-    delta = torch.where(delta > 0.5 * lattices, delta - lattices, delta)
-    return torch.sqrt((delta ** 2).sum(dim=-1))
-
-
-def compare_gradients(grad1, grad2):
-    '''Compute cosine similarity and ratio between two sets of gradient updates for a given model'''
-    assert(len(grad1) ==  len(grad2))
-    grads1_flattened = torch.cat([grad.flatten() for grad in grad1])
-    grads2_flattened = torch.cat([grad.flatten() for grad in grad2])
-    cosine_similarity = torch.nn.functional.cosine_similarity(grads1_flattened, grads2_flattened, dim=0)
-    ratio = (grads1_flattened / (grads2_flattened + 1e-8)).abs().median()
-    return cosine_similarity, ratio
-
-def process_gradient(grad, device):
-    return [g.detach() if g is not None else torch.Tensor([0.]).to(device) for g in grad]
 
 
         

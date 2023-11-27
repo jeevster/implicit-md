@@ -1031,7 +1031,7 @@ if __name__ == "__main__":
 
         #add hyperparams and final metrics at inference time (do it every 5 epochs in case we time-out before the end)
         if not params.train:
-            if epoch % 5 == 0 and epoch > 100: #to save time
+            if epoch % 5 == 0 and epoch > 175: #to save time
                 if name == "md17" or name == "md22":
                     hparams_logging = calculate_final_metrics(simulator, params, device, results_dir, energy_maes, force_maes, gt_rdf, gt_adf, gt_vacf, all_vacfs_per_replica = all_vacfs_per_replica)
                 elif name == "water":

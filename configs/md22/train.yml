@@ -6,9 +6,9 @@ molecule: ac_Ala3_NHMe
 normalize_labels: False
 checkpoint_epoch: -1 #which model to start from
 model: nequip
-l_max: 1
+l_max: 2
 log_dir: /global/cfs/projectdirs/m4319/sanjeevr #/home/sanjeevr/implicit-md
-results_dir: 'results_md22_correctedlogging_l=1'
+results_dir: 'results_md22_correctedlogging_l=2'
 model_dir: /pscratch/sd/s/sanjeevr/MODELPATH #/home/sanjeevr/MDsim/MODELPATH
 seed: 123
 dr: 0.02
@@ -35,7 +35,7 @@ eq_steps: 0
 steps: 2000 # 1 picosecond per epoch
 n_dump: 50
 n_dump_vacf: 2
-n_replicas: 128
+n_replicas: 48
 minibatch_size: 40
 adjoint: True
 only_learn_if_unstable_threshold_reached: True

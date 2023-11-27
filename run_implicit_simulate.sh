@@ -7,7 +7,7 @@
 #SBATCH --mail-user=sanjeevr@umich.edu
 #SBATCH --mail-type=ALL
 #SBATCH -o /global/cfs/projectdirs/m4319/sanjeevr/logs/implicit-md-%j.out
-#SBATCH -t 12:00:00
+#SBATCH -t 16:00:00
 #SBATCH -A m4319_g
 
 # Define the path to your Python script
@@ -18,9 +18,8 @@ if [ "$1" == "water" ]; then
                --energy_force_loss_weight=$6 --eval_model=$7"
 else 
     command_inference="python $script --config-yml $config_yml --molecule=$2 --lr=$3 --rdf_loss_weight=$4 --vacf_loss_weight=$5 \
-               --energy_force_loss_weight=$6 --eval_model=$7 --size=$8 --results_dir=results_md22_correctedlogging_l=1_25percent"
+               --energy_force_loss_weight=$6 --eval_model=$7 --size=$8 --results_dir=results_md22_correctedlogging_l=1_$8"
 fi
 srun $command_inference
-
     
 

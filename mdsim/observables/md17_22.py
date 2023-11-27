@@ -20,6 +20,7 @@ def get_hr(traj, bins):
     '''
     pdist = torch.cdist(traj, traj).flatten()
     hist, _ = np.histogram(pdist[:].flatten().numpy(), bins, density=True)
+    hist[0] = 0 #sometimes there's a weird nonzero element at the beginning
     return hist
     
 def find_hr_adf_from_file(base_path: str, name: str, molecule: str, size: str, params, device):
@@ -32,7 +33,6 @@ def find_hr_adf_from_file(base_path: str, name: str, molecule: str, size: str, p
     gt_data = np.load(DATAPATH)
     gt_traj = torch.FloatTensor(gt_data.f.R)
     hist_gt = get_hr(gt_traj, bins)
-    hist_gt[0] = 0 #sometimes there's a weird nonzero element at the beginning
     hist_gt = 100*hist_gt/ hist_gt.sum()
 
     #ADF
