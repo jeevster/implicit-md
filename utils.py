@@ -14,7 +14,8 @@ from mdsim.datasets.lmdb_dataset import LmdbDataset
 from ase.neighborlist import natural_cutoffs, NeighborList
 from mdsim.models.schnet import SchNetWrap
 from mdsim.observables.md17_22 import get_hr
-from mdsim.observables.water import get_water_rdfs, get_smoothed_diffusivity
+from mdsim.observables.water import get_water_rdfs
+from mdsim.observables.common import get_smoothed_diffusivity
 from torch.utils.tensorboard.summary import hparams
 
 #calculate simulation metrics from stable parts of all trajectories

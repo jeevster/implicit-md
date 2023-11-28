@@ -3,7 +3,7 @@ from torch_cluster import radius_graph
 import numpy as np
 import os
 from ase.io import read
-from mdsim.observables.water import get_smoothed_diffusivity
+from mdsim.observables.common import get_smoothed_diffusivity, compute_distance_matrix_batch
 from tqdm import tqdm
 import itertools
 
@@ -65,22 +65,7 @@ def unwrap(pos0, pos1, cell):
     remapped_frac_coords = cart2frac(pos1, cell) + flags
     return frac2cart(remapped_frac_coords, cell)
 
-# different from previous functions, now needs to deal with non-cubic cells. 
-def compute_distance_matrix_batch(cell, cart_coords, num_cells=1):
-    pos = torch.arange(-num_cells, num_cells+1, 1).to(cell.device)
-    combos = torch.stack(
-        torch.meshgrid(pos, pos, pos, indexing='xy')
-            ).permute(3, 2, 1, 0).reshape(-1, 3).to(cell.device)
-    shifts = torch.sum(cell.unsqueeze(0) * combos.unsqueeze(-1), dim=1)
-    # NxNxCells distance array
-    shifted = cart_coords.unsqueeze(2) + shifts.unsqueeze(0).unsqueeze(0)
-    dist = cart_coords.unsqueeze(2).unsqueeze(2) - shifted.unsqueeze(1)
-    dist = dist.pow(2).sum(dim=-1).sqrt()
-    # But we want only min
-    distance_matrix = dist.min(dim=-1)[0]
-    return distance_matrix
 
-    
     
 def get_lips_rdf(data_seq, lattices, bins, device='cpu'):
     data_seq = data_seq.to(device).float()

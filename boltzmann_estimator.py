@@ -81,13 +81,9 @@ class BoltzmannEstimator():
         diff_vacf = DifferentiableVACF(self.params, self.device)
         #diff_sisf = SelfIntermediateScattering(self.params, self.device)
         
-        #TODO: What were we doing here again?? Trying to save memory?? 
-        #this is probably the reason for the spiky behavior in the loss - also invalidates all of the previous inference observable results
-        running_radii = self.simulator.running_radii #if self.simulator.optimizer.param_groups[0]['lr'] > 0 else self.simulator.running_radii[0:2]
-        
         model = simulator.model
         #find which replicas are unstable
-        stable_replicas = (self.simulator.instability_per_replica > self.simulator.stability_tol) if self.simulator.pbc else (self.simulator.instability_per_replica <= self.simulator.stability_tol)
+        stable_replicas = self.simulator.stability_per_replica()
         #if focusing on accuracy, always only keep stable replicas for gradient calculation
         if not self.simulator.all_unstable:
             mask = stable_replicas
@@ -100,7 +96,7 @@ class BoltzmannEstimator():
         original_shapes = [param.data.shape for param in model.parameters()]
         
         #get continuous trajectories (permute to make replica dimension come first)
-        radii_traj = torch.stack(running_radii)
+        radii_traj = torch.stack(self.simulator.running_radii)
         
         stacked_radii = radii_traj[::self.simulator.n_dump] #take i.i.d samples for RDF loss
         
@@ -244,12 +240,14 @@ class BoltzmannEstimator():
             vacf_package = (vacf_gradient_estimators, vacfs_per_replica, mean_vacf_loss.to(self.device))
        
         ###RDF/ADF Stuff ###
-        if self.simulator.name == "water":
-            #replace with RDF with IMD (didn't change variable name yet)
+        if self.simulator.pbc: #LiPs or Water
+            #replace RDF with IMD (didn't change variable name yet)
             if self.simulator.training_observable == 'imd':
                 rdfs = torch.cat([self.simulator.stability_criterion(s.unsqueeze(0)) for s in stacked_radii])
-            else:
+            elif self.simulator.training_observable == 'rdf':
                 rdfs = torch.cat([self.simulator.rdf_mae(s.unsqueeze(0))[0] for s in stacked_radii])
+            else:
+                raise RuntimeError(f"Must choose rdf or imd as target observable, not{self.simulator.training_observable}")
             rdfs = rdfs.reshape(-1, simulator.n_replicas, self.gt_rdf.shape[-1])
             adfs = torch.stack([diff_adf(rad) for rad in stacked_radii.reshape(-1, self.simulator.n_atoms, 3)]).reshape(-1, self.simulator.n_replicas, self.gt_adf.shape[-1])
         else:
@@ -273,7 +271,6 @@ class BoltzmannEstimator():
             stacked_radii = stacked_radii[:, mask]
             rdfs.requires_grad = True
             adfs.requires_grad = True
-            
             
             #TODO: scale the estimator by Kb*T
             start = time.time()

@@ -35,16 +35,20 @@ class IMDHingeLoss(torch.nn.Module):
         return torch.exp(torch.clamp(self.lower_bound - pred_obs, min=0)) - 1
 
 class BondLengthDeviation(torch.nn.Module):
-    def __init__(self, bonds, mean_bond_lens, cell, device):
+    def __init__(self, name, bonds, mean_bond_lens, cell, device):
         super(BondLengthDeviation, self).__init__()
+        self.name = name
         self.bonds = bonds
         self.mean_bond_lens = mean_bond_lens
         self.cell = cell
         self.device = device
 
     def forward(self, stacked_radii):
-        stacked_radii = stacked_radii
-        bond_lens = distance_pbc(stacked_radii[:, :, self.bonds[:, 0]], stacked_radii[:,:, self.bonds[:, 1]], torch.diag(self.cell)).to(self.device)
+        if self.name == 'lips': #account for non-cubic cell
+            dists = torch.stack([compute_distance_matrix_batch(self.cell,radii) for radii in stacked_radii])
+            bond_lens = dists[:, :, self.bonds[:, 0], self.bonds[:, 1]]
+        else:
+            bond_lens = distance_pbc(stacked_radii[:, :, self.bonds[:, 0]], stacked_radii[:,:, self.bonds[:, 1]], torch.diag(self.cell)).to(self.device)
         max_bond_dev_per_replica = (bond_lens - self.mean_bond_lens).abs().max(dim=-1)[0].max(dim=0)[0].detach()
         return max_bond_dev_per_replica
 
@@ -72,3 +76,41 @@ def distance_pbc(x0, x1, lattices):
     lattices = lattices.view(-1,1,3)
     delta = torch.where(delta > 0.5 * lattices, delta - lattices, delta)
     return torch.sqrt((delta ** 2).sum(dim=-1))
+
+# different from previous functions, now needs to deal with non-cubic cells. 
+def compute_distance_matrix_batch(cell, cart_coords, num_cells=1):
+    pos = torch.arange(-num_cells, num_cells+1, 1).to(cell.device)
+    combos = torch.stack(
+        torch.meshgrid(pos, pos, pos, indexing='xy')
+            ).permute(3, 2, 1, 0).reshape(-1, 3).to(cell.device)
+    shifts = torch.sum(cell.unsqueeze(0) * combos.unsqueeze(-1), dim=1)
+    # NxNxCells distance array
+    shifted = cart_coords.unsqueeze(2) + shifts.unsqueeze(0).unsqueeze(0)
+    dist = cart_coords.unsqueeze(2).unsqueeze(2) - shifted.unsqueeze(1)
+    dist = dist.pow(2).sum(dim=-1).sqrt()
+    # But we want only min
+    distance_matrix = dist.min(dim=-1)[0]
+    return distance_matrix
+
+
+def get_smoothed_diffusivity(xyz):
+    seq_len = xyz.shape[0] - 1
+    
+    diff = torch.zeros(seq_len)
+    for i in range(seq_len):
+        diff[:seq_len-i] += get_diffusivity_traj(xyz[i:].transpose(0, 1).unsqueeze(0)).flatten()
+    diff = diff / torch.flip(torch.arange(seq_len)+1,dims=[0])
+    return diff
+
+
+def get_diffusivity_traj(pos_seq, dilation=1):
+    """
+    Input: B x N x T x 3
+    Output: B x T
+    """
+    # substract CoM
+    bsize, time_steps = pos_seq.shape[0], pos_seq.shape[2]
+    pos_seq = pos_seq - pos_seq.mean(1, keepdims=True)
+    msd = (pos_seq[:, :, 1:] - pos_seq[:, :, 0].unsqueeze(2)).pow(2).sum(dim=-1).mean(dim=1)
+    diff = msd / (torch.arange(1, time_steps)*dilation) / 6
+    return diff.view(bsize, time_steps-1)

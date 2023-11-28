@@ -1,13 +1,13 @@
 src: /data/sanjeevr #/pscratch/sd/s/sanjeevr
 name: lips
-size: 20k
+size: 5k
 normalize_labels: False
 checkpoint_epoch: -1 #which model to start from
 model: schnet
 l_max: 3
 log_dir: /home/sanjeevr/implicit-md #/global/cfs/projectdirs/m4319/sanjeevr 
 results_dir: 'results_lips'
-model_dir: /home/sanjeevr/MDsim/MODELPATH #/pscratch/sd/s/sanjeevr/MODELPATH
+model_dir: /data/sanjeevr/MODELPATH #/pscratch/sd/s/sanjeevr/MODELPATH
 seed: 123
 dr: 0.012
 max_rdf_dist: 6
@@ -19,6 +19,8 @@ integrator_config: {"timestep": 0.25, "temperature": 520., "ttime": 20., "gamma"
 train: True
 eval_model: post
 diffusion_loss_weight: 0
+stability_criterion: rdf
+training_observable: rdf
 rdf_loss_weight: 1
 adf_loss_weight: 0
 vacf_loss_weight: 0
@@ -26,7 +28,7 @@ energy_force_loss_weight: 1
 diffusion_window: 1000
 vacf_window: 100
 ic_stddev: 0.0
-rdf_mae_tol: 0.5 #decay this?
+imd_tol: 1.0 #decay this?
 max_frac_unstable_threshold: 0.75 #decay this?
 min_frac_unstable_threshold: 0.0 #increase this?
 eq_steps: 0

@@ -13,7 +13,7 @@ from mdsim.common.utils import data_to_atoms
 from mdsim.observables.common import distance_pbc
 from mdsim.datasets.lmdb_dataset import LmdbDataset
 from ase.neighborlist import natural_cutoffs, NeighborList
-from mdsim.observables.common import radii_to_dists
+from mdsim.observables.common import radii_to_dists, get_smoothed_diffusivity
 
 #Water utils
 class WaterRDFMAE(torch.nn.Module):
@@ -67,27 +67,6 @@ class MinimumIntermolecularDistance(torch.nn.Module):
                                                 torch.diag(self.cell)).to(self.device) #compute distances under minimum image convention
         return intermolecular_distances.min(dim=-1)[0].min(dim=0)[0].detach()
 
-
-def get_diffusivity_traj(pos_seq, dilation=1):
-    """
-    Input: B x N x T x 3
-    Output: B x T
-    """
-    # substract CoM
-    bsize, time_steps = pos_seq.shape[0], pos_seq.shape[2]
-    pos_seq = pos_seq - pos_seq.mean(1, keepdims=True)
-    msd = (pos_seq[:, :, 1:] - pos_seq[:, :, 0].unsqueeze(2)).pow(2).sum(dim=-1).mean(dim=1)
-    diff = msd / (torch.arange(1, time_steps)*dilation) / 6
-    return diff.view(bsize, time_steps-1)
-
-def get_smoothed_diffusivity(xyz):
-    seq_len = xyz.shape[0] - 1
-    
-    diff = torch.zeros(seq_len)
-    for i in range(seq_len):
-        diff[:seq_len-i] += get_diffusivity_traj(xyz[i:].transpose(0, 1).unsqueeze(0)).flatten()
-    diff = diff / torch.flip(torch.arange(seq_len)+1,dims=[0])
-    return diff
 
 def distance_pbc_select(x, lattices, indices0, indices1):
     x0 = x[:, indices0]
