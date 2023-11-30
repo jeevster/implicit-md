@@ -22,7 +22,7 @@ class LiPSRDFMAE(torch.nn.Module):
         atoms = read(os.path.join(base_path, 'lips', 'lips.xyz'), index=':', format='extxyz')
         n_points = len(atoms)
         positions, cell, atomic_numbers = [], [], []
-        for i in tqdm(range(n_points)):
+        for i in range(n_points):
             positions.append(atoms[i].get_positions())
             cell.append(atoms[i].get_cell())
             atomic_numbers.append(atoms[i].get_atomic_numbers())
@@ -105,7 +105,7 @@ def find_lips_rdfs_diffusivity_from_file(base_path: str, size: str, params, devi
 
     # unwrap positions
     all_displacements = []
-    for i in tqdm((range(1, len(positions)))):
+    for i in tqdm(range(1, len(positions))):
         next_pos = unwrap(positions[i-1], positions[i], cell)
         displacements = next_pos - positions[i-1]
         all_displacements.append(displacements)

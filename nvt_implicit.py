@@ -53,7 +53,7 @@ from utils import calculate_final_metrics
 from mdsim.observables.common import distance_pbc, BondLengthDeviation, radii_to_dists, compute_distance_matrix_batch
 from mdsim.observables.md17_22 import find_hr_adf_from_file, get_hr
 from mdsim.observables.water import WaterRDFMAE, MinimumIntermolecularDistance, find_water_rdfs_diffusivity_from_file, get_water_rdfs, get_smoothed_diffusivity
-from mdsim.observables.lips import LiPSRDFMAE, find_lips_rdfs_diffusivity_from_file
+from mdsim.observables.lips import LiPSRDFMAE, find_lips_rdfs_diffusivity_from_file, cart2frac, frac2cart
 from mdsim.models.load_models import load_pretrained_model
 from mdsim.common.utils import (
     build_config,
@@ -665,8 +665,12 @@ class ImplicitMDSimulator():
         radii = self.radii[0]
         if self.pbc:
             #wrap for visualization purposes
-            cell = torch.diag(self.cell) #TODO: won't work for non-cubic cells
-            radii = radii % cell
+            if self.name == 'lips': #account for non-cubic cell
+                frac_radii = cart2frac(radii, self.cell)
+                frac_radii = frac_radii % 1.0 #wrap
+                radii = frac2cart(frac_radii, self.cell)
+            else:
+                radii = radii % torch.diag(self.cell)
         partpos = detach_numpy(radii).tolist()
         velocities = detach_numpy(self.velocities[0]).tolist()
         diameter = 10*self.diameter_viz*np.ones((self.n_atoms,))
@@ -680,16 +684,12 @@ class ImplicitMDSimulator():
         s.particles.diameter = diameter
         
         cell = torch.Tensor(self.atoms.cell)
-        # if self.name == 'lips':
-        #     magnitudes = torch.norm(cell, dim=1).unsqueeze(1)
-        #     tilts = torch.tan(torch.acos(torch.mm(cell, cell.T) / torch.mm(magnitudes, magnitudes.T)))
-        # else:
-        tilts = torch.zeros((3,3))
-        s.configuration.box=[cell[0][0], cell[1][1], cell[2][2],tilts[0][1],tilts[0][2],tilts[1][2]]
+        s.configuration.box=[cell[0][0], cell[1][1], cell[2][2], 0, 0, 0]
         s.configuration.step = self.dt
 
-        s.bonds.N = self.bonds.shape[0]
-        s.bonds.group = detach_numpy(self.bonds)
+        if self.name != 'lips': #don't show bonds if lips
+            s.bonds.N = self.bonds.shape[0]
+            s.bonds.group = detach_numpy(self.bonds)
         return s
     
     def thermo_log(self, pe):
@@ -824,6 +824,7 @@ if __name__ == "__main__":
     elif name == 'lips':
         gt_rdf, gt_diffusivity = find_lips_rdfs_diffusivity_from_file(data_path, MAX_SIZES[name], params, device)
         gt_adf = torch.zeros((100,1)).to(device) #TODO: temporary
+        
     else:
         gt_rdf, gt_adf = find_hr_adf_from_file(data_path, name, molecule, MAX_SIZES[name], params, device)
     contiguous_path = os.path.join(data_path, f'contiguous-{name}', molecule, MAX_SIZES[name], 'val/nequip_npz.npz')
@@ -847,6 +848,8 @@ if __name__ == "__main__":
         np.save(os.path.join(results_dir, 'gt_rdf.npy'), gt_rdf.cpu())
     np.save(os.path.join(results_dir, 'gt_adf.npy'), gt_adf.cpu())
     np.save(os.path.join(results_dir, 'gt_vacf.npy'), gt_vacf.cpu())
+    if params.name == 'lips' or params.name == 'water':
+        np.save(os.path.join(results_dir, 'gt_diffusivity.npy'), gt_diffusivity.cpu())
     
     min_lr = params.lr / (5 ** params.max_times_reduce_lr) #LR reduction factor is 0.2 each time
     #outer training loop
