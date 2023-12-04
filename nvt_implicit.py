@@ -331,10 +331,7 @@ class ImplicitMDSimulator():
          
 
     def stability_per_replica(self):
-        if self.pbc:
-            stability = (self.instability_per_replica > self.stability_tol) if self.params.stability_criterion == 'imd' else (self.instability_per_replica < self.stability_tol)
-        else:
-            stability = (self.instability_per_replica < self.stability_tol)
+        stability = (self.instability_per_replica > self.stability_tol) if self.params.stability_criterion == 'imd' else (self.instability_per_replica < self.stability_tol)
         return stability
 
     '''compute energy/force error on test set'''
@@ -610,7 +607,7 @@ class ImplicitMDSimulator():
             self.zeta = zeta
             self.forces = forces
             self.stacked_radii = torch.stack(self.running_radii[::self.n_dump])
-            #compute instability metric (either bond length deviation or RDF MAE)
+            #compute instability metric (either bond length deviation, min intermolecular distance, or RDF MAE)
             self.instability_per_replica = self.stability_criterion(self.stacked_radii)
             if isinstance(self.instability_per_replica, tuple):
                 self.instability_per_replica = self.instability_per_replica[-1]
@@ -620,7 +617,6 @@ class ImplicitMDSimulator():
                 self.mean_rdf_mae = self.rdf_mae(self.stacked_radii)[-1].mean()
             self.stacked_vels = torch.cat(self.running_vels)
         
-        # self.f.close()
         if self.train:
             try:
                 self.t.close()
@@ -875,6 +871,9 @@ if __name__ == "__main__":
     changed_lr = False
     cycle = 0
     learning_epochs_in_cycle = 0
+    #function to add gradients
+    add_lists = lambda list1, list2, w1, w2: tuple([w1*l1 + w2*l2 \
+                                                    for l1, l2 in zip(list1, list2)])
 
     #Begin Main Training Loop
     for epoch in range(params.n_epochs):
@@ -948,8 +947,7 @@ if __name__ == "__main__":
             ratios = []
             for rdf_grads, vacf_grads, energy_force_grads in zip(rdf_grad_batches, vacf_grad_batches, energy_force_grad_batches): #loop through minibatches
                 simulator.optimizer.zero_grad()
-                add_lists = lambda list1, list2, w1, w2: tuple([w1*l1 + w2*l2 \
-                                                    for l1, l2 in zip(list1, list2)])
+                
                 #modify gradients according to loss weights
                 obs_grads = add_lists(rdf_grads, vacf_grads, params.rdf_loss_weight, params.vacf_loss_weight)
                 ef_grads = tuple([params.energy_force_loss_weight * ef_grad for ef_grad in energy_force_grads])

@@ -40,6 +40,19 @@ class LiPSRDFMAE(torch.nn.Module):
             rdf_list.append(rdf)
         return torch.stack(rdf_list).to(self.device), torch.cat(maes).to(self.device)
   
+#minimum distance between two atoms
+class MinimumInteratomicDistance(torch.nn.Module):
+    def __init__(self, cell, device):
+        super(MinimumIntermolecularDistance, self).__init__()
+        self.cell = cell
+        self.device = device
+
+    def forward(self, stacked_radii):
+        dists = compute_distance_matrix_batch(self.cell, stacked_radii)
+        intermolecular_distances = distance_pbc(stacked_radii[:, :, self.not_bonds[:, 0]], \
+                                                stacked_radii[:,:, self.not_bonds[:, 1]], \
+                                                torch.diag(self.cell)).to(self.device) #compute distances under minimum image convention
+        return intermolecular_distances.min(dim=-1)[0].min(dim=0)[0].detach()
 
 def compute_image_flag(cell, fcoord1, fcoord2):
     supercells = torch.FloatTensor(list(itertools.product((-1, 0, 1), repeat=3))).to(cell.device)

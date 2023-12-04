@@ -47,7 +47,7 @@ class WaterRDFMAE(torch.nn.Module):
 
 #minimum distance between two atoms on different water molecules
 class MinimumIntermolecularDistance(torch.nn.Module):
-    def __init__(self, bonds, cell, device):
+    def __init__(self, bonds, cell, device, element_mask = None):
         super(MinimumIntermolecularDistance, self).__init__()
         self.cell = cell
         self.device = device
@@ -56,14 +56,21 @@ class MinimumIntermolecularDistance(torch.nn.Module):
         missing_edges = []
         for i in range(num_atoms):
             for j in range(i+1, num_atoms):
-                if not ((i % 3 == 0 and (j == i + 1 or j == i + 2)) or (j % 3 == 0 and (i == j + 1 or i == j + 2))):
-                    missing_edges.append([i, j])
-        self.not_bonds = torch.Tensor(missing_edges).to(torch.long)
+                if not ((i % 3 == 0 and (j == i + 1 or j == i + 2)) or (j % 3 == 0 and (i == j + 1 or i == j + 2))): #i and j are not on the same atom
+                    if element_mask == 'O':
+                        if i % 3 == 0 and j % 3 == 0: #both oxygen
+                            missing_edges.append([i, j])
+                    elif element_mask == 'H':
+                        if i % 3 != 0 and j%3 != 0: #both hydrogen
+                            missing_edges.append([i, j])
+                    elif element_mask is None:
+                        missing_edges.append([i, j])
+        self.intermolecular_edges = torch.Tensor(missing_edges).to(torch.long)
 
     def forward(self, stacked_radii):
         stacked_radii = stacked_radii % torch.diag(self.cell) #wrap coords
-        intermolecular_distances = distance_pbc(stacked_radii[:, :, self.not_bonds[:, 0]], \
-                                                stacked_radii[:,:, self.not_bonds[:, 1]], \
+        intermolecular_distances = distance_pbc(stacked_radii[:, :, self.intermolecular_edges[:, 0]], \
+                                                stacked_radii[:,:, self.intermolecular_edges[:, 1]], \
                                                 torch.diag(self.cell)).to(self.device) #compute distances under minimum image convention
         return intermolecular_distances.min(dim=-1)[0].min(dim=0)[0].detach()
 

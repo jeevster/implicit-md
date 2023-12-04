@@ -99,6 +99,10 @@ class BoltzmannEstimator():
         radii_traj = torch.stack(self.simulator.running_radii)
         
         stacked_radii = radii_traj[::self.simulator.n_dump] #take i.i.d samples for RDF loss
+        if self.simulator.mode == 'learning':
+            #save replicas
+            np.save(os.path.join(self.simulator.save_dir, f'stacked_radii_epoch{self.simulator.epoch}.npy'), stacked_radii.cpu())
+            np.save(os.path.join(self.simulator.save_dir, f'stable_replicas_epoch{self.simulator.epoch}.npy'), stable_replicas.cpu())
         
         velocity_subsample_ratio = int(self.simulator.gt_data_spacing_fs / (self.simulator.dt / units.fs)) #make the vacf spacing the same as the underlying GT data
         velocities_traj = torch.stack(simulator.running_vels).permute(1,0,2,3)[:, ::velocity_subsample_ratio]
@@ -109,7 +113,7 @@ class BoltzmannEstimator():
         velocities_traj = velocities_traj[:, ::self.simulator.n_dump_vacf] #sample i.i.d paths
         
         vacfs = vmap(vmap(diff_vacf))(velocities_traj)
-        mean_vacf = vacfs[stable_replicas].mean(dim = (0,1)) #only compute loss on stable replicas
+        mean_vacf = vacfs.mean(dim = (0,1))
         mean_vacf_loss = self.vacf_loss(mean_vacf) 
         
         #energy/force loss
@@ -254,11 +258,12 @@ class BoltzmannEstimator():
             r2d = lambda r: radii_to_dists(r, self.simulator.params)
             dists = vmap(r2d)(stacked_radii).reshape(-1, self.simulator.n_atoms, self.simulator.n_atoms-1, 1)
             rdfs = torch.stack([diff_rdf(tuple(dist)) for dist in dists]).reshape(-1, self.simulator.n_replicas, self.gt_rdf.shape[-1]) #this way of calculating uses less memory
+            
             adfs = torch.stack([diff_adf(rad) for rad in stacked_radii.reshape(-1, self.simulator.n_atoms, 3)]).reshape(-1, self.simulator.n_replicas, self.gt_adf.shape[-1]) #this way of calculating uses less memory
         
-        #compute mean quantities only on stable replicas
-        mean_rdf = rdfs[:, stable_replicas].mean(dim=(0, 1))
-        mean_adf = adfs[:, stable_replicas].mean(dim=(0, 1))
+        np.save(os.path.join(self.simulator.save_dir, f'rdfs_epoch{self.simulator.epoch}.npy'), rdfs.cpu())
+        mean_rdf = rdfs.mean(dim=(0, 1))
+        mean_adf = adfs.mean(dim=(0, 1))
         mean_rdf_loss = self.rdf_loss(mean_rdf)
         mean_adf_loss = self.adf_loss(mean_adf)
         
