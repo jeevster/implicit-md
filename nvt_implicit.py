@@ -329,7 +329,6 @@ class ImplicitMDSimulator():
                                         test_data_src=self.DATAPATH_TEST, 
                                         energy_units_to_eV=1.).trainer
          
-
     def stability_per_replica(self):
         stability = (self.instability_per_replica > self.stability_tol) if self.params.stability_criterion == 'imd' else (self.instability_per_replica < self.stability_tol)
         return stability
@@ -666,7 +665,7 @@ class ImplicitMDSimulator():
                 frac_radii = frac_radii % 1.0 #wrap
                 radii = frac2cart(frac_radii, self.cell)
             else:
-                radii = radii % torch.diag(self.cell)
+                radii = ((radii / self.cell) % 1) * self.cell #wrap coords
         partpos = detach_numpy(radii).tolist()
         velocities = detach_numpy(self.velocities[0]).tolist()
         diameter = 10*self.diameter_viz*np.ones((self.n_atoms,))
@@ -816,13 +815,16 @@ if __name__ == "__main__":
     #load ground truth rdf and VACF
     print("Computing ground truth observables from datasets")
     if name == 'water':
-        gt_rdf, gt_diffusivity, gt_adf, oxygen_atoms_mask = find_water_rdfs_diffusivity_from_file(data_path, MAX_SIZES[name], params, device)
+        gt_rdf_package, gt_diffusivity, gt_adf, oxygen_atoms_mask = find_water_rdfs_diffusivity_from_file(data_path, MAX_SIZES[name], params, device)
+        gt_rdf, gt_rdf_var = gt_rdf_package
     elif name == 'lips':
         gt_rdf, gt_diffusivity = find_lips_rdfs_diffusivity_from_file(data_path, MAX_SIZES[name], params, device)
+        gt_rdf_var = torch.ones_like(gt_rdf)
         gt_adf = torch.zeros((100,1)).to(device) #TODO: temporary
         
     else:
         gt_rdf, gt_adf = find_hr_adf_from_file(data_path, name, molecule, MAX_SIZES[name], params, device)
+        gt_rdf_var = torch.ones_like(gt_rdf)
     contiguous_path = os.path.join(data_path, f'contiguous-{name}', molecule, MAX_SIZES[name], 'val/nequip_npz.npz')
     gt_data = np.load(contiguous_path)
     #TODO: gt vacf doesn't look right - it's because the recording frequency of the data is 10 fs, not 0.5 as in MD17
@@ -891,7 +893,7 @@ if __name__ == "__main__":
             #initialize simulator parameterized by a NN model
             simulator = ImplicitMDSimulator(config, params, model, model_path, model_config, gt_rdf)
             #initialize Boltzmann_estimator
-            boltzmann_estimator = BoltzmannEstimator(gt_rdf, gt_vacf, gt_adf, params, device)
+            boltzmann_estimator = BoltzmannEstimator(gt_rdf, gt_rdf_var, gt_vacf, gt_adf, params, device)
             #initialize outer loop optimizer/scheduler
             if params.optimizer == 'Adam':
                 simulator.optimizer = torch.optim.Adam(list(simulator.model.parameters()), \

@@ -26,15 +26,17 @@ from adjoints import get_adjoints, get_model_grads
 #TODO: have separate functions for 
 
 class BoltzmannEstimator():
-    def __init__(self, gt_rdf, gt_vacf, gt_adf, params, device):
+    def __init__(self, gt_rdf, gt_rdf_var, gt_vacf, gt_adf, params, device):
         super(BoltzmannEstimator, self).__init__()
         self.params = params
         self.device = device
         self.diff_rdf = DifferentiableRDF(self.params, device)
         self.gt_rdf = gt_rdf
+        self.gt_rdf_var = gt_rdf_var
         if isinstance(self.gt_rdf, dict):
             if params.training_observable == 'rdf':
                 self.gt_rdf = torch.cat([rdf.flatten() for rdf in self.gt_rdf.values()]) #combine RDFs together
+                self.gt_rdf_var = torch.cat([var.flatten() for var in self.gt_rdf_var.values()]) + 1e-5 #combine RDF variances together
             else:
                 self.gt_rdf = torch.Tensor([1.44]).to(self.device) #ground truth min IMD
         
@@ -244,7 +246,7 @@ class BoltzmannEstimator():
             vacf_package = (vacf_gradient_estimators, vacfs_per_replica, mean_vacf_loss.to(self.device))
        
         ###RDF/ADF Stuff ###
-        if self.simulator.pbc: #LiPs or Water
+        if self.simulator.pbc: #LiPS or Water
             #replace RDF with IMD (didn't change variable name yet)
             if self.simulator.training_observable == 'imd':
                 rdfs = torch.cat([self.simulator.stability_criterion(s.unsqueeze(0)) for s in stacked_radii])
@@ -261,6 +263,9 @@ class BoltzmannEstimator():
             
             adfs = torch.stack([diff_adf(rad) for rad in stacked_radii.reshape(-1, self.simulator.n_atoms, 3)]).reshape(-1, self.simulator.n_replicas, self.gt_adf.shape[-1]) #this way of calculating uses less memory
         
+        # if self.simulator.mode == 'learning':
+        #     import pdb; pdb.set_trace()
+        #     x = 0
         np.save(os.path.join(self.simulator.save_dir, f'rdfs_epoch{self.simulator.epoch}.npy'), rdfs.cpu())
         mean_rdf = rdfs.mean(dim=(0, 1))
         mean_adf = adfs.mean(dim=(0, 1))
@@ -328,15 +333,15 @@ class BoltzmannEstimator():
             for i in tqdm(range(num_blocks)):
                 start = MINIBATCH_SIZE*i
                 end = MINIBATCH_SIZE*(i+1)
-                rdf_batch = [rdfs[start:end]] if self.simulator.training_observable == 'imd' else \
+                rdf_batch = [rdfs[start:end]] if self.simulator.training_observ1e-able == 'imd' else \
                             rdfs[start:end].chunk(3 if self.simulator.name == 'water' else 1, dim=1) # 3 separate RDFs for water
                 pe_grads_batch = pe_grads_flattened[start:end]
                 adf_batch = adfs[start:end]
                 #TODO: fix the case where we don't use the MSE gradient
-                grad_outputs_rdf = [2*(rdf.mean(0) - gt_rdf).unsqueeze(0) \
+                grad_outputs_rdf = [2/gt_rdf_var*(rdf.mean(0) - gt_rdf).unsqueeze(0) \
                                     if self.simulator.use_mse_gradient else None \
-                                    for rdf, gt_rdf in zip(rdf_batch, \
-                                    self.gt_rdf.chunk(len(rdf_batch)))]
+                                    for rdf, gt_rdf, gt_rdf_var in zip(rdf_batch, \
+                                    self.gt_rdf.chunk(len(rdf_batch)), self.gt_rdf_var.chunk(len(rdf_batch)))]
                 grad_outputs_adf = 2*(adf_batch.mean(0) - self.gt_adf).unsqueeze(0) \
                                     if self.simulator.use_mse_gradient else None
                                 

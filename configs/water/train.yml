@@ -15,14 +15,14 @@ dv: 0.1
 angle_range: [0, 180]
 diameter_viz: 0.08
 gaussian_width: 0.01
-exp_name: "TEST_understandstructures"
+exp_name: "TEST_varscale"
 integrator: NoseHoover
 integrator_config: {"timestep": 1., "temperature": 300., "ttime": 20., "gamma": 0.1}
 train: True
 eval_model: post
 diffusion_loss_weight: 0
 stability_criterion: imd
-training_observable: imd
+training_observable: rdf
 rdf_loss_weight: 1
 adf_loss_weight: 0
 vacf_loss_weight: 0
@@ -31,16 +31,16 @@ diffusion_window: 1000
 vacf_window: 100
 ic_stddev: 0.0
 imd_tol: 1.0 #Tolerance for Minimum Intermolecular Distance
-max_frac_unstable_threshold: 0.5 #decay this?
+max_frac_unstable_threshold: 0.75 #decay this?
 min_frac_unstable_threshold: 0.0 #increase this?
 eq_steps: 0
-steps: 1000
+steps: 5000 #5 ps per window instead of 1
 n_dump: 25
 n_dump_vacf: 2
-n_replicas: 1
-minibatch_size: 20
+n_replicas: 8
+minibatch_size: 4
 adjoint: True
-only_learn_if_unstable_threshold_reached: False
+only_learn_if_unstable_threshold_reached: True
 only_train_on_unstable_replicas: False
 allow_off_policy_updates: False
 gradient_clipping: True

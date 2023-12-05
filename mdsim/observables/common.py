@@ -95,7 +95,6 @@ def compute_distance_matrix_batch(cell, cart_coords, num_cells=1):
 
 def get_smoothed_diffusivity(xyz):
     seq_len = xyz.shape[0] - 1
-    
     diff = torch.zeros(seq_len)
     for i in range(seq_len):
         diff[:seq_len-i] += get_diffusivity_traj(xyz[i:].transpose(0, 1).unsqueeze(0)).flatten()
