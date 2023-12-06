@@ -36,7 +36,7 @@ class BoltzmannEstimator():
         if isinstance(self.gt_rdf, dict):
             if params.training_observable == 'rdf':
                 self.gt_rdf = torch.cat([rdf.flatten() for rdf in self.gt_rdf.values()]) #combine RDFs together
-                self.gt_rdf_var = torch.cat([var.flatten() for var in self.gt_rdf_var.values()]) + 1e-5 #combine RDF variances together
+                self.gt_rdf_var = torch.cat([var.flatten() for var in self.gt_rdf_var.values()]) + 1e-3 #combine RDF variances together
             else:
                 self.gt_rdf = torch.Tensor([1.44]).to(self.device) #ground truth min IMD
         
@@ -333,7 +333,7 @@ class BoltzmannEstimator():
             for i in tqdm(range(num_blocks)):
                 start = MINIBATCH_SIZE*i
                 end = MINIBATCH_SIZE*(i+1)
-                rdf_batch = [rdfs[start:end]] if self.simulator.training_observ1e-able == 'imd' else \
+                rdf_batch = [rdfs[start:end]] if self.simulator.training_observable == 'imd' else \
                             rdfs[start:end].chunk(3 if self.simulator.name == 'water' else 1, dim=1) # 3 separate RDFs for water
                 pe_grads_batch = pe_grads_flattened[start:end]
                 adf_batch = adfs[start:end]

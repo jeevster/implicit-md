@@ -665,7 +665,7 @@ class ImplicitMDSimulator():
                 frac_radii = frac_radii % 1.0 #wrap
                 radii = frac2cart(frac_radii, self.cell)
             else:
-                radii = ((radii / self.cell) % 1) * self.cell #wrap coords
+                radii = ((radii / torch.diag(self.cell)) % 1) * torch.diag(self.cell) #wrap coords
         partpos = detach_numpy(radii).tolist()
         velocities = detach_numpy(self.velocities[0]).tolist()
         diameter = 10*self.diameter_viz*np.ones((self.n_atoms,))
@@ -842,6 +842,7 @@ if __name__ == "__main__":
     if isinstance(gt_rdf, dict):
         for _type, _rdf in gt_rdf.items():
             np.save(os.path.join(results_dir, f'gt_{_type}_rdf.npy'), _rdf[0].cpu())
+            np.save(os.path.join(results_dir, f'gt_{_type}_rdf_var.npy'), gt_rdf_var[_type].cpu())
     else:
         np.save(os.path.join(results_dir, 'gt_rdf.npy'), gt_rdf.cpu())
     np.save(os.path.join(results_dir, 'gt_adf.npy'), gt_adf.cpu())
