@@ -36,7 +36,8 @@ class BoltzmannEstimator():
         if isinstance(self.gt_rdf, dict):
             if params.training_observable == 'rdf':
                 self.gt_rdf = torch.cat([rdf.flatten() for rdf in self.gt_rdf.values()]) #combine RDFs together
-                self.gt_rdf_var = torch.cat([var.flatten() for var in self.gt_rdf_var.values()]) + 1e-3 #combine RDF variances together
+                self.gt_rdf_var = torch.cat([var.flatten() for var in self.gt_rdf_var.values()]) #combine RDF variances together
+                self.gt_rdf_var = torch.where(self.gt_rdf_var == 0, 1e-2, self.gt_rdf_var) #add "hyperprior" to gt variance
             else:
                 self.gt_rdf = torch.Tensor([1.44]).to(self.device) #ground truth min IMD
         

@@ -52,7 +52,7 @@ from mdsim.modules.normalizer import Normalizer
 from utils import calculate_final_metrics
 from mdsim.observables.common import distance_pbc, BondLengthDeviation, radii_to_dists, compute_distance_matrix_batch
 from mdsim.observables.md17_22 import find_hr_adf_from_file, get_hr
-from mdsim.observables.water import WaterRDFMAE, MinimumIntermolecularDistance, find_water_rdfs_diffusivity_from_file, get_water_rdfs, get_smoothed_diffusivity
+from mdsim.observables.water import WaterRDFMAE, MinimumIntermolecularDistance, find_water_rdfs_diffusivity_from_file, get_water_rdfs, get_smoothed_diffusivity, n_closest_molecules
 from mdsim.observables.lips import LiPSRDFMAE, find_lips_rdfs_diffusivity_from_file, cart2frac, frac2cart
 from mdsim.models.load_models import load_pretrained_model
 from mdsim.common.utils import (
@@ -963,7 +963,7 @@ if __name__ == "__main__":
                     param.grad = obs_grad + ef_grad
                     
                 if params.gradient_clipping: #gradient clipping
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), params.grad_clip_norm_threshold)
                 
                 simulator.optimizer.step()
             #If we are focusing on accuracy, step based on observable loss. If we are focusing on stability, step based on number of unstable replicas

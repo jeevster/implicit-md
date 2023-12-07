@@ -44,6 +44,7 @@ only_learn_if_unstable_threshold_reached: True
 only_train_on_unstable_replicas: False
 allow_off_policy_updates: False
 gradient_clipping: True
+grad_clip_norm_threshold: 1.0
 use_mse_gradient: True
 shuffle: True
 optimizer: SGD

@@ -74,6 +74,45 @@ class MinimumIntermolecularDistance(torch.nn.Module):
                                                 torch.diag(self.cell)).to(self.device) #compute distances under minimum image convention
         return intermolecular_distances.min(dim=-1)[0].min(dim=0)[0].detach()
 
+#returns the coordinates of the n-closest molecules to the center atom (and the center atom itself)
+def n_closest_molecules(_xyz, center_idx, n, lattices):
+    #wrap coordinates
+    xyz = ((_xyz / torch.diag(lattices)) % 1) * torch.diag(lattices) #wrap coords
+    distances = distance_pbc(xyz[:, center_idx].unsqueeze(1), \
+                                                xyz, \
+                                                torch.diag(lattices))
+    sorted_distances, idxs = torch.sort(distances, dim = -1)
+    molecules = torch.floor(idxs/3)
+    unique_molecules = torch.stack([first_unique_elements(mol, n+1) for mol in molecules])
+    atom_idxs = torch.stack([expand_molecules_to_atoms(mol) for mol in unique_molecules])
+    #return original (unwrapped) coordinates
+    return torch.stack([_xyz[i, atom_idx.long()] for i, atom_idx in enumerate(atom_idxs)])
+
+
+def expand_molecules_to_atoms(molecule_idxs):
+    atom_idxs = []
+    for idx in molecule_idxs:
+        atom_idxs.append(3*idx)
+        atom_idxs.append(3*idx+1)
+        atom_idxs.append(3*idx+2)
+    return torch.Tensor(atom_idxs)
+
+    
+def first_unique_elements(tensor, num_elements):
+    # Create an empty list to store unique elements
+    unique_elements = []
+    # Iterate through the tensor
+    for element in tensor:
+        # Check if the element is not already in the unique_elements list
+        if element.item() not in unique_elements:
+            # Add the element to the unique_elements list
+            unique_elements.append(element.item())
+            # Break the loop if we have reached the required number of unique elements
+            if len(unique_elements) == num_elements:
+                break
+                
+    return torch.Tensor(unique_elements)
+
 
 def distance_pbc_select(x, lattices, indices0, indices1):
     x0 = x[:, indices0]
