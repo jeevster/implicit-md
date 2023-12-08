@@ -7,6 +7,7 @@ import os
 from configs.md22.integrator_configs import INTEGRATOR_CONFIGS
 from tqdm import tqdm
 import random
+from torch_scatter import scatter
 from torch_geometric.nn import MessagePassing, radius_graph
 from torchmd.observable import generate_vol_bins, DifferentiableRDF, DifferentiableADF, DifferentiableVelHist, DifferentiableVACF, SelfIntermediateScattering, msd, DiffusionCoefficient
 import time
@@ -20,7 +21,7 @@ from ase.calculators.calculator import Calculator
 from nequip.data import AtomicData, AtomicDataDict
 from mdsim.common.utils import setup_imports, setup_logging, compute_bond_lengths, data_to_atoms, atoms_to_batch, atoms_to_state_dict, convert_atomic_numbers_to_types, process_gradient, compare_gradients, initialize_velocities, dump_params_to_yml
 from mdsim.observables.common import radii_to_dists, distance_pbc, ObservableMAELoss, ObservableMSELoss, IMDHingeLoss
-from mdsim.observables.water import WaterRDFMAE, find_water_rdfs_diffusivity_from_file
+from mdsim.observables.water import WaterRDFMAE, find_water_rdfs_diffusivity_from_file, n_closest_molecules
 from adjoints import get_adjoints, get_model_grads
 
 #TODO: have separate functions for 
@@ -250,7 +251,7 @@ class BoltzmannEstimator():
         if self.simulator.pbc: #LiPS or Water
             #replace RDF with IMD (didn't change variable name yet)
             if self.simulator.training_observable == 'imd':
-                rdfs = torch.cat([self.simulator.stability_criterion(s.unsqueeze(0)) for s in stacked_radii])
+                rdfs = torch.cat([self.simulator.min_imd(s.unsqueeze(0)) for s in stacked_radii])
             elif self.simulator.training_observable == 'rdf':
                 rdfs = torch.cat([self.simulator.rdf_mae(s.unsqueeze(0))[0] for s in stacked_radii])
             else:
@@ -264,9 +265,6 @@ class BoltzmannEstimator():
             
             adfs = torch.stack([diff_adf(rad) for rad in stacked_radii.reshape(-1, self.simulator.n_atoms, 3)]).reshape(-1, self.simulator.n_replicas, self.gt_adf.shape[-1]) #this way of calculating uses less memory
         
-        # if self.simulator.mode == 'learning':
-        #     import pdb; pdb.set_trace()
-        #     x = 0
         np.save(os.path.join(self.simulator.save_dir, f'rdfs_epoch{self.simulator.epoch}.npy'), rdfs.cpu())
         mean_rdf = rdfs.mean(dim=(0, 1))
         mean_adf = adfs.mean(dim=(0, 1))
@@ -277,20 +275,44 @@ class BoltzmannEstimator():
             rdf_gradient_estimators = None
             rdf_package = (rdf_gradient_estimators, mean_rdf, self.rdf_loss(mean_rdf).to(self.device), mean_adf, self.adf_loss(mean_adf).to(self.device))              
         else:
-            rdfs = rdfs[:, mask].reshape(-1, rdfs.shape[-1])
-            adfs = adfs[:, mask].reshape(-1, adfs.shape[-1])
             stacked_radii = stacked_radii[:, mask]
-            rdfs.requires_grad = True
-            adfs.requires_grad = True
+           
+            if self.simulator.name == 'water':
+                #extract all local neighborhoods of n_molecules molecules (centered around each atom)
+                n_molecules = 10
+                n_local_neighborhoods = 4
+                self.n_atoms_local = 3*(n_molecules+1)
+                #pick centers of local neighborhoods
+                center_atoms = 3* np.random.choice(np.arange(int(self.simulator.n_atoms / 3)), n_local_neighborhoods, replace=False)
+                local_neighborhoods = [n_closest_molecules(stacked_radii.reshape(-1, self.simulator.n_atoms, 3), \
+                                                                        center_atom, n_molecules, \
+                                                                        self.simulator.cell) \
+                                                                        for center_atom in center_atoms]
+                
+                local_stacked_radii = torch.stack([local_neighborhood[0] for local_neighborhood in local_neighborhoods], dim = 1)
+                atomic_indices = torch.stack([local_neighborhood[1] for local_neighborhood in local_neighborhoods], dim=1)
+                #local rdfs are pretty noisy because of very limited spatial averaging - can try to solve this by coarsening the rdf histogram - or computing a ground truth in local fashion as well?
+                rdfs = torch.cat([self.simulator.rdf_mae(s.unsqueeze(0).unsqueeze(0))[0] for s in local_stacked_radii.reshape(-1, self.n_atoms_local, 3)])
+                rdfs = rdfs.reshape(local_stacked_radii.shape[0], local_stacked_radii.shape[1], -1)
+                adfs = torch.zeros(rdfs.shape[0], rdfs.shape[1], 180).to(self.simulator.device) #TODO: temporary
+                imds = torch.cat([self.simulator.min_imd(s.unsqueeze(0).unsqueeze(0)) for s in local_stacked_radii.reshape(-1, self.n_atoms_local, 3)])
+                imds = imds.reshape(local_stacked_radii.shape[0], local_stacked_radii.shape[1], -1)
             
-            #TODO: scale the estimator by Kb*T
-            start = time.time()
+            else:
+                rdfs = rdfs[:, mask].reshape(-1, rdfs.shape[-1])
+                adfs = adfs[:, mask].reshape(-1, adfs.shape[-1])
             stacked_radii = stacked_radii.reshape(-1, self.simulator.n_atoms, 3)
             
+            rdfs.requires_grad = True
+            adfs.requires_grad = True
+
+            #TODO: scale the estimator by Kb*T
+            start = time.time()
             #shuffle the radii, rdfs, and losses
             if self.simulator.shuffle:   
                 shuffle_idx = torch.randperm(stacked_radii.shape[0])
                 stacked_radii = stacked_radii[shuffle_idx]
+                atomic_indices = atomic_indices[shuffle_idx]
                 rdfs = rdfs[shuffle_idx]
                 adfs = adfs[shuffle_idx]
             
@@ -309,24 +331,42 @@ class BoltzmannEstimator():
                 end = bsize*(i+1)
                 with torch.enable_grad():
                     radii_in = stacked_radii[start:end]
+                    atomic_indices_in = atomic_indices[start:end]
                     radii_in.requires_grad = True
-                    energy, _ = self.simulator.force_calc(radii_in, retain_grad = True)
-                def get_vjp(v):
-                    return compute_grad(inputs = list(model.parameters()), output = energy, grad_outputs = v, allow_unused = True, create_graph = False)
-                vectorized_vjp = vmap(get_vjp)
-                I_N = torch.eye(energy.shape[0]).unsqueeze(-1).to(self.device)
-                num_samples = energy.shape[0]
-                if self.simulator.model_type == 'forcenet': #dealing with device mismatch error
-                    grads_vectorized = [process_gradient(model.parameters(), \
-                                        compute_grad(inputs = list(model.parameters()), \
-                                        output = e, allow_unused = True, create_graph = False), \
-                                        self.device) for e in energy]
-                    grads_flattened = torch.stack([torch.cat([grads_vectorized[i][j].flatten().detach() for j in range(num_params)]) for i in range(num_samples)])
-                else:
-                    grads_vectorized = vectorized_vjp(I_N)
-                    #flatten the gradients for vectorization
-                    grads_flattened= torch.stack([torch.cat([grads_vectorized[i][j].flatten().detach() for i in range(num_params)]) for j in range(num_samples)])
-                pe_grads_flattened.append(grads_flattened)
+                    
+                    energy_force_output = self.simulator.force_calc(radii_in, retain_grad = True, output_individual_energies = self.simulator.name == 'water')
+                    if len(energy_force_output) == 2:
+                        energy = energy_force_output[0]
+                    elif len(energy_force_output) == 3:
+                        #get individual atomic energies
+                        energy = energy_force_output[1].reshape(radii_in.shape[0], -1, 1)
+                        #sum atomic energies within local neighborhoods
+                        energy = torch.stack([energy[i, atomic_index].sum(1) for i, atomic_index in enumerate(atomic_indices_in)])
+                        energy = energy.reshape(-1, 1)
+
+                #need to do another loop here over batches of local neighborhoods
+                num_local_blocks = math.ceil(energy.shape[0]/ bsize)
+                for i in range(num_local_blocks):
+                    start_inner = bsize*i
+                    end_inner = bsize*(i+1)
+                    local_energy = energy[start_inner:end_inner]
+                    def get_vjp(v):
+                        return compute_grad(inputs = list(model.parameters()), output = local_energy, grad_outputs = v, allow_unused = True, create_graph = False)
+                    vectorized_vjp = vmap(get_vjp)
+                    I_N = torch.eye(local_energy.shape[0]).unsqueeze(-1).to(self.device)
+                    num_samples = local_energy.shape[0]
+                    if self.simulator.model_type == 'forcenet': #dealing with device mismatch error
+                        grads_vectorized = [process_gradient(model.parameters(), \
+                                            compute_grad(inputs = list(model.parameters()), \
+                                            output = e, allow_unused = True, create_graph = False), \
+                                            self.device) for e in local_energy]
+                        grads_flattened = torch.stack([torch.cat([grads_vectorized[i][j].flatten().detach() for j in range(num_params)]) for i in range(num_samples)])
+                    else:
+                        grads_vectorized = vectorized_vjp(I_N)
+                        #flatten the gradients for vectorization
+                        grads_flattened= torch.stack([torch.cat([grads_vectorized[i][j].flatten().detach() for i in range(num_params)]) for j in range(num_samples)])
+                
+                    pe_grads_flattened.append(grads_flattened)
 
             pe_grads_flattened = torch.cat(pe_grads_flattened)
             #Now compute final gradient estimators in batches of size MINIBATCH_SIZE
@@ -334,27 +374,21 @@ class BoltzmannEstimator():
             for i in tqdm(range(num_blocks)):
                 start = MINIBATCH_SIZE*i
                 end = MINIBATCH_SIZE*(i+1)
-                rdf_batch = [rdfs[start:end]] if self.simulator.training_observable == 'imd' else \
-                            rdfs[start:end].chunk(3 if self.simulator.name == 'water' else 1, dim=1) # 3 separate RDFs for water
+                obs = rdfs if self.simulator.training_observable == 'rdf' else imds 
+                obs = obs.reshape(pe_grads_flattened.shape[0], -1)
+                adfs = adfs.reshape(pe_grads_flattened.shape[0], -1)
+                obs_batch = [obs[start:end]]
                 pe_grads_batch = pe_grads_flattened[start:end]
                 adf_batch = adfs[start:end]
                 #TODO: fix the case where we don't use the MSE gradient
-                grad_outputs_rdf = [2/gt_rdf_var*(rdf.mean(0) - gt_rdf).unsqueeze(0) \
+                grad_outputs_obs = [2*(ob.mean(0) - gt_ob).unsqueeze(0) \
                                     if self.simulator.use_mse_gradient else None \
-                                    for rdf, gt_rdf, gt_rdf_var in zip(rdf_batch, \
-                                    self.gt_rdf.chunk(len(rdf_batch)), self.gt_rdf_var.chunk(len(rdf_batch)))]
+                                    for ob, gt_ob in zip(obs_batch, \
+                                    self.gt_rdf.chunk(len(obs_batch)))]
                 grad_outputs_adf = 2*(adf_batch.mean(0) - self.gt_adf).unsqueeze(0) \
                                     if self.simulator.use_mse_gradient else None
-                                
-                # with torch.enable_grad():
-                #     rdfs_mean = rdfs[start:end].mean(0)
-                #     adfs_mean = adfs[start:end].mean(0)
-                #     rdf_loss = self.rdf_loss(rdfs_mean)
-                #     adf_loss = self.adf_loss(adfs_mean)
-                #     grad_outputs_rdf = [torch.autograd.grad(rdf_loss, rdfs_mean)[0].detach().unsqueeze(0)]
-                #     grad_outputs_adf = [torch.autograd.grad(adf_loss, adfs_mean)[0].detach().unsqueeze(0)]
                 
-                final_vjp = [self.estimator(rdf, pe_grads_batch, grad_output_rdf) for rdf, grad_output_rdf in zip(rdf_batch, grad_outputs_rdf)]
+                final_vjp = [self.estimator(obs, pe_grads_batch, grad_output_obs) for obs, grad_output_obs in zip(obs_batch, grad_outputs_obs)]
                 final_vjp = torch.stack(final_vjp).mean(0)
                 if self.params.adf_loss_weight !=0:
                     gradient_estimator_adf = self.estimate(adf_batch, grads_flattened, grad_outputs_adf)

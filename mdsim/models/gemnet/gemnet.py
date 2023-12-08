@@ -524,7 +524,7 @@ class GemNetT(torch.nn.Module):
         )
 
     @conditional_grad(torch.enable_grad())
-    def forward(self, data):
+    def forward(self, data, output_individual_energies = False):
         pos = data.pos
         batch = data.batch
         atomic_numbers = data.atomic_numbers.long()
@@ -586,6 +586,7 @@ class GemNetT(torch.nn.Module):
             F_st += F
             E_t += E
 
+        E_individual = E_t #store individual atomic energies
         nMolecules = torch.max(batch) + 1
         if self.extensive:
             E_t = scatter(
@@ -626,9 +627,12 @@ class GemNetT(torch.nn.Module):
                         E_t.sum(), pos, create_graph=True
                     )[0]
                     # (nAtoms, 3)   
-            
-            return E_t, F_t  # (nMolecules, num_targets), (nAtoms, 3)
+            if output_individual_energies:
+                return E_t, E_individual, F_t  # (nMolecules, num_targets), (nAtoms, 3)
+            return E_t, F_t
         else:
+            if output_individual_energies:
+                return E_t, E_individual
             return E_t
 
     @property

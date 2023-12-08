@@ -244,8 +244,9 @@ class ImplicitMDSimulator():
             if params.stability_criterion == 'imd':
                 self.stability_criterion = MinimumIntermolecularDistance(self.bonds, self.cell, self.device)
             else:
-                self.stability_criterion = WaterRDFMAE(self.data_dir, self.gt_rdf, self.n_atoms, self.n_replicas, self.params, self.device)
-            self.rdf_mae = WaterRDFMAE(self.data_dir, self.gt_rdf, self.n_atoms, self.n_replicas, self.params, self.device)
+                self.stability_criterion = WaterRDFMAE(self.data_dir, self.gt_rdf, self.n_atoms, self.params, self.device)
+            self.rdf_mae = WaterRDFMAE(self.data_dir, self.gt_rdf, self.n_atoms, self.params, self.device)
+            self.min_imd = MinimumIntermolecularDistance(self.bonds, self.cell, self.device)
             self.bond_length_dev = BondLengthDeviation(self.name, self.bonds,self.mean_bond_lens,self.cell,self.device)
         elif self.name == 'lips':
             if params.stability_criterion == 'imd':
@@ -259,6 +260,7 @@ class ImplicitMDSimulator():
                                         
         radii = torch.stack([torch.Tensor(atoms.get_positions()) for atoms in self.raw_atoms])
         self.radii = (radii + torch.normal(torch.zeros_like(radii), self.ic_stddev)).to(self.device)
+        n_closest = n_closest_molecules(self.radii, 0, 5, self.cell)
         self.velocities = torch.Tensor(initialize_velocities(self.n_atoms, self.masses, self.temp, self.n_replicas)).to(self.device)
         #assign velocities to atoms
         for i in range(len(self.raw_atoms)):
@@ -461,7 +463,7 @@ class ImplicitMDSimulator():
         return num_unstable_replicas / self.n_replicas
 
 
-    def force_calc(self, radii, retain_grad = False):
+    def force_calc(self, radii, retain_grad = False, output_individual_energies = False):
         batch_size = radii.shape[0]
         batch = torch.arange(batch_size).repeat_interleave(self.n_atoms).to(self.device)
         with torch.enable_grad():
@@ -473,6 +475,7 @@ class ImplicitMDSimulator():
             #make these match the number of replicas (different from n_replicas when doing bottom-up stuff)
             self.atoms_batch['cell'] = self.atoms_batch['cell'][0].unsqueeze(0).repeat(batch_size, 1, 1)
             self.atoms_batch['pbc'] = self.atoms_batch['pbc'][0].unsqueeze(0).repeat(batch_size, 1)
+            all_energies = None
             if self.model_type == "nequip":
                 self.atoms_batch['atom_types'] = self.atoms_batch['atom_types'][0:self.n_atoms].repeat(batch_size, 1)
                 #recompute neighbor list
@@ -486,12 +489,22 @@ class ImplicitMDSimulator():
                 self.atoms_batch = cleanup_atoms_batch(self.atoms_batch)
                 self.atoms_batch['natoms'] = torch.Tensor([self.n_atoms]).repeat(batch_size).to(self.device)
                 self.atoms_batch['atomic_numbers'] = self.atomic_numbers.repeat(batch_size)
-                energy, forces = self.model(self.atoms_batch)
+                if output_individual_energies:
+                    if self.model_type == 'gemnet_t':
+                        energy, all_energies, forces = self.model(self.atoms_batch, output_individual_energies = True)
+                    else:
+                        raise RuntimeError(f"Outputting individual energies is only supported for gemnet_t, not {self.model_type}")
+                else:
+                    energy, forces = self.model(self.atoms_batch)
                 forces = forces.reshape(-1, self.n_atoms, 3)
             assert(not torch.any(torch.isnan(forces)))
             energy = energy.detach() if not retain_grad else energy
             forces = forces.detach() if not retain_grad else forces
-            return energy, forces
+            if all_energies is None:
+                return energy, forces
+            else:
+                return energy, all_energies, forces
+
 
 
     def forward_nosehoover(self, radii, velocities, forces, zeta, retain_grad=False):
@@ -665,7 +678,7 @@ class ImplicitMDSimulator():
                 frac_radii = frac_radii % 1.0 #wrap
                 radii = frac2cart(frac_radii, self.cell)
             else:
-                radii = ((radii / torch.diag(self.cell)) % 1) * torch.diag(self.cell) #wrap coords
+                radii = ((radii / torch.diag(self.cell)) % 1) * torch.diag(self.cell)  - torch.diag(cell)/2 #wrap coords (last subtraction is for cell alignment in Ovito)
         partpos = detach_numpy(radii).tolist()
         velocities = detach_numpy(self.velocities[0]).tolist()
         diameter = 10*self.diameter_viz*np.ones((self.n_atoms,))

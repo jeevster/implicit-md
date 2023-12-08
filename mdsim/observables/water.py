@@ -17,11 +17,10 @@ from mdsim.observables.common import radii_to_dists, get_smoothed_diffusivity
 
 #Water utils
 class WaterRDFMAE(torch.nn.Module):
-    def __init__(self, base_path, gt_rdfs, n_atoms, n_replicas, params, device):
+    def __init__(self, base_path, gt_rdfs, n_atoms, params, device):
         super(WaterRDFMAE, self).__init__()
         self.gt_rdfs = gt_rdfs
         self.n_atoms = n_atoms
-        self.n_replicas = n_replicas
         self.device = device
         self.params = params
         self.xlim = params.max_rdf_dist
@@ -35,10 +34,11 @@ class WaterRDFMAE(torch.nn.Module):
 
 
     def forward(self, stacked_radii):
+        #Expected shape of stacked_radii is [Timesteps, N_replicas, N_atoms, 3]
         max_maes = []
         rdf_list = []
-        for i in range(self.n_replicas): #explicit loop since vmap makes some numpy things weird
-            rdfs, _ = get_water_rdfs(stacked_radii[:, i], self.ptypes, self.lattices, self.bins, self.device)
+        for i in range(stacked_radii.shape[1]): #explicit loop since vmap makes some numpy things weird
+            rdfs, _ = get_water_rdfs(stacked_radii[:, i], self.ptypes[:stacked_radii.shape[-2]], self.lattices, self.bins, self.device)
             #compute MAEs of all element-conditioned RDFs
             max_maes.append(torch.max(torch.cat([self.xlim*torch.abs(rdf-gt_rdf).mean().unsqueeze(-1) for rdf, gt_rdf in zip(rdfs.values(), self.gt_rdfs.values())])))
             rdf_list.append(torch.cat([rdf.flatten() for rdf in rdfs.values()]))
@@ -52,22 +52,23 @@ class MinimumIntermolecularDistance(torch.nn.Module):
         self.cell = cell
         self.device = device
         #construct a tensor containing all the intermolecular bonds 
-        num_atoms = 192
+        self.element_mask = element_mask
+        
+    def forward(self, stacked_radii):
+        num_atoms = stacked_radii.shape[-2]
         missing_edges = []
         for i in range(num_atoms):
             for j in range(i+1, num_atoms):
                 if not ((i % 3 == 0 and (j == i + 1 or j == i + 2)) or (j % 3 == 0 and (i == j + 1 or i == j + 2))): #i and j are not on the same atom
-                    if element_mask == 'O':
+                    if self.element_mask == 'O':
                         if i % 3 == 0 and j % 3 == 0: #both oxygen
                             missing_edges.append([i, j])
-                    elif element_mask == 'H':
+                    elif self.element_mask == 'H':
                         if i % 3 != 0 and j%3 != 0: #both hydrogen
                             missing_edges.append([i, j])
-                    elif element_mask is None:
+                    elif self.element_mask is None:
                         missing_edges.append([i, j])
         self.intermolecular_edges = torch.Tensor(missing_edges).to(torch.long)
-
-    def forward(self, stacked_radii):
         stacked_radii = ((stacked_radii / torch.diag(self.cell)) % 1) * torch.diag(self.cell) #wrap coords
         intermolecular_distances = distance_pbc(stacked_radii[:, :, self.intermolecular_edges[:, 0]], \
                                                 stacked_radii[:,:, self.intermolecular_edges[:, 1]], \
@@ -84,9 +85,10 @@ def n_closest_molecules(_xyz, center_idx, n, lattices):
     sorted_distances, idxs = torch.sort(distances, dim = -1)
     molecules = torch.floor(idxs/3)
     unique_molecules = torch.stack([first_unique_elements(mol, n+1) for mol in molecules])
-    atom_idxs = torch.stack([expand_molecules_to_atoms(mol) for mol in unique_molecules])
-    #return original (unwrapped) coordinates
-    return torch.stack([_xyz[i, atom_idx.long()] for i, atom_idx in enumerate(atom_idxs)])
+    atom_idxs = torch.stack([expand_molecules_to_atoms(mol) for mol in unique_molecules]).long()
+    #return original (unwrapped) coordinates and corresponding indices
+    final_coords = torch.stack([_xyz[i, atom_idx.long()] for i, atom_idx in enumerate(atom_idxs)])
+    return final_coords, atom_idxs
 
 
 def expand_molecules_to_atoms(molecule_idxs):
@@ -131,7 +133,6 @@ def get_water_rdfs(data_seq, ptypes, lattices, bins, device='cpu'):
     """
     data_seq = data_seq.to(device).float()
     lattices = lattices.to(device).float()
-    
     type2indices = {
         'H': ptypes == 1,
         'O': ptypes == 8
