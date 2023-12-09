@@ -108,6 +108,10 @@ class ImplicitMDSimulator():
         self.results_dir = os.path.join(config["log_dir"], config["results_dir"])
         self.eval_model = config["eval_model"]
         self.n_dump = config["n_dump"]
+        if self.name == 'water':
+            self.n_local_neighborhoods = config["n_local_neighborhoods"]
+            self.n_closest_molecules = config["n_closest_molecules"]
+            self.n_atoms_local = 3*(self.n_closest_molecules + 1)
         self.n_dump_vacf = config["n_dump_vacf"]
 
         #Initialize model
@@ -678,7 +682,7 @@ class ImplicitMDSimulator():
                 frac_radii = frac_radii % 1.0 #wrap
                 radii = frac2cart(frac_radii, self.cell)
             else:
-                radii = ((radii / torch.diag(self.cell)) % 1) * torch.diag(self.cell)  - torch.diag(cell)/2 #wrap coords (last subtraction is for cell alignment in Ovito)
+                radii = ((radii / torch.diag(self.cell)) % 1) * torch.diag(self.cell)  - torch.diag(self.cell)/2 #wrap coords (last subtraction is for cell alignment in Ovito)
         partpos = detach_numpy(radii).tolist()
         velocities = detach_numpy(self.velocities[0]).tolist()
         diameter = 10*self.diameter_viz*np.ones((self.n_atoms,))
@@ -828,8 +832,9 @@ if __name__ == "__main__":
     #load ground truth rdf and VACF
     print("Computing ground truth observables from datasets")
     if name == 'water':
-        gt_rdf_package, gt_diffusivity, gt_adf, oxygen_atoms_mask = find_water_rdfs_diffusivity_from_file(data_path, MAX_SIZES[name], params, device)
+        gt_rdf_package, gt_rdf_local_package, gt_diffusivity, gt_adf, oxygen_atoms_mask = find_water_rdfs_diffusivity_from_file(data_path, MAX_SIZES[name], params, device)
         gt_rdf, gt_rdf_var = gt_rdf_package
+        gt_rdf_local, gt_rdf_var_local = gt_rdf_local_package
     elif name == 'lips':
         gt_rdf, gt_diffusivity = find_lips_rdfs_diffusivity_from_file(data_path, MAX_SIZES[name], params, device)
         gt_rdf_var = torch.ones_like(gt_rdf)
@@ -856,6 +861,8 @@ if __name__ == "__main__":
         for _type, _rdf in gt_rdf.items():
             np.save(os.path.join(results_dir, f'gt_{_type}_rdf.npy'), _rdf[0].cpu())
             np.save(os.path.join(results_dir, f'gt_{_type}_rdf_var.npy'), gt_rdf_var[_type].cpu())
+            np.save(os.path.join(results_dir, f'gt_{_type}_rdf_local.npy'), gt_rdf_local[_type][0].cpu())
+            np.save(os.path.join(results_dir, f'gt_{_type}_rdf_var_local.npy'), gt_rdf_var_local[_type].cpu())
     else:
         np.save(os.path.join(results_dir, 'gt_rdf.npy'), gt_rdf.cpu())
     np.save(os.path.join(results_dir, 'gt_adf.npy'), gt_adf.cpu())
@@ -907,7 +914,7 @@ if __name__ == "__main__":
             #initialize simulator parameterized by a NN model
             simulator = ImplicitMDSimulator(config, params, model, model_path, model_config, gt_rdf)
             #initialize Boltzmann_estimator
-            boltzmann_estimator = BoltzmannEstimator(gt_rdf, gt_rdf_var, gt_vacf, gt_adf, params, device)
+            boltzmann_estimator = BoltzmannEstimator(gt_rdf_package, gt_rdf_local_package, gt_vacf, gt_adf, params, device)
             #initialize outer loop optimizer/scheduler
             if params.optimizer == 'Adam':
                 simulator.optimizer = torch.optim.Adam(list(simulator.model.parameters()), \

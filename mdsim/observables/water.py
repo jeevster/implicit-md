@@ -4,6 +4,7 @@ from itertools import product
 from scipy.stats import maxwell
 import math
 import yaml
+from tqdm import tqdm
 import os
 import gc
 import matplotlib.pyplot as plt
@@ -174,6 +175,7 @@ def get_water_rdfs(data_seq, ptypes, lattices, bins, device='cpu'):
 
 
 def find_water_rdfs_diffusivity_from_file(base_path: str, size: str, params, device):
+    n_closest = params.n_closest_molecules
     xlim = params.max_rdf_dist
     n_bins = int(xlim/params.dr)
     bins = np.linspace(1e-6, xlim, n_bins + 1) # for computing RDF
@@ -192,6 +194,9 @@ def find_water_rdfs_diffusivity_from_file(base_path: str, size: str, params, dev
     #Want to match frequency of our data collection which is params.n_dump*params.integrator_config["dt"]
     keep_freq = math.ceil(params.n_dump*params.integrator_config["timestep"] / 10)
     gt_rdfs = get_water_rdfs(gt_traj[::keep_freq], atom_types, lattices, bins, device)
+    #local rdfs
+    gt_local_neighborhoods = torch.cat([n_closest_molecules(gt_traj[::keep_freq], i, n_closest, torch.diag(lattices))[0] for i in range(64)])
+    gt_rdfs_local = get_water_rdfs(gt_local_neighborhoods[::keep_freq], atom_types[:gt_local_neighborhoods.shape[-2]], lattices, bins, device)
     
     #ADF
     temp_data = LmdbDataset({'src': os.path.join(base_path, 'water', size, 'train')})
@@ -204,4 +209,4 @@ def find_water_rdfs_diffusivity_from_file(base_path: str, size: str, params, dev
     gt_adf = DifferentiableADF(gt_traj.shape[-2], bonds, torch.diag(lattices).to(device), params, device)(gt_traj[0:200][::keep_freq].to(torch.float).to(device))
     #TODO: O-O conditioned RDF using oxygen_atoms_mask
     #gt_adf = DifferentiableADF(gt_traj.shape[-2], bonds, torch.diag(lattices).to(device), params, device)(gt_traj[0:2000, oxygen_atoms_mask][::keep_freq].to(torch.float).to(device))
-    return gt_rdfs, gt_diffusivity, gt_adf, oxygen_atoms_mask
+    return gt_rdfs, gt_rdfs_local, gt_diffusivity, gt_adf, oxygen_atoms_mask

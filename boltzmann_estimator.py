@@ -27,20 +27,26 @@ from adjoints import get_adjoints, get_model_grads
 #TODO: have separate functions for 
 
 class BoltzmannEstimator():
-    def __init__(self, gt_rdf, gt_rdf_var, gt_vacf, gt_adf, params, device):
+    def __init__(self, gt_rdf_package, gt_rdf_local_package, gt_vacf, gt_adf, params, device):
         super(BoltzmannEstimator, self).__init__()
         self.params = params
         self.device = device
         self.diff_rdf = DifferentiableRDF(self.params, device)
-        self.gt_rdf = gt_rdf
-        self.gt_rdf_var = gt_rdf_var
+        self.gt_rdf, self.gt_rdf_var = gt_rdf_package
+        self.gt_rdf_local, self.gt_rdf_var_local = gt_rdf_local_package
+        
         if isinstance(self.gt_rdf, dict):
             if params.training_observable == 'rdf':
                 self.gt_rdf = torch.cat([rdf.flatten() for rdf in self.gt_rdf.values()]) #combine RDFs together
+                self.gt_rdf_local = torch.cat([rdf.flatten() for rdf in self.gt_rdf_local.values()]) #combine RDFs together
                 self.gt_rdf_var = torch.cat([var.flatten() for var in self.gt_rdf_var.values()]) #combine RDF variances together
                 self.gt_rdf_var = torch.where(self.gt_rdf_var == 0, 1e-2, self.gt_rdf_var) #add "hyperprior" to gt variance
+                self.gt_rdf_var_local = torch.cat([var.flatten() for var in self.gt_rdf_var_local.values()]) #combine RDF variances together
+                self.gt_rdf_var_local = torch.where(self.gt_rdf_var_local == 0, 1e-2, self.gt_rdf_var_local) #add "hyperprior" to gt variance
             else:
                 self.gt_rdf = torch.Tensor([1.44]).to(self.device) #ground truth min IMD
+                self.gt_rdf_local = self.gt_rdf
+                self.gt_rdf_var_local = torch.Tensor([1.0]).to(self.device) #identity
         
         self.gt_vacf = gt_vacf
         self.gt_adf = gt_adf
@@ -256,7 +262,7 @@ class BoltzmannEstimator():
                 rdfs = torch.cat([self.simulator.rdf_mae(s.unsqueeze(0))[0] for s in stacked_radii])
             else:
                 raise RuntimeError(f"Must choose rdf or imd as target observable, not{self.simulator.training_observable}")
-            rdfs = rdfs.reshape(-1, simulator.n_replicas, self.gt_rdf.shape[-1])
+            rdfs = rdfs.reshape(-1, simulator.n_replicas, self.gt_rdf_local.shape[-1])
             adfs = torch.stack([diff_adf(rad) for rad in stacked_radii.reshape(-1, self.simulator.n_atoms, 3)]).reshape(-1, self.simulator.n_replicas, self.gt_adf.shape[-1])
         else:
             r2d = lambda r: radii_to_dists(r, self.simulator.params)
@@ -279,24 +285,26 @@ class BoltzmannEstimator():
            
             if self.simulator.name == 'water':
                 #extract all local neighborhoods of n_molecules molecules (centered around each atom)
-                n_molecules = 10
-                n_local_neighborhoods = 4
-                self.n_atoms_local = 3*(n_molecules+1)
-                #pick centers of local neighborhoods
-                center_atoms = 3* np.random.choice(np.arange(int(self.simulator.n_atoms / 3)), n_local_neighborhoods, replace=False)
+        
+                #pick centers of each local neighborhood (always an Oxygen atom)
+                center_atoms = 3* np.random.choice(np.arange(int(self.simulator.n_atoms / 3)), self.simulator.n_local_neighborhoods, replace=False)
                 local_neighborhoods = [n_closest_molecules(stacked_radii.reshape(-1, self.simulator.n_atoms, 3), \
-                                                                        center_atom, n_molecules, \
+                                                                        center_atom, self.simulator.n_closest_molecules, \
                                                                         self.simulator.cell) \
                                                                         for center_atom in center_atoms]
                 
                 local_stacked_radii = torch.stack([local_neighborhood[0] for local_neighborhood in local_neighborhoods], dim = 1)
                 atomic_indices = torch.stack([local_neighborhood[1] for local_neighborhood in local_neighborhoods], dim=1)
-                #local rdfs are pretty noisy because of very limited spatial averaging - can try to solve this by coarsening the rdf histogram - or computing a ground truth in local fashion as well?
-                rdfs = torch.cat([self.simulator.rdf_mae(s.unsqueeze(0).unsqueeze(0))[0] for s in local_stacked_radii.reshape(-1, self.n_atoms_local, 3)])
+                
+                #compute rdfs of local environments
+                rdfs = torch.cat([self.simulator.rdf_mae(s.unsqueeze(0).unsqueeze(0))[0] for s in local_stacked_radii.reshape(-1, self.simulator.n_atoms_local, 3)])
                 rdfs = rdfs.reshape(local_stacked_radii.shape[0], local_stacked_radii.shape[1], -1)
                 adfs = torch.zeros(rdfs.shape[0], rdfs.shape[1], 180).to(self.simulator.device) #TODO: temporary
-                imds = torch.cat([self.simulator.min_imd(s.unsqueeze(0).unsqueeze(0)) for s in local_stacked_radii.reshape(-1, self.n_atoms_local, 3)])
+                imds = torch.cat([self.simulator.min_imd(s.unsqueeze(0).unsqueeze(0)) for s in local_stacked_radii.reshape(-1, self.simulator.n_atoms_local, 3)])
                 imds = imds.reshape(local_stacked_radii.shape[0], local_stacked_radii.shape[1], -1)
+                if self.simulator.mode == 'learning':
+                    np.save(os.path.join(self.simulator.save_dir, f'local_stacked_radii_epoch{self.simulator.epoch}.npy'), local_stacked_radii.cpu())
+                    np.save(os.path.join(self.simulator.save_dir, f'local_rdfs_epoch{self.simulator.epoch}.npy'), rdfs.cpu())
             
             else:
                 rdfs = rdfs[:, mask].reshape(-1, rdfs.shape[-1])
@@ -323,7 +331,10 @@ class BoltzmannEstimator():
             adf_gradient_estimators = []
             raw_grads = []
             pe_grads_flattened = []
-            print(f"Computing RDF/ADF gradients from {stacked_radii.shape[0]} structures in minibatches of size {MINIBATCH_SIZE}")
+            if self.simulator.name == 'water':
+                print(f"Computing RDF/ADF gradients from {stacked_radii.shape[0] * stacked_radii.shape[1]} local environments of {stacked_radii.shape[2]} atoms in minibatches of size {MINIBATCH_SIZE}")
+            else:
+                print(f"Computing RDF/ADF gradients from {stacked_radii.shape[0]} structures in minibatches of size {MINIBATCH_SIZE}")
             num_params = len(list(model.parameters()))
             #first compute gradients of potential energy (in batches of size n_replicas)
             for i in tqdm(range(num_blocks)):
@@ -333,12 +344,13 @@ class BoltzmannEstimator():
                     radii_in = stacked_radii[start:end]
                     atomic_indices_in = atomic_indices[start:end]
                     radii_in.requires_grad = True
-                    
                     energy_force_output = self.simulator.force_calc(radii_in, retain_grad = True, output_individual_energies = self.simulator.name == 'water')
                     if len(energy_force_output) == 2:
-                        energy = energy_force_output[0]
+                        #global energy
+                        energy = energy_force_output[0] 
                     elif len(energy_force_output) == 3:
-                        #get individual atomic energies
+                        
+                        #individual atomic energies
                         energy = energy_force_output[1].reshape(radii_in.shape[0], -1, 1)
                         #sum atomic energies within local neighborhoods
                         energy = torch.stack([energy[i, atomic_index].sum(1) for i, atomic_index in enumerate(atomic_indices_in)])
@@ -381,10 +393,10 @@ class BoltzmannEstimator():
                 pe_grads_batch = pe_grads_flattened[start:end]
                 adf_batch = adfs[start:end]
                 #TODO: fix the case where we don't use the MSE gradient
-                grad_outputs_obs = [2*(ob.mean(0) - gt_ob).unsqueeze(0) \
+                grad_outputs_obs = [2/gt_rdf_var_local*(ob.mean(0) - gt_ob).unsqueeze(0) \
                                     if self.simulator.use_mse_gradient else None \
-                                    for ob, gt_ob in zip(obs_batch, \
-                                    self.gt_rdf.chunk(len(obs_batch)))]
+                                    for ob, gt_ob, gt_rdf_var_local in zip(obs_batch, \
+                                    self.gt_rdf_local.chunk(len(obs_batch)), self.gt_rdf_var_local.chunk(len(obs_batch)))]
                 grad_outputs_adf = 2*(adf_batch.mean(0) - self.gt_adf).unsqueeze(0) \
                                     if self.simulator.use_mse_gradient else None
                 
