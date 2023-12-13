@@ -15,16 +15,16 @@ dv: 0.1
 angle_range: [0, 180]
 diameter_viz: 0.08
 gaussian_width: 0.01
-exp_name: "TEST2"
+exp_name: "TEST_localneighborhoods_3ps_bondlengthdevtraining"
 integrator: NoseHoover
 integrator_config: {"timestep": 1., "temperature": 300., "ttime": 20., "gamma": 0.1}
 train: True
 eval_model: post
 diffusion_loss_weight: 0
 stability_criterion: imd
-training_observable: rdf
-n_closest_molecules: 5
-n_local_neighborhoods: 16
+training_observable: bond_length_dev
+n_closest_molecules: 2
+n_local_neighborhoods: 64
 rdf_loss_weight: 1
 adf_loss_weight: 0
 vacf_loss_weight: 0
@@ -33,13 +33,13 @@ diffusion_window: 1000
 vacf_window: 100
 ic_stddev: 0.0
 imd_tol: 1.0 #Tolerance for Minimum Intermolecular Distance
-max_frac_unstable_threshold: 0.5 #decay this?
-min_frac_unstable_threshold: 0.0 #increase this?
+max_frac_unstable_threshold: 0.75 #decay this?
+min_frac_unstable_threshold: 0.375 #increase this?
 eq_steps: 0
-steps: 3000 #3 ps per window instead of 1
+steps: 1000
 n_dump: 100
 n_dump_vacf: 2
-n_replicas: 4
+n_replicas: 8
 minibatch_size: 4
 adjoint: True
 only_learn_if_unstable_threshold_reached: True
@@ -53,7 +53,7 @@ optimizer: SGD
 reset_probability: 0.0
 n_epochs: 500
 lr: 0.001
-max_times_reduce_lr: 2 
+max_times_reduce_lr: 0 
 
 
 

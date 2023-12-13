@@ -238,9 +238,12 @@ class ImplicitMDSimulator():
             dists = compute_distance_matrix_batch(self.cell,self.gt_traj_train)
             self.mean_bond_lens = dists[:, self.bonds[:, 0], self.bonds[:, 1]].mean(dim=0)
         else:
-            self.mean_bond_lens = distance_pbc(
-            self.gt_traj_train[:, self.bonds[:, 0]], self.gt_traj_train[:, self.bonds[:, 1]], \
-                        torch.diag(self.cell).to(self.device)).mean(dim=0)
+            bond_lens = torch.stack([distance_pbc(
+            gt_traj_train.unsqueeze(0)[:, self.bonds[:, 0]], gt_traj_train.unsqueeze(0)[:, self.bonds[:, 1]], \
+                        torch.diag(self.cell).to(self.device)).mean(dim=0) for gt_traj_train in self.gt_traj_train])
+            self.mean_bond_lens = bond_lens.mean(0)
+            self.bond_lens_var = bond_lens.var(0)
+
         
         self.gt_rdf = gt_rdf
         #choose the appropriate stability criterion based on the type of system
@@ -508,8 +511,6 @@ class ImplicitMDSimulator():
                 return energy, forces
             else:
                 return energy, all_energies, forces
-
-
 
     def forward_nosehoover(self, radii, velocities, forces, zeta, retain_grad=False):
         # get current accelerations
@@ -843,6 +844,8 @@ if __name__ == "__main__":
     else:
         gt_rdf, gt_adf = find_hr_adf_from_file(data_path, name, molecule, MAX_SIZES[name], params, device)
         gt_rdf_var = torch.ones_like(gt_rdf)
+        gt_rdf_package = (gt_rdf, gt_rdf_var)
+        gt_rdf_local_package = (gt_rdf, gt_rdf_var)
     contiguous_path = os.path.join(data_path, f'contiguous-{name}', molecule, MAX_SIZES[name], 'val/nequip_npz.npz')
     gt_data = np.load(contiguous_path)
     #TODO: gt vacf doesn't look right - it's because the recording frequency of the data is 10 fs, not 0.5 as in MD17

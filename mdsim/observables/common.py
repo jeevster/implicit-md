@@ -48,8 +48,14 @@ class BondLengthDeviation(torch.nn.Module):
             dists = torch.stack([compute_distance_matrix_batch(self.cell,radii) for radii in stacked_radii])
             bond_lens = dists[:, :, self.bonds[:, 0], self.bonds[:, 1]]
         else:
-            bond_lens = distance_pbc(stacked_radii[:, :, self.bonds[:, 0]], stacked_radii[:,:, self.bonds[:, 1]], torch.diag(self.cell)).to(self.device)
-        max_bond_dev_per_replica = (bond_lens - self.mean_bond_lens).abs().max(dim=-1)[0].max(dim=0)[0].detach()
+            if self.name == 'water':
+                #only keep local bonds
+                n_atoms_local = stacked_radii.shape[-2]
+                bonds = self.bonds[:int(n_atoms_local*2 / 3)]
+            else:
+                bonds = self.bonds
+            bond_lens = distance_pbc(stacked_radii[:, :, bonds[:, 0]], stacked_radii[:,:, bonds[:, 1]], torch.diag(self.cell)).to(self.device)
+        max_bond_dev_per_replica = (bond_lens - self.mean_bond_lens[:bonds.shape[0]]).abs().max(dim=-1)[0].max(dim=0)[0].detach()
         return max_bond_dev_per_replica
 
 

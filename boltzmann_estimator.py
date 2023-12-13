@@ -44,9 +44,14 @@ class BoltzmannEstimator():
                 self.gt_rdf_var_local = torch.cat([var.flatten() for var in self.gt_rdf_var_local.values()]) #combine RDF variances together
                 self.gt_rdf_var_local = torch.where(self.gt_rdf_var_local == 0, 1e-2, self.gt_rdf_var_local) #add "hyperprior" to gt variance
             else:
-                self.gt_rdf = torch.Tensor([1.44]).to(self.device) #ground truth min IMD
+                if params.training_observable == 'imd':
+                    self.gt_rdf = torch.Tensor([1.44]).to(self.device) #ground truth min IMD
+                    self.gt_rdf_var_local = torch.Tensor([1.0]).to(self.device) #identity
+                elif params.training_observable == 'bond_length_dev':
+                    self.gt_rdf = torch.Tensor([0]).to(self.device) #ground truth bond length dev
+                    self.gt_rdf_var_local = torch.Tensor([0.0004]).to(self.device)
                 self.gt_rdf_local = self.gt_rdf
-                self.gt_rdf_var_local = torch.Tensor([1.0]).to(self.device) #identity
+                
         
         self.gt_vacf = gt_vacf
         self.gt_adf = gt_adf
@@ -177,7 +182,7 @@ class BoltzmannEstimator():
                 vacf_loss_tensor = vmap(self.vacf_loss)(vacfs).reshape(-1, 1, 1)
                 #compute OM action - do it in mini-batches to avoid OOM issues
                 batch_size = 1
-                print(f"Calculate gradients of Onsager-Machlup action of {velocities_traj.shape[0] * velocities_traj.shape[1]} paths in minibatches of size {batch_size*velocities_traj.shape[1]}")
+                print(f" gradients of Onsager-Machlup action of {velocities_traj.shape[0] * velocities_traj.shape[1]} paths in minibatches of size {batch_size*velocities_traj.shape[1]}")
                 num_blocks = math.ceil(velocities_traj.shape[0]/ batch_size)
                 diffs = []
                 om_acts = []
@@ -260,8 +265,9 @@ class BoltzmannEstimator():
                 rdfs = torch.cat([self.simulator.min_imd(s.unsqueeze(0)) for s in stacked_radii])
             elif self.simulator.training_observable == 'rdf':
                 rdfs = torch.cat([self.simulator.rdf_mae(s.unsqueeze(0))[0] for s in stacked_radii])
-            else:
-                raise RuntimeError(f"Must choose rdf or imd as target observable, not{self.simulator.training_observable}")
+            elif self.simulator.training_observable == 'bond_length_dev':
+                rdfs = torch.cat([self.simulator.bond_length_dev(s.unsqueeze(0)) for s in stacked_radii])
+                
             rdfs = rdfs.reshape(-1, simulator.n_replicas, self.gt_rdf_local.shape[-1])
             adfs = torch.stack([diff_adf(rad) for rad in stacked_radii.reshape(-1, self.simulator.n_atoms, 3)]).reshape(-1, self.simulator.n_replicas, self.gt_adf.shape[-1])
         else:
@@ -302,6 +308,10 @@ class BoltzmannEstimator():
                 adfs = torch.zeros(rdfs.shape[0], rdfs.shape[1], 180).to(self.simulator.device) #TODO: temporary
                 imds = torch.cat([self.simulator.min_imd(s.unsqueeze(0).unsqueeze(0)) for s in local_stacked_radii.reshape(-1, self.simulator.n_atoms_local, 3)])
                 imds = imds.reshape(local_stacked_radii.shape[0], local_stacked_radii.shape[1], -1)
+                #import pdb; pdb.set_trace() #TODO: are we sure this is being calculated correctly?
+                bond_len_devs = torch.cat([self.simulator.bond_length_dev(s.unsqueeze(0).unsqueeze(0)) for s in local_stacked_radii.reshape(-1, self.simulator.n_atoms_local, 3)])
+                bond_len_devs = bond_len_devs.reshape(local_stacked_radii.shape[0], local_stacked_radii.shape[1], -1)
+                
                 if self.simulator.mode == 'learning':
                     np.save(os.path.join(self.simulator.save_dir, f'local_stacked_radii_epoch{self.simulator.epoch}.npy'), local_stacked_radii.cpu())
                     np.save(os.path.join(self.simulator.save_dir, f'local_rdfs_epoch{self.simulator.epoch}.npy'), rdfs.cpu())
@@ -320,7 +330,8 @@ class BoltzmannEstimator():
             if self.simulator.shuffle:   
                 shuffle_idx = torch.randperm(stacked_radii.shape[0])
                 stacked_radii = stacked_radii[shuffle_idx]
-                atomic_indices = atomic_indices[shuffle_idx]
+                if self.simulator.name == 'water':
+                    atomic_indices = atomic_indices[shuffle_idx]
                 rdfs = rdfs[shuffle_idx]
                 adfs = adfs[shuffle_idx]
             
@@ -342,14 +353,14 @@ class BoltzmannEstimator():
                 end = bsize*(i+1)
                 with torch.enable_grad():
                     radii_in = stacked_radii[start:end]
-                    atomic_indices_in = atomic_indices[start:end]
+                    if self.simulator.name == 'water':
+                        atomic_indices_in = atomic_indices[start:end]
                     radii_in.requires_grad = True
                     energy_force_output = self.simulator.force_calc(radii_in, retain_grad = True, output_individual_energies = self.simulator.name == 'water')
                     if len(energy_force_output) == 2:
                         #global energy
                         energy = energy_force_output[0] 
                     elif len(energy_force_output) == 3:
-                        
                         #individual atomic energies
                         energy = energy_force_output[1].reshape(radii_in.shape[0], -1, 1)
                         #sum atomic energies within local neighborhoods
@@ -376,7 +387,7 @@ class BoltzmannEstimator():
                     else:
                         grads_vectorized = vectorized_vjp(I_N)
                         #flatten the gradients for vectorization
-                        grads_flattened= torch.stack([torch.cat([grads_vectorized[i][j].flatten().detach() for i in range(num_params)]) for j in range(num_samples)])
+                        grads_flattened=torch.stack([torch.cat([grads_vectorized[i][j].flatten().detach() for i in range(num_params)]) for j in range(num_samples)])
                 
                     pe_grads_flattened.append(grads_flattened)
 
@@ -386,7 +397,13 @@ class BoltzmannEstimator():
             for i in tqdm(range(num_blocks)):
                 start = MINIBATCH_SIZE*i
                 end = MINIBATCH_SIZE*(i+1)
-                obs = rdfs if self.simulator.training_observable == 'rdf' else imds 
+                if self.simulator.training_observable == 'rdf':
+                    obs = rdfs
+                elif self.simulator.training_observable == 'imd':
+                    obs = imds
+                elif self.simulator.training_observable == 'bond_length_dev':
+                    obs = bond_len_devs
+                    
                 obs = obs.reshape(pe_grads_flattened.shape[0], -1)
                 adfs = adfs.reshape(pe_grads_flattened.shape[0], -1)
                 obs_batch = [obs[start:end]]
@@ -404,7 +421,7 @@ class BoltzmannEstimator():
                 final_vjp = torch.stack(final_vjp).mean(0)
                 if self.params.adf_loss_weight !=0:
                     gradient_estimator_adf = self.estimate(adf_batch, grads_flattened, grad_outputs_adf)
-                    final_vjp+= self.params.adf_loss_weight*gradient_estimator_adf             
+                    final_vjp+=self.params.adf_loss_weight*gradient_estimator_adf             
 
                 if not self.simulator.allow_off_policy_updates:
                     raw_grads.append(final_vjp)
