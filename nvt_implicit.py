@@ -629,7 +629,7 @@ class ImplicitMDSimulator():
                 self.instability_per_replica = self.instability_per_replica[-1]
             self.mean_instability = self.instability_per_replica.mean()
             if self.pbc:
-                self.mean_bond_length_dev = self.bond_length_dev(self.stacked_radii)[0].mean()
+                self.mean_bond_length_dev = self.bond_length_dev(self.stacked_radii)[1].mean()
                 self.mean_rdf_mae = self.rdf_mae(self.stacked_radii)[-1].mean()
             self.stacked_vels = torch.cat(self.running_vels)
         
@@ -716,7 +716,7 @@ class ImplicitMDSimulator():
                         "Potential Energy": pe.mean().item(),
                         "Total Energy": (ke+pe).mean().item(),
                         "Momentum Magnitude": torch.norm(torch.sum(self.masses*self.velocities, axis =-2)).item(),
-                        'Max Bond Length Deviation': self.bond_length_dev(self.radii.unsqueeze(0))[0].mean().item() \
+                        'Max Bond Length Deviation': self.bond_length_dev(self.radii.unsqueeze(0))[1].mean().item() \
                                                       if self.pbc else instability.mean().item()}
         if self.pbc:
             results_dict['Minimum Intermolecular Distance'] = instability.mean().item()

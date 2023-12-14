@@ -264,7 +264,7 @@ class BoltzmannEstimator():
             elif self.simulator.training_observable == 'rdf':
                 rdfs = torch.cat([self.simulator.rdf_mae(s.unsqueeze(0))[0] for s in stacked_radii])
             elif self.simulator.training_observable == 'bond_length_dev':
-                rdfs = torch.cat([self.simulator.bond_length_dev(s.unsqueeze(0))[1] for s in stacked_radii])
+                rdfs = torch.cat([self.simulator.bond_length_dev(s.unsqueeze(0))[0] for s in stacked_radii])
                 
             rdfs = rdfs.reshape(-1, simulator.n_replicas, self.gt_rdf_local.shape[-1])
             adfs = torch.stack([diff_adf(rad) for rad in stacked_radii.reshape(-1, self.simulator.n_atoms, 3)]).reshape(-1, self.simulator.n_replicas, self.gt_adf.shape[-1])
@@ -306,8 +306,8 @@ class BoltzmannEstimator():
                 # adfs = torch.zeros(rdfs.shape[0], rdfs.shape[1], 180).to(self.simulator.device) #TODO: temporary
                 imds = torch.cat([self.simulator.min_imd(s.unsqueeze(0).unsqueeze(0)) for s in local_stacked_radii.reshape(-1, self.simulator.n_atoms_local, 3)])
                 imds = imds.reshape(local_stacked_radii.shape[0], local_stacked_radii.shape[1], -1)
-                bond_lens = torch.cat([self.simulator.bond_length_dev(s.unsqueeze(0).unsqueeze(0))[1] for s in local_stacked_radii.reshape(-1, self.simulator.n_atoms_local, 3)])
-                bond_len_devs = torch.cat([self.simulator.bond_length_dev(s.unsqueeze(0).unsqueeze(0))[0] for s in local_stacked_radii.reshape(-1, self.simulator.n_atoms_local, 3)])
+                bond_lens = torch.cat([self.simulator.bond_length_dev(s.unsqueeze(0).unsqueeze(0))[0] for s in local_stacked_radii.reshape(-1, self.simulator.n_atoms_local, 3)])
+                bond_len_devs = torch.cat([self.simulator.bond_length_dev(s.unsqueeze(0).unsqueeze(0))[1] for s in local_stacked_radii.reshape(-1, self.simulator.n_atoms_local, 3)])
                 bond_lens = bond_lens.reshape(local_stacked_radii.shape[0], local_stacked_radii.shape[1], -1)
                 bond_len_devs = bond_len_devs.reshape(local_stacked_radii.shape[0], local_stacked_radii.shape[1], -1)
 
