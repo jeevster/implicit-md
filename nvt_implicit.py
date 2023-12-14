@@ -14,7 +14,6 @@ from YParams import YParams
 import argparse
 import logging
 import os
-from configs.md22.integrator_configs import INTEGRATOR_CONFIGS
 logging.basicConfig(level=os.environ.get("LOGLEVEL", "WARNING"))
 from tqdm import tqdm
 import pstats
@@ -193,9 +192,10 @@ class ImplicitMDSimulator():
         
         self.integrator = self.config["integrator"]
         #Nose-Hoover Thermostat stuff
-        self.integrator_config = INTEGRATOR_CONFIGS[self.molecule] if self.name == 'md22' else config['integrator_config']
+        self.integrator_config =  config['integrator_config']
         self.dt = self.integrator_config["timestep"] * units.fs
-        self.temp = self.integrator_config["temperature"]
+        import pdb; pdb.set_trace()
+        self.temp = config["temperature"]
         
         # adjust units.
         if self.integrator in ['NoseHoover', 'NoseHooverChain', 'Langevin']:
@@ -763,7 +763,7 @@ if __name__ == "__main__":
     load_cycle = None
     load_epoch = None
     
-    if params.train or config["eval_model"] == 'pre': #load energies/forces trained model
+    if params.train or 'pre' in config["eval_model"]: #load energies/forces trained model
         pretrained_model_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{size}_{lmax_string}{model_type}") 
     
     elif 'k' in config["eval_model"] or 'percent' in config["eval_model"]:#load energies/forces model trained on a different dataset size
@@ -826,7 +826,7 @@ if __name__ == "__main__":
     # #initialize RDF calculator
     diff_rdf = DifferentiableRDF(params, device)
 
-    integrator_config = INTEGRATOR_CONFIGS[molecule] if name == 'md22' else config['integrator_config']
+    integrator_config = config['integrator_config']
     timestep = integrator_config["timestep"]
     ttime = integrator_config["ttime"]
 

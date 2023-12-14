@@ -3,6 +3,7 @@ includes:
 train: False
 bond_dev_tol: 0.5
 max_frac_unstable_threshold: 0.99
+temperature: 500.
 n_replicas: 48
 n_dump: 100
 n_epochs: 300 #corresponding to 300 ps

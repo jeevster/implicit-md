@@ -4,6 +4,7 @@ train: False
 stability_criterion: rdf
 imd_tol: 3.0
 max_frac_unstable_threshold: 0.95
+temperature: 300.
 eq_steps: 0
 steps: 1000
 n_dump: 100 

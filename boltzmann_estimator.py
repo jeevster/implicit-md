@@ -4,7 +4,6 @@ import torch.nn as nn
 import math
 from nff.utils.scatter import compute_grad
 import os
-from configs.md22.integrator_configs import INTEGRATOR_CONFIGS
 from tqdm import tqdm
 import random
 from torch_scatter import scatter
@@ -49,7 +48,7 @@ class BoltzmannEstimator():
                     self.gt_rdf_var_local = torch.Tensor([1.0]).to(self.device) #identity
                 elif params.training_observable == 'bond_length_dev':
                     self.gt_rdf = torch.Tensor([0]).to(self.device) #ground truth bond length dev
-                    self.gt_rdf_var_local = torch.Tensor([0.0004]).to(self.device)
+                    self.gt_rdf_var_local = torch.Tensor([1.0]).to(self.device) #identity for now
                 self.gt_rdf_local = self.gt_rdf
                 
         
@@ -302,19 +301,49 @@ class BoltzmannEstimator():
                 local_stacked_radii = torch.stack([local_neighborhood[0] for local_neighborhood in local_neighborhoods], dim = 1)
                 atomic_indices = torch.stack([local_neighborhood[1] for local_neighborhood in local_neighborhoods], dim=1)
                 
-                #compute rdfs of local environments
-                rdfs = torch.cat([self.simulator.rdf_mae(s.unsqueeze(0).unsqueeze(0))[0] for s in local_stacked_radii.reshape(-1, self.simulator.n_atoms_local, 3)])
-                rdfs = rdfs.reshape(local_stacked_radii.shape[0], local_stacked_radii.shape[1], -1)
-                adfs = torch.zeros(rdfs.shape[0], rdfs.shape[1], 180).to(self.simulator.device) #TODO: temporary
+                #compute observables on local environments
+                # rdfs = torch.cat([self.simulator.rdf_mae(s.unsqueeze(0).unsqueeze(0))[0] for s in local_stacked_radii.reshape(-1, self.simulator.n_atoms_local, 3)])
+                # rdfs = rdfs.reshape(local_stacked_radii.shape[0], local_stacked_radii.shape[1], -1)
+                # adfs = torch.zeros(rdfs.shape[0], rdfs.shape[1], 180).to(self.simulator.device) #TODO: temporary
                 imds = torch.cat([self.simulator.min_imd(s.unsqueeze(0).unsqueeze(0)) for s in local_stacked_radii.reshape(-1, self.simulator.n_atoms_local, 3)])
                 imds = imds.reshape(local_stacked_radii.shape[0], local_stacked_radii.shape[1], -1)
-                #import pdb; pdb.set_trace() #TODO: are we sure this is being calculated correctly?
                 bond_len_devs = torch.cat([self.simulator.bond_length_dev(s.unsqueeze(0).unsqueeze(0)) for s in local_stacked_radii.reshape(-1, self.simulator.n_atoms_local, 3)])
                 bond_len_devs = bond_len_devs.reshape(local_stacked_radii.shape[0], local_stacked_radii.shape[1], -1)
-                
-                if self.simulator.mode == 'learning':
-                    np.save(os.path.join(self.simulator.save_dir, f'local_stacked_radii_epoch{self.simulator.epoch}.npy'), local_stacked_radii.cpu())
-                    np.save(os.path.join(self.simulator.save_dir, f'local_rdfs_epoch{self.simulator.epoch}.npy'), rdfs.cpu())
+
+                #scheme to subsample local neighborhoods
+                bond_len_devs = bond_len_devs.reshape(-1, 1).cpu()
+                hist, bins = np.histogram(bond_len_devs, bins = 100)
+                bin_assignments = np.digitize(bond_len_devs, bins)
+                samples_per_bin = 5 * self.simulator.n_replicas
+
+                full_list = []
+                for bin_index in range(1, 101):
+                    # Filter elements belonging to the current bin
+                    bin_elements = bond_len_devs[bin_assignments == bin_index]
+                    
+                    # Randomly sample 5 elements from the bin, if available
+                    if len(bin_elements) >= samples_per_bin:
+                        sampled_elements = torch.Tensor(np.random.choice(bin_elements, size=samples_per_bin, replace=False))
+                    else:
+                        # If less than 5 elements, take all available
+                        sampled_elements = torch.Tensor(bin_elements)
+
+                    full_list = full_list + [sampled_elements]
+                full_list = torch.cat(full_list).to(self.simulator.device)
+                bond_len_devs = bond_len_devs.reshape(local_stacked_radii.shape[0], local_stacked_radii.shape[1], -1).to(self.simulator.device)
+                #subsample the relevant frames
+                indices = [torch.cat(torch.where(bond_len_devs == value)[0:2]).to(torch.long).to(self.simulator.device) for value in full_list]
+                local_stacked_radii = torch.stack([local_stacked_radii[idx[0], idx[1]] for idx in indices])
+                stacked_radii = torch.stack([stacked_radii[idx[0]] for idx in indices])
+                atomic_indices = torch.stack([atomic_indices[idx[0], idx[1]] for idx in indices])
+                bond_len_devs = full_list.unsqueeze(-1)
+
+
+
+                np.save(os.path.join(self.simulator.save_dir, f'local_stacked_radii_epoch{self.simulator.epoch}.npy'), local_stacked_radii.cpu())
+                np.save(os.path.join(self.simulator.save_dir, f'local_rdfs_epoch{self.simulator.epoch}.npy'), rdfs.cpu())
+                np.save(os.path.join(self.simulator.save_dir, f'local_imds_epoch{self.simulator.epoch}.npy'), imds.cpu())
+                np.save(os.path.join(self.simulator.save_dir, f'local_bond_len_devs_epoch{self.simulator.epoch}.npy'), bond_len_devs.cpu())
             
             else:
                 rdfs = rdfs[:, mask].reshape(-1, rdfs.shape[-1])
@@ -332,8 +361,10 @@ class BoltzmannEstimator():
                 stacked_radii = stacked_radii[shuffle_idx]
                 if self.simulator.name == 'water':
                     atomic_indices = atomic_indices[shuffle_idx]
-                rdfs = rdfs[shuffle_idx]
-                adfs = adfs[shuffle_idx]
+                    bond_len_devs = bond_len_devs[shuffle_idx]
+                else:
+                    rdfs = rdfs[shuffle_idx]
+                    adfs = adfs[shuffle_idx]
             
             bsize=MINIBATCH_SIZE
             num_blocks = math.ceil(stacked_radii.shape[0]/ bsize)
@@ -343,11 +374,12 @@ class BoltzmannEstimator():
             raw_grads = []
             pe_grads_flattened = []
             if self.simulator.name == 'water':
-                print(f"Computing RDF/ADF gradients from {stacked_radii.shape[0] * stacked_radii.shape[1]} local environments of {stacked_radii.shape[2]} atoms in minibatches of size {MINIBATCH_SIZE}")
+                print(f"Computing RDF/ADF gradients from {stacked_radii.shape[0]} local environments of {local_stacked_radii.shape[-2]} atoms in minibatches of size {MINIBATCH_SIZE}")
             else:
                 print(f"Computing RDF/ADF gradients from {stacked_radii.shape[0]} structures in minibatches of size {MINIBATCH_SIZE}")
             num_params = len(list(model.parameters()))
             #first compute gradients of potential energy (in batches of size n_replicas)
+            
             for i in tqdm(range(num_blocks)):
                 start = bsize*i
                 end = bsize*(i+1)
@@ -364,7 +396,7 @@ class BoltzmannEstimator():
                         #individual atomic energies
                         energy = energy_force_output[1].reshape(radii_in.shape[0], -1, 1)
                         #sum atomic energies within local neighborhoods
-                        energy = torch.stack([energy[i, atomic_index].sum(1) for i, atomic_index in enumerate(atomic_indices_in)])
+                        energy = torch.stack([energy[i, atomic_index].sum() for i, atomic_index in enumerate(atomic_indices_in)])
                         energy = energy.reshape(-1, 1)
 
                 #need to do another loop here over batches of local neighborhoods
@@ -391,9 +423,11 @@ class BoltzmannEstimator():
                 
                     pe_grads_flattened.append(grads_flattened)
 
+            
             pe_grads_flattened = torch.cat(pe_grads_flattened)
             #Now compute final gradient estimators in batches of size MINIBATCH_SIZE
             num_blocks = math.ceil(stacked_radii.shape[0]/ (MINIBATCH_SIZE))
+            
             for i in tqdm(range(num_blocks)):
                 start = MINIBATCH_SIZE*i
                 end = MINIBATCH_SIZE*(i+1)
@@ -404,22 +438,21 @@ class BoltzmannEstimator():
                 elif self.simulator.training_observable == 'bond_length_dev':
                     obs = bond_len_devs
                     
-                obs = obs.reshape(pe_grads_flattened.shape[0], -1)
-                adfs = adfs.reshape(pe_grads_flattened.shape[0], -1)
+                obs = obs.reshape(pe_grads_flattened.shape[0], -1)                    
                 obs_batch = [obs[start:end]]
                 pe_grads_batch = pe_grads_flattened[start:end]
-                adf_batch = adfs[start:end]
                 #TODO: fix the case where we don't use the MSE gradient
                 grad_outputs_obs = [2/gt_rdf_var_local*(ob.mean(0) - gt_ob).unsqueeze(0) \
                                     if self.simulator.use_mse_gradient else None \
                                     for ob, gt_ob, gt_rdf_var_local in zip(obs_batch, \
                                     self.gt_rdf_local.chunk(len(obs_batch)), self.gt_rdf_var_local.chunk(len(obs_batch)))]
-                grad_outputs_adf = 2*(adf_batch.mean(0) - self.gt_adf).unsqueeze(0) \
-                                    if self.simulator.use_mse_gradient else None
-                
                 final_vjp = [self.estimator(obs, pe_grads_batch, grad_output_obs) for obs, grad_output_obs in zip(obs_batch, grad_outputs_obs)]
                 final_vjp = torch.stack(final_vjp).mean(0)
-                if self.params.adf_loss_weight !=0:
+                if self.params.adf_loss_weight !=0 and self.simulator.name != 'water':
+                    adfs = adfs.reshape(pe_grads_flattened.shape[0], -1)
+                    adf_batch = adfs[start:end]
+                    grad_outputs_adf = 2*(adf_batch.mean(0) - self.gt_adf).unsqueeze(0) \
+                                    if self.simulator.use_mse_gradient else None
                     gradient_estimator_adf = self.estimate(adf_batch, grads_flattened, grad_outputs_adf)
                     final_vjp+=self.params.adf_loss_weight*gradient_estimator_adf             
 
