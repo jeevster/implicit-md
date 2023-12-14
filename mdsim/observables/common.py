@@ -56,7 +56,7 @@ class BondLengthDeviation(torch.nn.Module):
                 bonds = self.bonds
             bond_lens = distance_pbc(stacked_radii[:, :, bonds[:, 0]], stacked_radii[:,:, bonds[:, 1]], torch.diag(self.cell)).to(self.device)
         max_bond_dev_per_replica = (bond_lens - self.mean_bond_lens[:bonds.shape[0]]).abs().max(dim=-1)[0].max(dim=0)[0].detach()
-        return max_bond_dev_per_replica
+        return max_bond_dev_per_replica, bond_lens
 
 
 def radii_to_dists(radii, params):

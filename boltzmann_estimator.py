@@ -23,10 +23,9 @@ from mdsim.observables.common import radii_to_dists, distance_pbc, ObservableMAE
 from mdsim.observables.water import WaterRDFMAE, find_water_rdfs_diffusivity_from_file, n_closest_molecules
 from adjoints import get_adjoints, get_model_grads
 
-#TODO: have separate functions for 
 
 class BoltzmannEstimator():
-    def __init__(self, gt_rdf_package, gt_rdf_local_package, gt_vacf, gt_adf, params, device):
+    def __init__(self, gt_rdf_package, gt_rdf_local_package, mean_bond_lens, gt_vacf, gt_adf, params, device):
         super(BoltzmannEstimator, self).__init__()
         self.params = params
         self.device = device
@@ -47,7 +46,7 @@ class BoltzmannEstimator():
                     self.gt_rdf = torch.Tensor([1.44]).to(self.device) #ground truth min IMD
                     self.gt_rdf_var_local = torch.Tensor([1.0]).to(self.device) #identity
                 elif params.training_observable == 'bond_length_dev':
-                    self.gt_rdf = torch.Tensor([0]).to(self.device) #ground truth bond length dev
+                    self.gt_rdf = mean_bond_lens[:2].to(self.device) #ground truth bond length dev
                     self.gt_rdf_var_local = torch.Tensor([1.0]).to(self.device) #identity for now
                 self.gt_rdf_local = self.gt_rdf
                 
@@ -265,7 +264,7 @@ class BoltzmannEstimator():
             elif self.simulator.training_observable == 'rdf':
                 rdfs = torch.cat([self.simulator.rdf_mae(s.unsqueeze(0))[0] for s in stacked_radii])
             elif self.simulator.training_observable == 'bond_length_dev':
-                rdfs = torch.cat([self.simulator.bond_length_dev(s.unsqueeze(0)) for s in stacked_radii])
+                rdfs = torch.cat([self.simulator.bond_length_dev(s.unsqueeze(0))[1] for s in stacked_radii])
                 
             rdfs = rdfs.reshape(-1, simulator.n_replicas, self.gt_rdf_local.shape[-1])
             adfs = torch.stack([diff_adf(rad) for rad in stacked_radii.reshape(-1, self.simulator.n_atoms, 3)]).reshape(-1, self.simulator.n_replicas, self.gt_adf.shape[-1])
@@ -282,18 +281,18 @@ class BoltzmannEstimator():
         mean_rdf_loss = self.rdf_loss(mean_rdf)
         mean_adf_loss = self.adf_loss(mean_adf)
         
-        if self.params.rdf_loss_weight ==0 or not self.simulator.train or simulator.optimizer.param_groups[0]['lr'] == 0:
+        if self.params.rdf_loss_weight==0 or not self.simulator.train or simulator.optimizer.param_groups[0]['lr'] == 0:
             rdf_gradient_estimators = None
             rdf_package = (rdf_gradient_estimators, mean_rdf, self.rdf_loss(mean_rdf).to(self.device), mean_adf, self.adf_loss(mean_adf).to(self.device))              
         else:
             stacked_radii = stacked_radii[:, mask]
-           
+            stacked_radii = stacked_radii.reshape(-1, self.simulator.n_atoms, 3)
             if self.simulator.name == 'water':
                 #extract all local neighborhoods of n_molecules molecules (centered around each atom)
         
                 #pick centers of each local neighborhood (always an Oxygen atom)
                 center_atoms = 3* np.random.choice(np.arange(int(self.simulator.n_atoms / 3)), self.simulator.n_local_neighborhoods, replace=False)
-                local_neighborhoods = [n_closest_molecules(stacked_radii.reshape(-1, self.simulator.n_atoms, 3), \
+                local_neighborhoods = [n_closest_molecules(stacked_radii, \
                                                                         center_atom, self.simulator.n_closest_molecules, \
                                                                         self.simulator.cell) \
                                                                         for center_atom in center_atoms]
@@ -307,36 +306,40 @@ class BoltzmannEstimator():
                 # adfs = torch.zeros(rdfs.shape[0], rdfs.shape[1], 180).to(self.simulator.device) #TODO: temporary
                 imds = torch.cat([self.simulator.min_imd(s.unsqueeze(0).unsqueeze(0)) for s in local_stacked_radii.reshape(-1, self.simulator.n_atoms_local, 3)])
                 imds = imds.reshape(local_stacked_radii.shape[0], local_stacked_radii.shape[1], -1)
-                bond_len_devs = torch.cat([self.simulator.bond_length_dev(s.unsqueeze(0).unsqueeze(0)) for s in local_stacked_radii.reshape(-1, self.simulator.n_atoms_local, 3)])
+                bond_lens = torch.cat([self.simulator.bond_length_dev(s.unsqueeze(0).unsqueeze(0))[1] for s in local_stacked_radii.reshape(-1, self.simulator.n_atoms_local, 3)])
+                bond_len_devs = torch.cat([self.simulator.bond_length_dev(s.unsqueeze(0).unsqueeze(0))[0] for s in local_stacked_radii.reshape(-1, self.simulator.n_atoms_local, 3)])
+                bond_lens = bond_lens.reshape(local_stacked_radii.shape[0], local_stacked_radii.shape[1], -1)
                 bond_len_devs = bond_len_devs.reshape(local_stacked_radii.shape[0], local_stacked_radii.shape[1], -1)
 
                 #scheme to subsample local neighborhoods
-                bond_len_devs = bond_len_devs.reshape(-1, 1).cpu()
-                hist, bins = np.histogram(bond_len_devs, bins = 100)
-                bin_assignments = np.digitize(bond_len_devs, bins)
-                samples_per_bin = 5 * self.simulator.n_replicas
+                bond_len_devs_temp = bond_len_devs.reshape(-1, 1).cpu()
+                bond_lens_temp = bond_lens.reshape(-1, bond_lens.shape[-1]).cpu()
+                hist, bins = np.histogram(bond_len_devs_temp, bins = 100)
+                bin_assignments = np.digitize(bond_len_devs_temp, bins)
+                samples_per_bin = 3 * self.simulator.n_replicas
 
                 full_list = []
                 for bin_index in range(1, 101):
                     # Filter elements belonging to the current bin
-                    bin_elements = bond_len_devs[bin_assignments == bin_index]
+                    bin_elements = bond_lens_temp[(bin_assignments == bin_index).squeeze(-1)]
                     
-                    # Randomly sample 5 elements from the bin, if available
+                    # Randomly sample elements from the bin, if available
                     if len(bin_elements) >= samples_per_bin:
-                        sampled_elements = torch.Tensor(np.random.choice(bin_elements, size=samples_per_bin, replace=False))
+                        shuffle_idx = torch.randperm(bin_elements.shape[0])
+                        sampled_elements = bin_elements[shuffle_idx][:samples_per_bin]
                     else:
                         # If less than 5 elements, take all available
                         sampled_elements = torch.Tensor(bin_elements)
 
                     full_list = full_list + [sampled_elements]
                 full_list = torch.cat(full_list).to(self.simulator.device)
-                bond_len_devs = bond_len_devs.reshape(local_stacked_radii.shape[0], local_stacked_radii.shape[1], -1).to(self.simulator.device)
                 #subsample the relevant frames
-                indices = [torch.cat(torch.where(bond_len_devs == value)[0:2]).to(torch.long).to(self.simulator.device) for value in full_list]
+                
+                indices = [torch.cat([x[0].unsqueeze(0).to(self.simulator.device) for x in torch.where(bond_lens == value)[0:2]]) for value in full_list]
                 local_stacked_radii = torch.stack([local_stacked_radii[idx[0], idx[1]] for idx in indices])
                 stacked_radii = torch.stack([stacked_radii[idx[0]] for idx in indices])
                 atomic_indices = torch.stack([atomic_indices[idx[0], idx[1]] for idx in indices])
-                bond_len_devs = full_list.unsqueeze(-1)
+                bond_lens = full_list
 
 
 
@@ -348,7 +351,7 @@ class BoltzmannEstimator():
             else:
                 rdfs = rdfs[:, mask].reshape(-1, rdfs.shape[-1])
                 adfs = adfs[:, mask].reshape(-1, adfs.shape[-1])
-            stacked_radii = stacked_radii.reshape(-1, self.simulator.n_atoms, 3)
+            
             
             rdfs.requires_grad = True
             adfs.requires_grad = True
@@ -361,7 +364,7 @@ class BoltzmannEstimator():
                 stacked_radii = stacked_radii[shuffle_idx]
                 if self.simulator.name == 'water':
                     atomic_indices = atomic_indices[shuffle_idx]
-                    bond_len_devs = bond_len_devs[shuffle_idx]
+                    bond_lens = bond_lens[shuffle_idx]
                 else:
                     rdfs = rdfs[shuffle_idx]
                     adfs = adfs[shuffle_idx]
@@ -436,7 +439,7 @@ class BoltzmannEstimator():
                 elif self.simulator.training_observable == 'imd':
                     obs = imds
                 elif self.simulator.training_observable == 'bond_length_dev':
-                    obs = bond_len_devs
+                    obs = bond_lens
                     
                 obs = obs.reshape(pe_grads_flattened.shape[0], -1)                    
                 obs_batch = [obs[start:end]]

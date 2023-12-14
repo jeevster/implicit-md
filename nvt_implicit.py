@@ -194,7 +194,6 @@ class ImplicitMDSimulator():
         #Nose-Hoover Thermostat stuff
         self.integrator_config =  config['integrator_config']
         self.dt = self.integrator_config["timestep"] * units.fs
-        import pdb; pdb.set_trace()
         self.temp = config["temperature"]
         
         # adjust units.
@@ -630,7 +629,7 @@ class ImplicitMDSimulator():
                 self.instability_per_replica = self.instability_per_replica[-1]
             self.mean_instability = self.instability_per_replica.mean()
             if self.pbc:
-                self.mean_bond_length_dev = self.bond_length_dev(self.stacked_radii).mean()
+                self.mean_bond_length_dev = self.bond_length_dev(self.stacked_radii)[0].mean()
                 self.mean_rdf_mae = self.rdf_mae(self.stacked_radii)[-1].mean()
             self.stacked_vels = torch.cat(self.running_vels)
         
@@ -717,7 +716,7 @@ class ImplicitMDSimulator():
                         "Potential Energy": pe.mean().item(),
                         "Total Energy": (ke+pe).mean().item(),
                         "Momentum Magnitude": torch.norm(torch.sum(self.masses*self.velocities, axis =-2)).item(),
-                        'Max Bond Length Deviation': self.bond_length_dev(self.radii.unsqueeze(0)).mean().item() \
+                        'Max Bond Length Deviation': self.bond_length_dev(self.radii.unsqueeze(0))[0].mean().item() \
                                                       if self.pbc else instability.mean().item()}
         if self.pbc:
             results_dict['Minimum Intermolecular Distance'] = instability.mean().item()
@@ -917,7 +916,7 @@ if __name__ == "__main__":
             #initialize simulator parameterized by a NN model
             simulator = ImplicitMDSimulator(config, params, model, model_path, model_config, gt_rdf)
             #initialize Boltzmann_estimator
-            boltzmann_estimator = BoltzmannEstimator(gt_rdf_package, gt_rdf_local_package, gt_vacf, gt_adf, params, device)
+            boltzmann_estimator = BoltzmannEstimator(gt_rdf_package, gt_rdf_local_package, simulator.mean_bond_lens, gt_vacf, gt_adf, params, device)
             #initialize outer loop optimizer/scheduler
             if params.optimizer == 'Adam':
                 simulator.optimizer = torch.optim.Adam(list(simulator.model.parameters()), \

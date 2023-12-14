@@ -1,6 +1,7 @@
 includes:
 - configs/water/train.yml
 train: False
+dr: 0.012 #coarser histogram because of local environments
 stability_criterion: rdf
 imd_tol: 3.0
 max_frac_unstable_threshold: 0.95

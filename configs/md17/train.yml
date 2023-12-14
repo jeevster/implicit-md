@@ -15,7 +15,7 @@ max_rdf_dist: 10
 rdf_peak: 1.0
 dv: 0.1
 angle_range: [0, 180]
-exp_name: "TEST_reproducibility_after_localneighborhood"
+exp_name: "TEST_reproducibility_after_intelligentsubsampling"
 integrator: NoseHoover
 integrator_config: {"timestep": 0.5, "ttime": 20., "gamma": 0.1}
 temperature: 500. 
