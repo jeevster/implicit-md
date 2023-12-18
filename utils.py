@@ -95,6 +95,7 @@ def calculate_final_metrics(simulator, params, device, results_dir, energy_maes,
         #save rdf, adf, and diffusivity at the end of the traj
         for key, final_rdfs in final_rdfs_by_key.items():
             np.save(os.path.join(results_dir, f"final_{key}_rdfs.npy"), final_rdfs.squeeze(1).cpu())
+            np.save(os.path.join(results_dir, f"final_{key}_rdf_maes.npy"), final_rdf_maes[key].cpu())
         np.save(os.path.join(results_dir, "final_adfs.npy"), final_adfs.cpu().detach().numpy())
         np.save(os.path.join(results_dir, "final_diffusivities.npy"), last_diffusivities.cpu().detach().numpy())
 

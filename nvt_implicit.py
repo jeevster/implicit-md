@@ -195,6 +195,7 @@ class ImplicitMDSimulator():
         self.integrator_config =  config['integrator_config']
         self.dt = self.integrator_config["timestep"] * units.fs
         self.temp = config["temperature"]
+        print(f"Simulation Temperature: {self.temp}")
         
         # adjust units.
         if self.integrator in ['NoseHoover', 'NoseHooverChain', 'Langevin']:
@@ -266,7 +267,6 @@ class ImplicitMDSimulator():
                                         
         radii = torch.stack([torch.Tensor(atoms.get_positions()) for atoms in self.raw_atoms])
         self.radii = (radii + torch.normal(torch.zeros_like(radii), self.ic_stddev)).to(self.device)
-        n_closest = n_closest_molecules(self.radii, 0, 5, self.cell)
         self.velocities = torch.Tensor(initialize_velocities(self.n_atoms, self.masses, self.temp, self.n_replicas)).to(self.device)
         #assign velocities to atoms
         for i in range(len(self.raw_atoms)):
@@ -762,6 +762,7 @@ if __name__ == "__main__":
     load_cycle = None
     load_epoch = None
     
+    print("Pretrained model:", config["eval_model"])
     if params.train or 'pre' in config["eval_model"]: #load energies/forces trained model
         pretrained_model_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{size}_{lmax_string}{model_type}") 
     

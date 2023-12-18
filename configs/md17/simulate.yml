@@ -2,6 +2,7 @@ includes:
 - configs/md17/train.yml
 train: False
 bond_dev_tol: 0.5
+max_frac_unstable_threshold: 0.99 #decay this?
 temperature: 500.
 steps: 2000 # 1 picosecond per epoch
 n_replicas: 256 #can do more at inference?
