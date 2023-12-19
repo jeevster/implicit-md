@@ -6,11 +6,13 @@ import math
 import yaml
 import os
 import gc
+from tqdm import tqdm
 import matplotlib.pyplot as plt
 from torchmd.observable import DifferentiableRDF, DifferentiableADF
 from mdsim.common.utils import data_to_atoms
 from mdsim.datasets.lmdb_dataset import LmdbDataset
 from ase.neighborlist import natural_cutoffs, NeighborList
+from ase import units
 
 #MD17/MD22 utils
 def get_hr(traj, bins):
@@ -22,6 +24,17 @@ def get_hr(traj, bins):
     hist, _ = np.histogram(pdist[:].flatten().numpy(), bins, density=True)
     hist[0] = 0 #sometimes there's a weird nonzero element at the beginning
     return hist
+
+def get_hr_reweighted(traj, energies, bins, original_temp, new_temp):
+    energies -= energies.mean()
+    weights = np.exp(-energies / units.kB * (1/new_temp - 1/original_temp))
+    weights /= weights.sum()
+    N_eff = (-weights * np.log(weights)).sum().exp() #effective sample size
+    #compute hrs weighted by weights
+    hrs = np.stack([get_hr(t.unsqueeze(0), bins) for t in traj])
+    hr_reweighted = (weights * hrs).sum(0)
+    return hr_reweighted, N_eff
+    
     
 def find_hr_adf_from_file(base_path: str, name: str, molecule: str, size: str, params, device):
     #RDF plotting parameters
@@ -32,8 +45,13 @@ def find_hr_adf_from_file(base_path: str, name: str, molecule: str, size: str, p
     DATAPATH = os.path.join(base_path, name, molecule, size, 'train/nequip_npz.npz')
     gt_data = np.load(DATAPATH)
     gt_traj = torch.FloatTensor(gt_data.f.R)
+    gt_energies = torch.FloatTensor(gt_data.f.E)
     hist_gt = get_hr(gt_traj, bins)
     hist_gt = 100*hist_gt/ hist_gt.sum()
+    for T in tqdm([250, 350, 500, 750]):
+        hist_gt_reweighted, N_eff = get_hr_reweighted(gt_traj, gt_energies, bins, 500, T)
+        hist_gt_reweighted = 100*hist_gt_reweighted/ hist_gt_reweighted.sum()
+        np.save(f'aspirin_rdf_{T}.npy', hist_gt_reweighted.cpu())
 
     #ADF
     temp_data = LmdbDataset({'src': os.path.join(base_path, name, molecule, size, 'train')})

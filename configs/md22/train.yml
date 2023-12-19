@@ -1,5 +1,5 @@
 #TODO: specify different integrator configs for different molecules based on MD22 paper
-src: /pscratch/sd/s/sanjeevr #/data/sanjeevr
+src: /data/sanjeevr #/pscratch/sd/s/sanjeevr
 name: md22
 size: 5percent
 molecule: ac_Ala3_NHMe
@@ -7,15 +7,15 @@ normalize_labels: False
 checkpoint_epoch: -1 #which model to start from
 model: nequip
 l_max: 2
-log_dir: /global/cfs/projectdirs/m4319/sanjeevr #/home/sanjeevr/implicit-md
+log_dir: /home/sanjeevr/implicit-md #/global/cfs/projectdirs/m4319/sanjeevr
 results_dir: 'results_md22_correctedlogging_l=2'
-model_dir: /pscratch/sd/s/sanjeevr/MODELPATH #/home/sanjeevr/MDsim/MODELPATH
+model_dir: /data/sanjeevr/MODELPATH #/pscratch/sd/s/sanjeevr/MODELPATH
 seed: 123
 dr: 0.02
 max_rdf_dist: 15
 dv: 0.1
 angle_range: [0, 180]
-exp_name: "TEST_correctedlogging" #"TEST_lmax1_10percent_resumestrategy0.25_learn_continuous"
+exp_name: "TEST" #"TEST_lmax1_10percent_resumestrategy0.25_learn_continuous"
 integrator: NoseHoover
 integrator_config: {"timestep": 0.5, "ttime": 20., "gamma": 0.1}
 temperature: 500.

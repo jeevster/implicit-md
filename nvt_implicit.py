@@ -309,7 +309,7 @@ class ImplicitMDSimulator():
             self.integrator = 'Langevin'
         
         #limit CPU usage
-        torch.set_num_threads(10)
+        torch.set_num_threads(1)
 
         #define vectorized differentiable rdf and vacf
         self.diff_rdf = vmap(DifferentiableRDF(params, self.device), -1)
