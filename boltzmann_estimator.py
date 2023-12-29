@@ -316,7 +316,7 @@ class BoltzmannEstimator():
                 bond_lens_temp = bond_lens.reshape(-1, bond_lens.shape[-1]).cpu()
                 hist, bins = np.histogram(bond_len_devs_temp, bins = 100)
                 bin_assignments = np.digitize(bond_len_devs_temp, bins)
-                samples_per_bin = 3 * self.simulator.n_replicas
+                samples_per_bin = 5 * self.simulator.n_replicas
 
                 full_list = []
                 for bin_index in range(1, 101):
