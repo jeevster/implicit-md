@@ -73,6 +73,11 @@ def calculate_final_metrics(simulator, params, device, results_dir, energy_maes,
         all_diffusivities = [get_smoothed_diffusivity(traj[::int(1000/params.n_dump), oxygen_atoms_mask]) for traj in stable_trajs]
         last_diffusivities = torch.cat([diff[-1].unsqueeze(-1) if len(diff) > 0 else torch.Tensor([0.]) for diff in all_diffusivities])
         diffusivity_maes = 10*(gt_diffusivity[-1].to(device) - last_diffusivities.to(device)).abs()
+        
+        #save full diffusivity trajectory
+        all_diffusivities = [diff.cpu() for diff in all_diffusivities]
+        np.save(os.path.join(results_dir, "all_diffusivities.npy"), np.array(all_diffusivities, dtype=object), allow_pickle=True)
+
         #TODO: compute O-O-conditioned ADF instead of full ADF
         final_adfs = torch.stack([DifferentiableADF(simulator.n_atoms, simulator.bonds, simulator.cell, params, device)(traj[::2].to(device)) for traj in stable_trajs])
         final_adf_maes = torch.abs(gt_adf-final_adfs).mean(-1)

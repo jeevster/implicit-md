@@ -80,7 +80,7 @@ class BoltzmannEstimator():
                 df_dtheta.unsqueeze(1) * g.unsqueeze(-1)).mean(dim=0)
         #compute VJP with grad output
         if grad_outputs is not None:
-            estimator = torch.mm(grad_outputs, estimator)[0] 
+            estimator = torch.mm(grad_outputs.to(torch.float32), estimator.to(torch.float32))[0] 
         return estimator.detach()
 
     def compute(self, simulator):
