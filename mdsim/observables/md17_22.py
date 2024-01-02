@@ -48,8 +48,7 @@ def find_hr_adf_from_file(base_path: str, name: str, molecule: str, size: str, p
     gt_energies = torch.FloatTensor(gt_data.f.E)
     hist_gt, N_eff = get_hr_reweighted(gt_traj, gt_energies, bins, 500, params.temperature)
     print(f"Effective sample size for RDF computation reduced from {gt_energies.shape[0]} to {int(N_eff)} due to reweighting")
-    hist_gt = 100*hist_gt/ hist_gt.sum()
-    
+    hist_gt = 100*hist_gt/ hist_gt.sum()    
     #ADF
     temp_data = LmdbDataset({'src': os.path.join(base_path, name, molecule, size, 'train')})
     init_data = temp_data.__getitem__(0)
