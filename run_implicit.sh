@@ -7,7 +7,7 @@
 #SBATCH --mail-user=sanjeevr@umich.edu
 #SBATCH --mail-type=ALL
 #SBATCH -o /global/cfs/projectdirs/m4319/sanjeevr/logs/implicit-md-%j.out
-#SBATCH -t 06:00:00
+#SBATCH -t 24:00:00
 #SBATCH -A m4319_g
 
 # Define the path to your Python script

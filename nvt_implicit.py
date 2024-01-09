@@ -833,7 +833,7 @@ if __name__ == "__main__":
     #load ground truth rdf and VACF
     print("Computing ground truth observables from datasets")
     if name == 'water':
-        gt_rdf_package, gt_rdf_local_package, gt_diffusivity, gt_adf, oxygen_atoms_mask = find_water_rdfs_diffusivity_from_file(data_path, MAX_SIZES[name], params, device)
+        gt_rdf_package, gt_rdf_local_package, gt_diffusivity, gt_msd, gt_adf, oxygen_atoms_mask = find_water_rdfs_diffusivity_from_file(data_path, MAX_SIZES[name], params, device)
         gt_rdf, gt_rdf_var = gt_rdf_package
         gt_rdf_local, gt_rdf_var_local = gt_rdf_local_package
     elif name == 'lips':
@@ -872,6 +872,7 @@ if __name__ == "__main__":
     np.save(os.path.join(results_dir, 'gt_vacf.npy'), gt_vacf.cpu())
     if params.name == 'lips' or params.name == 'water':
         np.save(os.path.join(results_dir, 'gt_diffusivity.npy'), gt_diffusivity.cpu())
+        np.save(os.path.join(results_dir, 'gt_msd.npy'), gt_msd.cpu())
     
     min_lr = params.lr / (5 ** params.max_times_reduce_lr) #LR reduction factor is 0.2 each time
     #outer training loop

@@ -189,7 +189,9 @@ def find_water_rdfs_diffusivity_from_file(base_path: str, size: str, params, dev
     gt_traj = torch.tensor(gt_data.f.unwrapped_coords)
     gt_data_continuous = np.load(os.path.join(base_path, 'contiguous-water', '90k', 'train/nequip_npz.npz'))
     gt_traj_continuous = torch.tensor(gt_data_continuous.f.unwrapped_coords)
-    gt_diffusivity = get_smoothed_diffusivity(gt_traj_continuous[0::100, atom_types==8])[:100].to(device) # track diffusivity of oxygen atoms, unit is A^2/ps
+    gt_diffusivity, gt_msd = get_smoothed_diffusivity(gt_traj_continuous[0::100, atom_types==8]) # track diffusivity of oxygen atoms, unit is A^2/ps
+    gt_diffusivity = gt_diffusivity[:100].to(device)
+    gt_msd = gt_msd[:100].to(device)
     #recording frequency of underlying data is 10 fs. 
     #Want to match frequency of our data collection which is params.n_dump*params.integrator_config["dt"]
     keep_freq = math.ceil(params.n_dump*params.integrator_config["timestep"] / 10)
@@ -209,4 +211,4 @@ def find_water_rdfs_diffusivity_from_file(base_path: str, size: str, params, dev
     gt_adf = DifferentiableADF(gt_traj.shape[-2], bonds, torch.diag(lattices).to(device), params, device)(gt_traj[0:200][::keep_freq].to(torch.float).to(device))
     #TODO: O-O conditioned RDF using oxygen_atoms_mask
     #gt_adf = DifferentiableADF(gt_traj.shape[-2], bonds, torch.diag(lattices).to(device), params, device)(gt_traj[0:2000, oxygen_atoms_mask][::keep_freq].to(torch.float).to(device))
-    return gt_rdfs, gt_rdfs_local, gt_diffusivity, gt_adf, oxygen_atoms_mask
+    return gt_rdfs, gt_rdfs_local, gt_diffusivity, gt_msd, gt_adf, oxygen_atoms_mask

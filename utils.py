@@ -70,13 +70,15 @@ def calculate_final_metrics(simulator, params, device, results_dir, energy_maes,
         final_rdfs_by_key = {k: torch.stack([final_rdf[k] for final_rdf in final_rdfs]) for k in gt_rdf.keys()}
         final_rdf_maes = {k: xlim* torch.abs(gt_rdf[k] - final_rdfs_by_key[k]).mean(-1).squeeze(-1) for k in gt_rdf.keys()}
         #Recording frequency is 1 ps for diffusion coefficient
-        all_diffusivities = [get_smoothed_diffusivity(traj[::int(1000/params.n_dump), oxygen_atoms_mask]) for traj in stable_trajs]
+        all_diffusivities = [get_smoothed_diffusivity(traj[::int(1000/params.n_dump), oxygen_atoms_mask])[0] for traj in stable_trajs]
+        all_msds = [get_smoothed_diffusivity(traj[::int(1000/params.n_dump), oxygen_atoms_mask])[1] for traj in stable_trajs]
         last_diffusivities = torch.cat([diff[-1].unsqueeze(-1) if len(diff) > 0 else torch.Tensor([0.]) for diff in all_diffusivities])
         diffusivity_maes = 10*(gt_diffusivity[-1].to(device) - last_diffusivities.to(device)).abs()
         
         #save full diffusivity trajectory
         all_diffusivities = [diff.cpu() for diff in all_diffusivities]
         np.save(os.path.join(results_dir, "all_diffusivities.npy"), np.array(all_diffusivities, dtype=object), allow_pickle=True)
+        np.save(os.path.join(results_dir, "all_msds.npy"), np.array(all_msds, dtype=object), allow_pickle=True)
 
         #TODO: compute O-O-conditioned ADF instead of full ADF
         final_adfs = torch.stack([DifferentiableADF(simulator.n_atoms, simulator.bonds, simulator.cell, params, device)(traj[::2].to(device)) for traj in stable_trajs])
