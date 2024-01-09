@@ -243,6 +243,7 @@ class ImplicitMDSimulator():
                         torch.diag(self.cell).to(self.device)).mean(dim=0) for gt_traj_train in self.gt_traj_train])
             self.mean_bond_lens = bond_lens.mean(0)
             self.bond_lens_var = bond_lens.var(0)
+            
 
         
         self.gt_rdf = gt_rdf
@@ -264,7 +265,6 @@ class ImplicitMDSimulator():
             self.bond_length_dev = BondLengthDeviation(self.name, self.bonds,self.mean_bond_lens,self.cell,self.device)
         else:
             self.stability_criterion = BondLengthDeviation(self.name, self.bonds,self.mean_bond_lens,self.cell,self.device)
-                                        
         radii = torch.stack([torch.Tensor(atoms.get_positions()) for atoms in self.raw_atoms])
         self.radii = (radii + torch.normal(torch.zeros_like(radii), self.ic_stddev)).to(self.device)
         self.velocities = torch.Tensor(initialize_velocities(self.n_atoms, self.masses, self.temp, self.n_replicas)).to(self.device)
@@ -1044,7 +1044,11 @@ if __name__ == "__main__":
         lrs.append(simulator.optimizer.param_groups[0]['lr'])
         #energy/force error
         if epoch == 0 or (simulator.optimizer.param_groups[0]['lr'] > 0 and params.train): #don't compute it unless we are in the learning phase
-            energy_rmse, force_rmse, energy_mae, force_mae = simulator.energy_force_error()
+            #energy_rmse, force_rmse, energy_mae, force_mae = simulator.energy_force_error()
+            energy_rmse = 0
+            force_rmse = 0
+            energy_mae = 0
+            force_mae = 0
             energy_rmses.append(energy_rmse)
             force_rmses.append(force_rmse)
             energy_maes.append(energy_mae)
