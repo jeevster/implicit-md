@@ -48,8 +48,8 @@ ef_weights=(0) # 1 10) # 1) # 3 10 30 100)
 for lr in "${lrs[@]}"; do
     for ef_weight in "${ef_weights[@]}"; do
         # jid1=$(sbatch --parsable run_implicit.sh $system $model $lr 1 0 $ef_weight True 1k)
-        # sbatch run_implicit_simulate.sh $system $model $lr 1 0 $ef_weight 'pre_copy2'
-        sbatch run_implicit_simulate.sh $system $model $lr 1 0 $ef_weight 'post_cycle1_copy2'
+        sbatch run_implicit_simulate.sh $system $model $lr 1 0 $ef_weight 'pre_copy2'
+        # sbatch run_implicit_simulate.sh $system $model $lr 1 0 $ef_weight 'post_cycle1_copy2'
     done
 done
    
