@@ -194,7 +194,7 @@ def find_water_rdfs_diffusivity_from_file(base_path: str, size: str, params, dev
     gt_msd = gt_msd[:100].to(device)
     #recording frequency of underlying data is 10 fs. 
     #Want to match frequency of our data collection which is params.n_dump*params.integrator_config["dt"]
-    keep_freq = math.ceil(params.n_dump*params.integrator_config["timestep"] / 10)
+    keep_freq = math.ceil(params.n_dump*params.timestep / 10)
     gt_rdfs = get_water_rdfs(gt_traj[::keep_freq], atom_types, lattices, bins, device)
     #local rdfs
     gt_local_neighborhoods = torch.cat([n_closest_molecules(gt_traj[::keep_freq], i, n_closest, torch.diag(lattices))[0] for i in range(64)])

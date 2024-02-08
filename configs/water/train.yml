@@ -17,7 +17,8 @@ diameter_viz: 0.08
 gaussian_width: 0.01
 exp_name: "TEST_bond_length_dev_singlemolecule_COPY"
 integrator: NoseHoover
-integrator_config: {"timestep": 1., "ttime": 20., "gamma": 0.1}
+integrator_config: {"ttime": 20., "gamma": 0.1}
+timestep: 1
 temperature: 300.
 train: True
 eval_model: post

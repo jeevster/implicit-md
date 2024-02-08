@@ -17,7 +17,8 @@ dv: 0.1
 angle_range: [0, 180]
 exp_name: "TEST_vizstructures" #"TEST_lmax1_10percent_resumestrategy0.25_learn_continuous"
 integrator: NoseHoover
-integrator_config: {"timestep": 0.5, "ttime": 20., "gamma": 0.1}
+integrator_config: {"ttime": 20., "gamma": 0.1}
+timestep: 0.5
 temperature: 500.
 train: True
 eval_model: lmax=2

@@ -6,10 +6,11 @@ stability_criterion: rdf
 imd_tol: 3.0
 max_frac_unstable_threshold: 0.95
 temperature: 300.
+timestep: 1
 eq_steps: 0
 steps: 1000
 n_dump: 100 
-n_replicas: 40
+n_replicas: 10
 n_epochs: 200
 
 

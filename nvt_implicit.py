@@ -193,7 +193,7 @@ class ImplicitMDSimulator():
         self.integrator = self.config["integrator"]
         #Nose-Hoover Thermostat stuff
         self.integrator_config =  config['integrator_config']
-        self.dt = self.integrator_config["timestep"] * units.fs
+        self.dt = config["timestep"] * units.fs
         self.temp = config["temperature"]
         print(f"Simulation Temperature: {self.temp}")
         
@@ -220,7 +220,7 @@ class ImplicitMDSimulator():
             self.nsteps = self.eq_steps + 2*self.vacf_window #at least two windows
         while self.nsteps < params.steps: #nsteps should be at least as long as what was requested
             self.nsteps += self.vacf_window
-        self.ps_per_epoch = self.nsteps * self.integrator_config["timestep"] // 1000.
+        self.ps_per_epoch = self.nsteps * self.config["timestep"] // 1000.
         
 
         self.atomic_numbers = torch.Tensor(self.atoms.get_atomic_numbers()).to(torch.long).to(self.device)
@@ -670,6 +670,8 @@ class ImplicitMDSimulator():
                         if self.trainer.scaler
                         else None,
                     }, checkpoint_path)
+        #also save in 'ckpt.pt'
+        shutil.copyfile(checkpoint_path, os.path.join(self.save_dir, 'ckpt.pth' if self.model_type == 'nequip' else 'ckpt.pt'))
         self.curr_model_path = checkpoint_path
 
     def create_frame(self, frame):
@@ -827,7 +829,7 @@ if __name__ == "__main__":
     diff_rdf = DifferentiableRDF(params, device)
 
     integrator_config = config['integrator_config']
-    timestep = integrator_config["timestep"]
+    timestep = config["timestep"]
     ttime = integrator_config["ttime"]
 
     #load ground truth rdf and VACF

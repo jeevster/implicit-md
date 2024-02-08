@@ -122,6 +122,7 @@ class BoltzmannEstimator():
         vacfs_per_replica = vmap(diff_vacf)(velocities_traj)
         vacfs_per_replica[~stable_replicas] = torch.zeros(1, 100).to(self.device) #zero out the unstable replica vacfs
         #split into sub-trajectories of length = vacf_window
+        
         velocities_traj = velocities_traj.reshape(velocities_traj.shape[0], -1, self.simulator.vacf_window, self.simulator.n_atoms, 3)
         velocities_traj = velocities_traj[:, ::self.simulator.n_dump_vacf] #sample i.i.d paths
         
