@@ -1,10 +1,11 @@
 includes:
 - configs/md22/train.yml
 train: False
-bond_dev_tol: 0.5
+bond_dev_tol: 2.0
 max_frac_unstable_threshold: 0.99
 temperature: 500.
 timestep: 0.5
-n_replicas: 48
+steps: 20000 # 1 picosecond per epoch
+n_replicas: 1
 n_dump: 100
 n_epochs: 300 #corresponding to 300 ps

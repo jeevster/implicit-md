@@ -117,12 +117,12 @@ class BoltzmannEstimator():
             np.save(os.path.join(self.simulator.save_dir, f'stacked_radii_epoch{self.simulator.epoch}.npy'), stacked_radii.cpu())
             np.save(os.path.join(self.simulator.save_dir, f'stable_replicas_epoch{self.simulator.epoch}.npy'), stable_replicas.cpu())
         
-        velocity_subsample_ratio = int(self.simulator.gt_data_spacing_fs / (self.simulator.dt / units.fs)) #make the vacf spacing the same as the underlying GT data
+        velocity_subsample_ratio = math.ceil(self.simulator.gt_data_spacing_fs / (self.simulator.dt / units.fs)) #make the vacf spacing the same as the underlying GT data
         velocities_traj = torch.stack(simulator.running_vels).permute(1,0,2,3)[:, ::velocity_subsample_ratio]
         vacfs_per_replica = vmap(diff_vacf)(velocities_traj)
         vacfs_per_replica[~stable_replicas] = torch.zeros(1, 100).to(self.device) #zero out the unstable replica vacfs
         #split into sub-trajectories of length = vacf_window
-        
+        velocities_traj = velocities_traj[:, :math.floor(velocities_traj.shape[1]/self.simulator.vacf_window) * self.simulator.vacf_window]
         velocities_traj = velocities_traj.reshape(velocities_traj.shape[0], -1, self.simulator.vacf_window, self.simulator.n_atoms, 3)
         velocities_traj = velocities_traj[:, ::self.simulator.n_dump_vacf] #sample i.i.d paths
         
