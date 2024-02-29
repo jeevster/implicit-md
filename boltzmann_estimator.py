@@ -152,192 +152,193 @@ class BoltzmannEstimator():
         if self.params.rdf_loss_weight==0 or not self.simulator.train or simulator.optimizer.param_groups[0]['lr'] == 0:
             rdf_gradient_estimators = None
             rdf_package = (rdf_gradient_estimators, mean_rdf, self.rdf_loss(mean_rdf).to(self.device), mean_adf, self.adf_loss(mean_adf).to(self.device))              
-        else:
-            stacked_radii = stacked_radii[:, mask]
-            stacked_radii = stacked_radii.reshape(-1, self.simulator.n_atoms, 3)
-            if self.simulator.name == 'water':
-                #extract all local neighborhoods of n_molecules molecules (centered around each atom)
+            return (rdf_package, vacf_package, energy_force_package)
         
-                #pick centers of each local neighborhood (always an Oxygen atom)
-                center_atoms = 3* np.random.choice(np.arange(int(self.simulator.n_atoms / 3)), self.simulator.n_local_neighborhoods, replace=False)
-                local_neighborhoods = [n_closest_molecules(stacked_radii, \
-                                                                        center_atom, self.simulator.n_closest_molecules, \
-                                                                        self.simulator.cell) \
-                                                                        for center_atom in center_atoms]
-                
-                local_stacked_radii = torch.stack([local_neighborhood[0] for local_neighborhood in local_neighborhoods], dim = 1)
-                atomic_indices = torch.stack([local_neighborhood[1] for local_neighborhood in local_neighborhoods], dim=1)
-                
-                #compute observables on local environments
-                # rdfs = torch.cat([self.simulator.rdf_mae(s.unsqueeze(0).unsqueeze(0))[0] for s in local_stacked_radii.reshape(-1, self.simulator.n_atoms_local, 3)])
-                # rdfs = rdfs.reshape(local_stacked_radii.shape[0], local_stacked_radii.shape[1], -1)
-                # adfs = torch.zeros(rdfs.shape[0], rdfs.shape[1], 180).to(self.simulator.device) #TODO: temporary
-                imds = torch.cat([self.simulator.min_imd(s.unsqueeze(0).unsqueeze(0)) for s in local_stacked_radii.reshape(-1, self.simulator.n_atoms_local, 3)])
-                imds = imds.reshape(local_stacked_radii.shape[0], local_stacked_radii.shape[1], -1)
-                bond_lens = torch.cat([self.simulator.bond_length_dev(s.unsqueeze(0).unsqueeze(0))[0] for s in local_stacked_radii.reshape(-1, self.simulator.n_atoms_local, 3)])
-                bond_len_devs = torch.cat([self.simulator.bond_length_dev(s.unsqueeze(0).unsqueeze(0))[1] for s in local_stacked_radii.reshape(-1, self.simulator.n_atoms_local, 3)])
-                bond_lens = bond_lens.reshape(local_stacked_radii.shape[0], local_stacked_radii.shape[1], -1)
-                bond_len_devs = bond_len_devs.reshape(local_stacked_radii.shape[0], local_stacked_radii.shape[1], -1)
-
-                #scheme to subsample local neighborhoods
-                bond_len_devs_temp = bond_len_devs.reshape(-1, 1).cpu()
-                bond_lens_temp = bond_lens.reshape(-1, bond_lens.shape[-1]).cpu()
-                hist, bins = np.histogram(bond_len_devs_temp, bins = 100)
-                bin_assignments = np.digitize(bond_len_devs_temp, bins)
-                samples_per_bin = 5 * self.simulator.n_replicas
-
-                full_list = []
-                for bin_index in range(1, 101):
-                    # Filter elements belonging to the current bin
-                    bin_elements = bond_lens_temp[(bin_assignments == bin_index).squeeze(-1)]
-                    
-                    # Randomly sample elements from the bin, if available
-                    if len(bin_elements) >= samples_per_bin:
-                        shuffle_idx = torch.randperm(bin_elements.shape[0])
-                        sampled_elements = bin_elements[shuffle_idx][:samples_per_bin]
-                    else:
-                        # If less than 5 elements, take all available
-                        sampled_elements = torch.Tensor(bin_elements)
-
-                    full_list = full_list + [sampled_elements]
-                full_list = torch.cat(full_list).to(self.simulator.device)
-                #subsample the relevant frames
-                
-                indices = [torch.cat([x[0].unsqueeze(0).to(self.simulator.device) for x in torch.where(bond_lens == value)[0:2]]) for value in full_list]
-                local_stacked_radii = torch.stack([local_stacked_radii[idx[0], idx[1]] for idx in indices])
-                stacked_radii = torch.stack([stacked_radii[idx[0]] for idx in indices])
-                atomic_indices = torch.stack([atomic_indices[idx[0], idx[1]] for idx in indices])
-                bond_lens = full_list
-
-                np.save(os.path.join(self.simulator.save_dir, f'local_stacked_radii_epoch{self.simulator.epoch}.npy'), local_stacked_radii.cpu())
-                np.save(os.path.join(self.simulator.save_dir, f'local_rdfs_epoch{self.simulator.epoch}.npy'), rdfs.cpu())
-                np.save(os.path.join(self.simulator.save_dir, f'local_imds_epoch{self.simulator.epoch}.npy'), imds.cpu())
-                np.save(os.path.join(self.simulator.save_dir, f'local_bond_len_devs_epoch{self.simulator.epoch}.npy'), bond_len_devs.cpu())
+        stacked_radii = stacked_radii[:, mask]
+        stacked_radii = stacked_radii.reshape(-1, self.simulator.n_atoms, 3)
+        if self.simulator.name == 'water':
+            #extract all local neighborhoods of n_molecules molecules (centered around each atom)
+    
+            #pick centers of each local neighborhood (always an Oxygen atom)
+            center_atoms = 3* np.random.choice(np.arange(int(self.simulator.n_atoms / 3)), self.simulator.n_local_neighborhoods, replace=False)
+            local_neighborhoods = [n_closest_molecules(stacked_radii, \
+                                                                    center_atom, self.simulator.n_closest_molecules, \
+                                                                    self.simulator.cell) \
+                                                                    for center_atom in center_atoms]
             
-            else:
-                rdfs = rdfs[:, mask].reshape(-1, rdfs.shape[-1])
-                adfs = adfs[:, mask].reshape(-1, adfs.shape[-1])
+            local_stacked_radii = torch.stack([local_neighborhood[0] for local_neighborhood in local_neighborhoods], dim = 1)
+            atomic_indices = torch.stack([local_neighborhood[1] for local_neighborhood in local_neighborhoods], dim=1)
             
-            
-            rdfs.requires_grad = True
-            adfs.requires_grad = True
+            #compute observables on local environments
+            # rdfs = torch.cat([self.simulator.rdf_mae(s.unsqueeze(0).unsqueeze(0))[0] for s in local_stacked_radii.reshape(-1, self.simulator.n_atoms_local, 3)])
+            # rdfs = rdfs.reshape(local_stacked_radii.shape[0], local_stacked_radii.shape[1], -1)
+            # adfs = torch.zeros(rdfs.shape[0], rdfs.shape[1], 180).to(self.simulator.device) #TODO: temporary
+            imds = torch.cat([self.simulator.min_imd(s.unsqueeze(0).unsqueeze(0)) for s in local_stacked_radii.reshape(-1, self.simulator.n_atoms_local, 3)])
+            imds = imds.reshape(local_stacked_radii.shape[0], local_stacked_radii.shape[1], -1)
+            bond_lens = torch.cat([self.simulator.bond_length_dev(s.unsqueeze(0).unsqueeze(0))[0] for s in local_stacked_radii.reshape(-1, self.simulator.n_atoms_local, 3)])
+            bond_len_devs = torch.cat([self.simulator.bond_length_dev(s.unsqueeze(0).unsqueeze(0))[1] for s in local_stacked_radii.reshape(-1, self.simulator.n_atoms_local, 3)])
+            bond_lens = bond_lens.reshape(local_stacked_radii.shape[0], local_stacked_radii.shape[1], -1)
+            bond_len_devs = bond_len_devs.reshape(local_stacked_radii.shape[0], local_stacked_radii.shape[1], -1)
 
-            #TODO: scale the estimator by Kb*T
-            start = time.time()
-            #shuffle the radii, rdfs, and losses
-            if self.simulator.shuffle:   
-                shuffle_idx = torch.randperm(stacked_radii.shape[0])
-                stacked_radii = stacked_radii[shuffle_idx]
-                if self.simulator.name == 'water':
-                    atomic_indices = atomic_indices[shuffle_idx]
-                    bond_lens = bond_lens[shuffle_idx]
+            #scheme to subsample local neighborhoods
+            bond_len_devs_temp = bond_len_devs.reshape(-1, 1).cpu()
+            bond_lens_temp = bond_lens.reshape(-1, bond_lens.shape[-1]).cpu()
+            hist, bins = np.histogram(bond_len_devs_temp, bins = 100)
+            bin_assignments = np.digitize(bond_len_devs_temp, bins)
+            samples_per_bin = 5 * self.simulator.n_replicas
+
+            full_list = []
+            for bin_index in range(1, 101):
+                # Filter elements belonging to the current bin
+                bin_elements = bond_lens_temp[(bin_assignments == bin_index).squeeze(-1)]
+                
+                # Randomly sample elements from the bin, if available
+                if len(bin_elements) >= samples_per_bin:
+                    shuffle_idx = torch.randperm(bin_elements.shape[0])
+                    sampled_elements = bin_elements[shuffle_idx][:samples_per_bin]
                 else:
-                    rdfs = rdfs[shuffle_idx]
-                    adfs = adfs[shuffle_idx]
+                    # If less than 5 elements, take all available
+                    sampled_elements = torch.Tensor(bin_elements)
+
+                full_list = full_list + [sampled_elements]
+            full_list = torch.cat(full_list).to(self.simulator.device)
+            #subsample the relevant frames
             
-            bsize=MINIBATCH_SIZE
-            num_blocks = math.ceil(stacked_radii.shape[0]/ bsize)
-            start_time = time.time()
-            rdf_gradient_estimators = []
-            adf_gradient_estimators = []
-            raw_grads = []
-            pe_grads_flattened = []
+            indices = [torch.cat([x[0].unsqueeze(0).to(self.simulator.device) for x in torch.where(bond_lens == value)[0:2]]) for value in full_list]
+            local_stacked_radii = torch.stack([local_stacked_radii[idx[0], idx[1]] for idx in indices])
+            stacked_radii = torch.stack([stacked_radii[idx[0]] for idx in indices])
+            atomic_indices = torch.stack([atomic_indices[idx[0], idx[1]] for idx in indices])
+            bond_lens = full_list
+
+            np.save(os.path.join(self.simulator.save_dir, f'local_stacked_radii_epoch{self.simulator.epoch}.npy'), local_stacked_radii.cpu())
+            np.save(os.path.join(self.simulator.save_dir, f'local_rdfs_epoch{self.simulator.epoch}.npy'), rdfs.cpu())
+            np.save(os.path.join(self.simulator.save_dir, f'local_imds_epoch{self.simulator.epoch}.npy'), imds.cpu())
+            np.save(os.path.join(self.simulator.save_dir, f'local_bond_len_devs_epoch{self.simulator.epoch}.npy'), bond_len_devs.cpu())
+        
+        else:
+            rdfs = rdfs[:, mask].reshape(-1, rdfs.shape[-1])
+            adfs = adfs[:, mask].reshape(-1, adfs.shape[-1])
+        
+        
+        rdfs.requires_grad = True
+        adfs.requires_grad = True
+
+        #TODO: scale the estimator by Kb*T
+        start = time.time()
+        #shuffle the radii, rdfs, and losses
+        if self.simulator.shuffle:   
+            shuffle_idx = torch.randperm(stacked_radii.shape[0])
+            stacked_radii = stacked_radii[shuffle_idx]
             if self.simulator.name == 'water':
-                print(f"Computing RDF/ADF gradients from {stacked_radii.shape[0]} local environments of {local_stacked_radii.shape[-2]} atoms in minibatches of size {MINIBATCH_SIZE}")
+                atomic_indices = atomic_indices[shuffle_idx]
+                bond_lens = bond_lens[shuffle_idx]
             else:
-                print(f"Computing RDF/ADF gradients from {stacked_radii.shape[0]} structures in minibatches of size {MINIBATCH_SIZE}")
-            num_params = len(list(model.parameters()))
-            #first compute gradients of potential energy (in batches of size n_replicas)
-            
-            for i in tqdm(range(num_blocks)):
-                start = bsize*i
-                end = bsize*(i+1)
-                with torch.enable_grad():
-                    radii_in = stacked_radii[start:end]
-                    if self.simulator.name == 'water':
-                        atomic_indices_in = atomic_indices[start:end]
-                    radii_in.requires_grad = True
-                    energy_force_output = self.simulator.force_calc(radii_in, retain_grad = True, output_individual_energies = self.simulator.name == 'water')
-                    if len(energy_force_output) == 2:
-                        #global energy
-                        energy = energy_force_output[0] 
-                    elif len(energy_force_output) == 3:
-                        #individual atomic energies
-                        energy = energy_force_output[1].reshape(radii_in.shape[0], -1, 1)
-                        #sum atomic energies within local neighborhoods
-                        energy = torch.stack([energy[i, atomic_index].sum() for i, atomic_index in enumerate(atomic_indices_in)])
-                        energy = energy.reshape(-1, 1)
+                rdfs = rdfs[shuffle_idx]
+                adfs = adfs[shuffle_idx]
+        
+        bsize=MINIBATCH_SIZE
+        num_blocks = math.ceil(stacked_radii.shape[0]/ bsize)
+        start_time = time.time()
+        rdf_gradient_estimators = []
+        adf_gradient_estimators = []
+        raw_grads = []
+        pe_grads_flattened = []
+        if self.simulator.name == 'water':
+            print(f"Computing RDF/ADF gradients from {stacked_radii.shape[0]} local environments of {local_stacked_radii.shape[-2]} atoms in minibatches of size {MINIBATCH_SIZE}")
+        else:
+            print(f"Computing RDF/ADF gradients from {stacked_radii.shape[0]} structures in minibatches of size {MINIBATCH_SIZE}")
+        num_params = len(list(model.parameters()))
+        #first compute gradients of potential energy (in batches of size n_replicas)
+        
+        for i in tqdm(range(num_blocks)):
+            start = bsize*i
+            end = bsize*(i+1)
+            with torch.enable_grad():
+                radii_in = stacked_radii[start:end]
+                if self.simulator.name == 'water':
+                    atomic_indices_in = atomic_indices[start:end]
+                radii_in.requires_grad = True
+                energy_force_output = self.simulator.force_calc(radii_in, retain_grad = True, output_individual_energies = self.simulator.name == 'water')
+                if len(energy_force_output) == 2:
+                    #global energy
+                    energy = energy_force_output[0] 
+                elif len(energy_force_output) == 3:
+                    #individual atomic energies
+                    energy = energy_force_output[1].reshape(radii_in.shape[0], -1, 1)
+                    #sum atomic energies within local neighborhoods
+                    energy = torch.stack([energy[i, atomic_index].sum() for i, atomic_index in enumerate(atomic_indices_in)])
+                    energy = energy.reshape(-1, 1)
 
-                #need to do another loop here over batches of local neighborhoods
-                num_local_blocks = math.ceil(energy.shape[0]/ bsize)
-                for i in range(num_local_blocks):
-                    start_inner = bsize*i
-                    end_inner = bsize*(i+1)
-                    local_energy = energy[start_inner:end_inner]
-                    def get_vjp(v):
-                        return compute_grad(inputs = list(model.parameters()), output = local_energy, grad_outputs = v, allow_unused = True, create_graph = False)
-                    vectorized_vjp = vmap(get_vjp)
-                    I_N = torch.eye(local_energy.shape[0]).unsqueeze(-1).to(self.device)
-                    num_samples = local_energy.shape[0]
-                    if self.simulator.model_type == 'forcenet': #dealing with device mismatch error
-                        grads_vectorized = [process_gradient(model.parameters(), \
-                                            compute_grad(inputs = list(model.parameters()), \
-                                            output = e, allow_unused = True, create_graph = False), \
-                                            self.device) for e in local_energy]
-                        grads_flattened = torch.stack([torch.cat([grads_vectorized[i][j].flatten().detach() for j in range(num_params)]) for i in range(num_samples)])
-                    else:
-                        grads_vectorized = vectorized_vjp(I_N)
-                        #flatten the gradients for vectorization
-                        grads_flattened=torch.stack([torch.cat([grads_vectorized[i][j].flatten().detach() for i in range(num_params)]) for j in range(num_samples)])
-                
-                    pe_grads_flattened.append(grads_flattened)
-
-            
-            pe_grads_flattened = torch.cat(pe_grads_flattened)
-            #Now compute final gradient estimators in batches of size MINIBATCH_SIZE
-            num_blocks = math.ceil(stacked_radii.shape[0]/ (MINIBATCH_SIZE))
-            
-            for i in tqdm(range(num_blocks)):
-                start = MINIBATCH_SIZE*i
-                end = MINIBATCH_SIZE*(i+1)
-                if self.simulator.training_observable == 'rdf':
-                    obs = rdfs
-                elif self.simulator.training_observable == 'imd':
-                    obs = imds
-                elif self.simulator.training_observable == 'bond_length_dev':
-                    obs = bond_lens
-                    
-                obs = obs.reshape(pe_grads_flattened.shape[0], -1)                    
-                obs_batch = [obs[start:end]]
-                pe_grads_batch = pe_grads_flattened[start:end]
-                #TODO: fix the case where we don't use the MSE gradient
-                grad_outputs_obs = [2/gt_rdf_var_local*(ob.mean(0) - gt_ob).unsqueeze(0) \
-                                    if self.simulator.use_mse_gradient else None \
-                                    for ob, gt_ob, gt_rdf_var_local in zip(obs_batch, \
-                                    self.gt_rdf_local.chunk(len(obs_batch)), self.gt_rdf_var_local.chunk(len(obs_batch)))]
-                final_vjp = [self.estimator(obs, pe_grads_batch, grad_output_obs) for obs, grad_output_obs in zip(obs_batch, grad_outputs_obs)]
-                final_vjp = torch.stack(final_vjp).mean(0)
-                if self.params.adf_loss_weight !=0 and self.simulator.name != 'water':
-                    adfs = adfs.reshape(pe_grads_flattened.shape[0], -1)
-                    adf_batch = adfs[start:end]
-                    grad_outputs_adf = 2*(adf_batch.mean(0) - self.gt_adf).unsqueeze(0) \
-                                    if self.simulator.use_mse_gradient else None
-                    gradient_estimator_adf = self.estimate(adf_batch, grads_flattened, grad_outputs_adf)
-                    final_vjp+=self.params.adf_loss_weight*gradient_estimator_adf             
-
-                if not self.simulator.allow_off_policy_updates:
-                    raw_grads.append(final_vjp)
+            #need to do another loop here over batches of local neighborhoods
+            num_local_blocks = math.ceil(energy.shape[0]/ bsize)
+            for i in range(num_local_blocks):
+                start_inner = bsize*i
+                end_inner = bsize*(i+1)
+                local_energy = energy[start_inner:end_inner]
+                def get_vjp(v):
+                    return compute_grad(inputs = list(model.parameters()), output = local_energy, grad_outputs = v, allow_unused = True, create_graph = False)
+                vectorized_vjp = vmap(get_vjp)
+                I_N = torch.eye(local_energy.shape[0]).unsqueeze(-1).to(self.device)
+                num_samples = local_energy.shape[0]
+                if self.simulator.model_type == 'forcenet': #dealing with device mismatch error
+                    grads_vectorized = [process_gradient(model.parameters(), \
+                                        compute_grad(inputs = list(model.parameters()), \
+                                        output = e, allow_unused = True, create_graph = False), \
+                                        self.device) for e in local_energy]
+                    grads_flattened = torch.stack([torch.cat([grads_vectorized[i][j].flatten().detach() for j in range(num_params)]) for i in range(num_samples)])
                 else:
-                    #re-assemble flattened gradients into correct shape
-                    final_vjp = tuple([g.reshape(shape) for g, shape in zip(final_vjp.split(original_numel), original_shapes)])
-                    rdf_gradient_estimators.append(final_vjp)
+                    grads_vectorized = vectorized_vjp(I_N)
+                    #flatten the gradients for vectorization
+                    grads_flattened=torch.stack([torch.cat([grads_vectorized[i][j].flatten().detach() for i in range(num_params)]) for j in range(num_samples)])
+            
+                pe_grads_flattened.append(grads_flattened)
+
+        
+        pe_grads_flattened = torch.cat(pe_grads_flattened)
+        #Now compute final gradient estimators in batches of size MINIBATCH_SIZE
+        num_blocks = math.ceil(stacked_radii.shape[0]/ (MINIBATCH_SIZE))
+        
+        for i in tqdm(range(num_blocks)):
+            start = MINIBATCH_SIZE*i
+            end = MINIBATCH_SIZE*(i+1)
+            if self.simulator.training_observable == 'rdf':
+                obs = rdfs
+            elif self.simulator.training_observable == 'imd':
+                obs = imds
+            elif self.simulator.training_observable == 'bond_length_dev':
+                obs = bond_lens
+                
+            obs = obs.reshape(pe_grads_flattened.shape[0], -1)                    
+            obs_batch = [obs[start:end]]
+            pe_grads_batch = pe_grads_flattened[start:end]
+            #TODO: fix the case where we don't use the MSE gradient
+            grad_outputs_obs = [2/gt_rdf_var_local*(ob.mean(0) - gt_ob).unsqueeze(0) \
+                                if self.simulator.use_mse_gradient else None \
+                                for ob, gt_ob, gt_rdf_var_local in zip(obs_batch, \
+                                self.gt_rdf_local.chunk(len(obs_batch)), self.gt_rdf_var_local.chunk(len(obs_batch)))]
+            final_vjp = [self.estimator(obs, pe_grads_batch, grad_output_obs) for obs, grad_output_obs in zip(obs_batch, grad_outputs_obs)]
+            final_vjp = torch.stack(final_vjp).mean(0)
+            if self.params.adf_loss_weight !=0 and self.simulator.name != 'water':
+                adfs = adfs.reshape(pe_grads_flattened.shape[0], -1)
+                adf_batch = adfs[start:end]
+                grad_outputs_adf = 2*(adf_batch.mean(0) - self.gt_adf).unsqueeze(0) \
+                                if self.simulator.use_mse_gradient else None
+                gradient_estimator_adf = self.estimate(adf_batch, grads_flattened, grad_outputs_adf)
+                final_vjp+=self.params.adf_loss_weight*gradient_estimator_adf             
 
             if not self.simulator.allow_off_policy_updates:
-                mean_vjps = torch.stack(raw_grads).mean(dim=0)
+                raw_grads.append(final_vjp)
+            else:
                 #re-assemble flattened gradients into correct shape
-                mean_vjps = tuple([g.reshape(shape) for g, shape in zip(mean_vjps.split(original_numel), original_shapes)])
-                rdf_gradient_estimators.append(mean_vjps)
+                final_vjp = tuple([g.reshape(shape) for g, shape in zip(final_vjp.split(original_numel), original_shapes)])
+                rdf_gradient_estimators.append(final_vjp)
 
-            rdf_package = (rdf_gradient_estimators, mean_rdf, mean_rdf_loss.to(self.device), mean_adf, mean_adf_loss.to(self.device))
+        if not self.simulator.allow_off_policy_updates:
+            mean_vjps = torch.stack(raw_grads).mean(dim=0)
+            #re-assemble flattened gradients into correct shape
+            mean_vjps = tuple([g.reshape(shape) for g, shape in zip(mean_vjps.split(original_numel), original_shapes)])
+            rdf_gradient_estimators.append(mean_vjps)
+
+        rdf_package = (rdf_gradient_estimators, mean_rdf, mean_rdf_loss.to(self.device), mean_adf, mean_adf_loss.to(self.device))
         
         return rdf_package, vacf_package, energy_force_package
