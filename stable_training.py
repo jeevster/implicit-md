@@ -1,59 +1,35 @@
 import numpy as np
-import gsd.hoomd
 import torch
 import logging
 import gc
 import json
 from pathlib import Path
-import torch.nn as nn
-import math
 import shutil
 from YParams import YParams
 import argparse
-import logging
 import os
-logging.basicConfig(level=os.environ.get("LOGLEVEL", "WARNING"))
-from tqdm import tqdm
 import random
 import types
-from torch_geometric.nn import MessagePassing, radius_graph
-from torchmd.observable import generate_vol_bins, DifferentiableRDF, DifferentiableADF, DifferentiableVelHist, DifferentiableVACF, SelfIntermediateScattering, msd, DiffusionCoefficient
+from torchmd.observable import DifferentiableVACF
 import time
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.tensorboard.summary import hparams
-from torch.utils.data import DataLoader
-from functorch import vmap, vjp
 import warnings
 from collections import OrderedDict
-warnings.filterwarnings("ignore")
-#NNIP stuff:
-import ase
-from mdsim.common.registry import registry
-from mdsim.common.utils import extract_cycle_epoch, save_checkpoint, cleanup_atoms_batch, setup_imports, setup_logging, compute_bond_lengths, data_to_atoms, atoms_to_batch, atoms_to_state_dict, convert_atomic_numbers_to_types, process_gradient, compare_gradients, initialize_velocities, dump_params_to_yml
-from mdsim.common.utils import load_config
-from mdsim.modules.evaluator import Evaluator
-from mdsim.modules.normalizer import Normalizer
+from mdsim.common.utils import extract_cycle_epoch, load_config, build_config, save_checkpoint, setup_logging, compare_gradients
 from utils import calculate_final_metrics
-from mdsim.observables.common import distance_pbc, BondLengthDeviation, radii_to_dists, compute_distance_matrix_batch
-from mdsim.observables.md17_22 import find_hr_adf_from_file, get_hr
-from mdsim.observables.water import WaterRDFMAE, MinimumIntermolecularDistance, find_water_rdfs_diffusivity_from_file, get_water_rdfs, get_smoothed_diffusivity, n_closest_molecules
-from mdsim.observables.lips import LiPSRDFMAE, find_lips_rdfs_diffusivity_from_file, cart2frac, frac2cart
+from mdsim.observables.md17_22 import find_hr_adf_from_file
+from mdsim.observables.water import find_water_rdfs_diffusivity_from_file
+from mdsim.observables.lips import find_lips_rdfs_diffusivity_from_file
 from mdsim.models.load_models import load_pretrained_model
-from mdsim.common.utils import (
-    build_config,
-    create_grid,
-    save_experiment_log,
-    setup_imports,
-    setup_logging,
-    compose_data_cfg
-)
 from mdsim.common.flags import flags
 from boltzmann_estimator import BoltzmannEstimator
-from nvt_implicit import Simulator
+from simulator import Simulator
+
 MAX_SIZES = {'md17': '10k', 'md22': '100percent', 'water': '10k', 'lips': '20k'}
 
-
 if __name__ == "__main__":
+    logging.basicConfig(level=os.environ.get("LOGLEVEL", "WARNING"))
     setup_logging() 
     parser = flags.get_parser()
     args, override_args = parser.parse_known_args()

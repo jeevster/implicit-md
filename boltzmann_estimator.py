@@ -1,26 +1,16 @@
 import numpy as np
 import torch
-import torch.nn as nn
 import math
 from nff.utils.scatter import compute_grad
 import os
 from tqdm import tqdm
-import random
-from torch_scatter import scatter
-from torch_geometric.nn import MessagePassing, radius_graph
-from torchmd.observable import generate_vol_bins, DifferentiableRDF, DifferentiableADF, DifferentiableVelHist, DifferentiableVACF, SelfIntermediateScattering, msd, DiffusionCoefficient
-import time
+from torchmd.observable import DifferentiableRDF, DifferentiableADF, DifferentiableVACF
 from functorch import vmap, vjp
 import warnings
-warnings.filterwarnings("ignore")
-#NNIP stuff:
-import ase
-from ase import Atoms, units
-from ase.calculators.calculator import Calculator
-from nequip.data import AtomicData, AtomicDataDict
-from mdsim.common.utils import setup_imports, setup_logging, compute_bond_lengths, data_to_atoms, atoms_to_batch, atoms_to_state_dict, convert_atomic_numbers_to_types, process_gradient, compare_gradients, initialize_velocities, dump_params_to_yml
-from mdsim.observables.common import radii_to_dists, distance_pbc, ObservableMAELoss, ObservableMSELoss, IMDHingeLoss
-from mdsim.observables.water import WaterRDFMAE, find_water_rdfs_diffusivity_from_file, n_closest_molecules
+from ase import units
+from mdsim.common.utils import process_gradient
+from mdsim.observables.common import radii_to_dists, ObservableMAELoss, ObservableMSELoss, IMDHingeLoss
+from mdsim.observables.water import n_closest_molecules
 
 
 class BoltzmannEstimator():
@@ -224,7 +214,6 @@ class BoltzmannEstimator():
         adfs.requires_grad = True
 
         #TODO: scale the estimator by Kb*T
-        start = time.time()
         #shuffle the radii, rdfs, and losses
         if self.simulator.shuffle:   
             shuffle_idx = torch.randperm(stacked_radii.shape[0])
@@ -238,7 +227,6 @@ class BoltzmannEstimator():
         
         bsize=MINIBATCH_SIZE
         num_blocks = math.ceil(stacked_radii.shape[0]/ bsize)
-        start_time = time.time()
         rdf_gradient_estimators = []
         adf_gradient_estimators = []
         raw_grads = []
