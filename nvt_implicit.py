@@ -244,8 +244,6 @@ class ImplicitMDSimulator():
             self.mean_bond_lens = bond_lens.mean(0)
             self.bond_lens_var = bond_lens.var(0)
             
-
-        
         self.gt_rdf = gt_rdf
         #choose the appropriate stability criterion based on the type of system
         if self.name == 'water':
