@@ -68,6 +68,40 @@ OFFSET_LIST = [
     [1, 1, 1],
 ]
 
+def save_checkpoint(simulator, best=False, name_=None):
+    if simulator.model_type == "nequip":
+        if name_ is not None:
+            name = f"{name_}.pth"
+        else:
+            name = "best_ckpt.pth" if best else "ckpt.pth"
+        checkpoint_path = os.path.join(simulator.save_dir, name)
+        with atomic_write(checkpoint_path, blocking=True, binary=True) as write_to:
+            torch.save(simulator.model.state_dict(), write_to)
+    else:
+        if name_ is not None:
+            name = f"{name_}.pt"
+        else:
+            name = "best_ckpt.pt" if best else "ckpt.pt"
+        checkpoint_path = os.path.join(simulator.save_dir, name)
+        new_state_dict = OrderedDict(("module."+k if "module" not in k else k, v) for k, v in self.model.state_dict().items())
+        torch.save({
+                    "epoch": simulator.epoch,
+                    "step": simulator.epoch,
+                    "state_dict": new_state_dict,
+                    "normalizers": {
+                        key: value.state_dict()
+                        for key, value in simulator.trainer.normalizers.items()
+                    },
+                    "config": simulator.model_config,
+                    "ema": simulator.trainer.ema.state_dict() if simulator.trainer.ema else None,
+                    "amp": simulator.trainer.scaler.state_dict()
+                    if simulator.trainer.scaler
+                    else None,
+                }, checkpoint_path)
+    #also save in 'ckpt.pt'
+    shutil.copyfile(checkpoint_path, os.path.join(simulator.save_dir, 'ckpt.pth' if simulator.model_type == 'nequip' else 'ckpt.pt'))
+    return checkpoint_path
+
 def extract_cycle_epoch(s):
     # Regular expression to match the pattern
     pattern = r"post_cycle(\d+)(?:_epoch(\d+))?"
@@ -266,15 +300,6 @@ def atoms_to_state_dict(atoms, r_max):#, zeta):
     return data
 
     
-
-
-def save_checkpoint(
-    state, checkpoint_dir="", checkpoint_file="checkpoint.pt"
-):
-    filename = os.path.join(checkpoint_dir, checkpoint_file)
-    torch.save(state, filename)
-
-
 class Complete(object):
     def __call__(self, data):
         device = data.edge_index.device
