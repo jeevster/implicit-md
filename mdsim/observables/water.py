@@ -148,16 +148,7 @@ def get_water_rdfs(data_seq, ptypes, lattices, bins, device='cpu'):
         type1, type2 = pairs[idx]    
         indices0 = type2indices[type1].to(device)
         indices1 = type2indices[type2].to(device)
-        #Original Method
-        data_pdist = distance_pbc_select(data_seq, lattices, indices0, indices1)
-        data_pdist = data_pdist.flatten().cpu().numpy()
-        data_shape = data_pdist.shape[0]
-        data_pdist = data_pdist[data_pdist != 0]
-        data_hist, _ = np.histogram(data_pdist, bins)
-        rho_data = data_shape / torch.prod(lattices).cpu().numpy()
-        Z_data = rho_data * 4 / 3 * np.pi * (bins[1:] ** 3 - bins[:-1] ** 3)
-        data_rdf = data_hist / Z_data
-
+    
         #New Method
         data_pdist = distance_pbc_select(data_seq, lattices, indices0, indices1)
         data_pdist = data_pdist.cpu().numpy()
@@ -210,5 +201,4 @@ def find_water_rdfs_diffusivity_from_file(base_path: str, size: str, params, dev
     bonds = torch.tensor(NL.get_connectivity_matrix().todense().nonzero()).to(device).T
     gt_adf = DifferentiableADF(gt_traj.shape[-2], bonds, torch.diag(lattices).to(device), params, device)(gt_traj[0:200][::keep_freq].to(torch.float).to(device))
     #TODO: O-O conditioned RDF using oxygen_atoms_mask
-    #gt_adf = DifferentiableADF(gt_traj.shape[-2], bonds, torch.diag(lattices).to(device), params, device)(gt_traj[0:2000, oxygen_atoms_mask][::keep_freq].to(torch.float).to(device))
     return gt_rdfs, gt_rdfs_local, gt_diffusivity, gt_msd, gt_adf, oxygen_atoms_mask

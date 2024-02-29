@@ -1,14 +1,7 @@
 import torch
 import numpy as np
-from itertools import product
-from scipy.stats import maxwell
-import math
-import yaml
 import os
-import gc
-from tqdm import tqdm
-import matplotlib.pyplot as plt
-from torchmd.observable import DifferentiableRDF, DifferentiableADF
+from torchmd.observable import DifferentiableADF
 from mdsim.common.utils import data_to_atoms
 from mdsim.datasets.lmdb_dataset import LmdbDataset
 from ase.neighborlist import natural_cutoffs, NeighborList
