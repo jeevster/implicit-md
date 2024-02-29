@@ -61,6 +61,6 @@ def find_hr_adf_from_file(base_path: str, name: str, molecule: str, size: str, p
     raw_atoms = data_to_atoms(temp_data.__getitem__(0))
     cell = torch.Tensor(raw_atoms.cell).to(device)
     diff_adf = DifferentiableADF(n_atoms, bonds, cell, params, device)
-    keep = 3000 if name == 'md17' else 1000 #save memory for md22
+    keep = 300 if name == 'md17' else 100 #save memory for md22
     hist_adf = diff_adf(gt_traj[:keep].to(device))
     return torch.Tensor(hist_gt).to(device), torch.Tensor(hist_adf).to(device)

@@ -65,7 +65,6 @@ def calculate_final_metrics(simulator, params, device, results_dir, energy_maes,
         np.save(os.path.join(results_dir, "final_vacf_maes.npy"), final_vacf_maes.cpu())
 
     elif params.name == "water":
-        #TODO: compute rdfs per-replica like we did for MD17/MD22
         final_rdfs = [get_water_rdfs(traj, simulator.rdf_mae.ptypes, simulator.rdf_mae.lattices, simulator.rdf_mae.bins, device)[0] for traj in stable_trajs]
         final_rdfs_by_key = {k: torch.stack([final_rdf[k] for final_rdf in final_rdfs]) for k in gt_rdf.keys()}
         final_rdf_maes = {k: xlim* torch.abs(gt_rdf[k] - final_rdfs_by_key[k]).mean(-1).squeeze(-1) for k in gt_rdf.keys()}
@@ -110,81 +109,3 @@ def calculate_final_metrics(simulator, params, device, results_dir, energy_maes,
     with open(os.path.join(results_dir, 'final_metrics.json'), 'w') as fp:
         json.dump(final_metrics, fp, indent=4, separators=(',', ': '))
     return hparams(hyperparameters, final_metrics)
-
-# Initialize configuration
-# Radii
-# FCC lattice
-def fcc_positions(n_particle, box, device):
-    
-    # round-up to nearest fcc box
-    cells = np.ceil((n_particle/4.0)**(1.0/3.0)).astype(np.int32) #cells in each dimension (assume 4 particles per unit cell)
-    cell_size = box/cells 
-    radius_ = np.empty((n_particle,3)) #initial positions of particles
-    r_fcc = np.array ([[0.25,0.25,0.25],[0.25,0.75,0.75],[0.75,0.75,0.25],[0.75,0.25,0.75]], dtype=np.float64)
-    i = 0
-    for ix, iy, iz in product(list(range(cells)),repeat=3): # triple loop over unit cells
-        for a in range(4): # 4 atoms in a unit cell
-            radius_[i,:] = r_fcc[a,:] + np.array([ix,iy,iz]).astype(np.float64) # 0..nc space
-            radius_[i,:] = radius_[i,:]*cell_size#/self.box # normalize to [0,1]
-            i = i+1
-            if(i==n_particle): #  break when we have n_particle in our box
-                return torch.Tensor(radius_ - box/2).to(device) # convert to -L/2 to L/2 space for ease with PBC
-
-
-#inverse cdf for power law with exponent 'power' and min value y_min
-def powerlaw_inv_cdf(y, power, y_min):
-    return y_min*((1-y)**(1/(1-power)))
-
-def print_active_torch_tensors():
-    count = 0
-    for obj in gc.get_objects():
-        try:
-            if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
-                #print(type(obj), obj.size())
-                count +=1
-                del obj
-        except:
-            pass
-    print(f"{count} tensors in memory")
-
-'''Helper function to compare true underlying potential to the learned one'''
-def plot_pair(epoch, path, model, device, end, target_pot): 
-
-    x = torch.linspace(0.1, end, 250)[:, None].to(device)
-    u_fit = torch.Tensor([model(i) for i in x]).detach().cpu().numpy()
-    u_fit = u_fit - u_fit[-1] #shift the prior so that it has a value of zero at the cutoff point
-    u_target = torch.Tensor([target_pot(i) for i in x]).detach().cpu().numpy()
-
-    plt.plot( x.detach().cpu().numpy(), 
-              u_fit, 
-              label='fit', linewidth=4, alpha=0.6)
-    
-    plt.plot( x.detach().cpu().numpy(), 
-              u_target,
-               label='truth', 
-               linewidth=2,linestyle='--', c='black')
-    plt.ylim(-2.0, 6.0)
-    plt.legend()      
-    plt.show()
-    plt.savefig(os.path.join(path, 'potential_{}.jpg'.format(epoch)), bbox_inches='tight')
-    plt.close()
-
-
-def solve_continuity_system(device, x_c, n, m, epsilon):
-    A = torch.Tensor([[1, x_c**2, x_c**4],
-                  [0, 2*x_c, 4*x_c**3],
-                  [0, 2, 12*x_c**2]]).to(device)
-    if m ==0:
-        B = epsilon * torch.Tensor([[- x_c**-n],
-                            [n*x_c**-(n+1)],
-                            [ - n*(n+1)*x_c**-(n+2)]]).to(device)
-    else:
-        B = epsilon * torch.Tensor([[x_c**-m - x_c**-n],
-                                [n*x_c**-(n+1) - m*x_c**-(m+1)],
-                                [m*(m+1)*x_c**-(m+2) - n*(n+1)*x_c**-(n+2)]]).to(device)
-    c = torch.linalg.solve(A, B)
-
-    return c[0], c[1], c[2]
-
-
-        

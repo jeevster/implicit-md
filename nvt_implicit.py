@@ -41,6 +41,8 @@ from nequip.utils.torch_geometric import Batch, Dataset
 from nequip.utils import atomic_write, load_file
 from ase.neighborlist import natural_cutoffs, NeighborList
 from mdsim.md.ase_utils import OCPCalculator
+from mdsim.md.integrator import NoseHoover, Langevin
+from mdsim.md.calculator import ForceCalculator
 from mdsim.common.registry import registry
 from mdsim.common.utils import extract_cycle_epoch, save_checkpoint, cleanup_atoms_batch, setup_imports, setup_logging, compute_bond_lengths, data_to_atoms, atoms_to_batch, atoms_to_state_dict, convert_atomic_numbers_to_types, process_gradient, compare_gradients, initialize_velocities, dump_params_to_yml
 from mdsim.common.custom_radius_graph import detach_numpy
@@ -189,29 +191,11 @@ class ImplicitMDSimulator():
         self.instability_per_replica = 100*torch.ones((self.n_replicas,)).to(self.device) if params.stability_criterion == 'imd' \
                                                     else torch.zeros((self.n_replicas,)).to(self.device)
         self.stable_time = torch.zeros((self.n_replicas,)).to(self.device)
-        
-        self.integrator = self.config["integrator"]
-        #Nose-Hoover Thermostat stuff
-        self.integrator_config =  config['integrator_config']
-        self.dt = config["timestep"] * units.fs
-        self.temp = config["temperature"]
-        print(f"Simulation Temperature: {self.temp}")
-        
-        # adjust units.
-        if self.integrator in ['NoseHoover', 'NoseHooverChain', 'Langevin']:
-            self.temp *= units.kB
-        self.targeEkin = 0.5 * (3.0 * self.n_atoms) * self.temp
-        
-        self.ttime = self.integrator_config["ttime"]
-        self.Q = 3.0 * self.n_atoms * self.temp * (self.ttime * self.dt)**2
-        self.zeta = torch.zeros((self.n_replicas, 1, 1)).to(self.device)
+
         self.masses = torch.Tensor(self.atoms.get_masses().reshape(1, -1, 1)).to(self.device)
+        self.r_max_key = "r_max" if self.model_type == "nequip" else "cutoff"
 
-
-        #Langevin thermostat stuff
-        self.gamma = self.integrator_config["gamma"] / (1000*units.fs)
-        self.noise_f = (2.0 * self.gamma/self.masses * self.temp * self.dt).sqrt().to(self.device)
-
+    
         self.nsteps = params.steps
         self.eq_steps = params.eq_steps
         #ensure that the number of logged steps is a multiple of the vacf window (for chopping up the trajectory)
@@ -222,7 +206,7 @@ class ImplicitMDSimulator():
             self.nsteps += self.vacf_window
         self.ps_per_epoch = self.nsteps * self.config["timestep"] // 1000.
         
-
+        self.temp = self.config['temperature'] * units.kB
         self.atomic_numbers = torch.Tensor(self.atoms.get_atomic_numbers()).to(torch.long).to(self.device)
         self.batch = torch.arange(self.n_replicas).repeat_interleave(self.n_atoms).to(self.device)
         self.ic_stddev = params.ic_stddev
@@ -275,6 +259,7 @@ class ImplicitMDSimulator():
         self.checkpoint_velocities = []
         self.checkpoint_velocities.append(self.velocities)
         self.checkpoint_zetas = []
+        self.zeta = torch.zeros((self.n_replicas, 1, 1)).to(self.device)
         self.checkpoint_zetas.append(self.zeta)
         self.original_radii = self.radii.clone()
         self.original_velocities = self.velocities.clone()
@@ -282,7 +267,6 @@ class ImplicitMDSimulator():
         self.all_radii = []
         
         #create batch of atoms to be operated on
-        self.r_max_key = "r_max" if self.model_type == "nequip" else "cutoff"
         self.atoms_batch = [AtomicData.from_ase(atoms=a, r_max=self.model_config['model'][self.r_max_key]) for a in self.raw_atoms]
         self.atoms_batch = Batch.from_data_list(self.atoms_batch) #DataBatch for non-Nequip models
         self.atoms_batch['natoms'] = torch.Tensor([self.n_atoms]).repeat(self.n_replicas).to(self.device)
@@ -295,6 +279,14 @@ class ImplicitMDSimulator():
             self.atoms_batch['atom_types'] = self.final_atom_types
             del self.atoms_batch['ptr']
             del self.atoms_batch['atomic_numbers']
+
+        #Initialize calculator
+        self.calculator = ForceCalculator(self.model, self.model_type, self.model_config, self.r_max_key, self.n_atoms, self.atomic_numbers, self.atoms_batch, self.device)
+
+        #Initialize integrator
+        self.dt = config['timestep']
+        self.integrator_type = self.config["integrator"]
+        self.integrator = registry.get_integrator_class(self.integrator_type)(self.calculator, self.masses, self.n_replicas, self.n_atoms, self.config, self.device)
             
         self.diameter_viz = params.diameter_viz
         self.exp_name = params.exp_name
@@ -303,8 +295,7 @@ class ImplicitMDSimulator():
         self.diffusion_loss_weight = params.diffusion_loss_weight
         self.vacf_loss_weight = params.vacf_loss_weight
         self.energy_force_loss_weight = params.energy_force_loss_weight
-        if self.vacf_loss_weight != 0:
-            self.integrator = 'Langevin'
+
         
         #limit CPU usage
         torch.set_num_threads(1)
@@ -373,6 +364,25 @@ class ImplicitMDSimulator():
                     test_metrics['energy_mae'], test_metrics['forces_mae']
 
     def energy_force_gradient(self):
+        '''
+        Inputs:
+        model
+        train_dataset
+        train_dataloader
+        device
+        n_atoms
+        atoms_batch
+        rescale_layers
+        model_config
+        r_max_key
+        nequip_loss
+
+        trainer
+        model
+        train_dataloader
+        device
+        '''
+
         #store original shapes of model parameters
         original_numel = [param.data.numel() for param in self.model.parameters()]
         original_shapes = [param.data.shape for param in self.model.parameters()]
@@ -392,10 +402,7 @@ class ImplicitMDSimulator():
 
                     data_unscaled = data
                     for layer in self.rescale_layers:
-                        # This means that self.model is RescaleOutputs
-                        # this will normalize the targets
-                        # in validation (eval mode), it does nothing
-                        # in train mode, it normalizes the targets
+                        # normalizes the targets
                         data_unscaled = layer.unscale(data_unscaled)    
                     # Run model
                     data_unscaled['edge_index'] = radius_graph(data_unscaled['pos'].reshape(-1, 3), r=self.model_config['model'][self.r_max_key], batch=data_unscaled['batch'], max_num_neighbors=32)
@@ -466,100 +473,6 @@ class ImplicitMDSimulator():
         self.first_simulation = False
         return num_unstable_replicas / self.n_replicas
 
-
-    def force_calc(self, radii, retain_grad = False, output_individual_energies = False):
-        batch_size = radii.shape[0]
-        batch = torch.arange(batch_size).repeat_interleave(self.n_atoms).to(self.device)
-        with torch.enable_grad():
-            if not radii.requires_grad:
-                radii.requires_grad = True
-            #assign radii and batch
-            self.atoms_batch['pos'] = radii.reshape(-1, 3)
-            self.atoms_batch['batch'] = batch
-            #make these match the number of replicas (different from n_replicas when doing bottom-up stuff)
-            self.atoms_batch['cell'] = self.atoms_batch['cell'][0].unsqueeze(0).repeat(batch_size, 1, 1)
-            self.atoms_batch['pbc'] = self.atoms_batch['pbc'][0].unsqueeze(0).repeat(batch_size, 1)
-            all_energies = None
-            if self.model_type == "nequip":
-                self.atoms_batch['atom_types'] = self.atoms_batch['atom_types'][0:self.n_atoms].repeat(batch_size, 1)
-                #recompute neighbor list
-                self.atoms_batch['edge_index'] = radius_graph(radii.reshape(-1, 3), r=self.model_config['model'][self.r_max_key], batch=batch, max_num_neighbors=32)
-                #TODO: edge cell shift is nonzero for LiPS (non cubic cell)
-                self.atoms_batch['edge_cell_shift'] = torch.zeros((self.atoms_batch['edge_index'].shape[1], 3)).to(self.device)
-                atoms_updated = self.model(self.atoms_batch)
-                energy = atoms_updated[AtomicDataDict.TOTAL_ENERGY_KEY]
-                forces = atoms_updated[AtomicDataDict.FORCE_KEY].reshape(-1, self.n_atoms, 3)
-            else:
-                self.atoms_batch = cleanup_atoms_batch(self.atoms_batch)
-                self.atoms_batch['natoms'] = torch.Tensor([self.n_atoms]).repeat(batch_size).to(self.device)
-                self.atoms_batch['atomic_numbers'] = self.atomic_numbers.repeat(batch_size)
-                if output_individual_energies:
-                    if self.model_type == 'gemnet_t':
-                        energy, all_energies, forces = self.model(self.atoms_batch, output_individual_energies = True)
-                    else:
-                        raise RuntimeError(f"Outputting individual energies is only supported for gemnet_t, not {self.model_type}")
-                else:
-                    energy, forces = self.model(self.atoms_batch)
-                forces = forces.reshape(-1, self.n_atoms, 3)
-            assert(not torch.any(torch.isnan(forces)))
-            energy = energy.detach() if not retain_grad else energy
-            forces = forces.detach() if not retain_grad else forces
-            if all_energies is None:
-                return energy, forces
-            else:
-                return energy, all_energies, forces
-
-    def forward_nosehoover(self, radii, velocities, forces, zeta, retain_grad=False):
-        # get current accelerations
-        accel = forces / self.masses
-        # make full step in position 
-        radii = radii + velocities * self.dt + \
-            (accel - zeta * velocities) * (0.5 * self.dt ** 2)
-        # record current KE
-        KE_0 = 1/2 * (self.masses*torch.square(velocities)).sum(axis = (1,2), keepdims=True)
-        # make half a step in velocity
-        velocities = velocities + 0.5 * self.dt * (accel - zeta * velocities)
-        # make a full step in accelerations
-        energy, forces = self.force_calc(radii, retain_grad)
-        accel = forces / self.masses
-        # make a half step in self.zeta
-        zeta = zeta + 0.5 * self.dt * (1/self.Q) * (KE_0 - self.targeEkin)
-        #get updated KE
-        ke = 1/2 * (self.masses*torch.square(velocities)).sum(axis = (1,2), keepdims=True)
-        # make another halfstep in self.zeta
-        zeta = zeta + 0.5 * self.dt * \
-            (1/self.Q) * (ke - self.targeEkin)
-        # make another half step in velocity
-        velocities = (velocities + 0.5 * self.dt * accel) / \
-            (1 + 0.5 * self.dt * zeta)
-        # dump frames
-        if self.step%self.n_dump == 0:
-            print(self.step, self.thermo_log(energy), file=self.f)
-            step  = self.step if self.train else (self.epoch+1) * self.step #don't overwrite previous epochs at inference time
-            try:   
-                self.t.append(self.create_frame(frame = step/self.n_dump))
-            except:
-                pass
-        return radii, velocities, forces, zeta
-    
-    def forward_langevin(self, radii, velocities, forces, retain_grad = False):
-        #full step in position
-        radii = radii.detach() + self.dt*velocities
-        #calculate force at new position
-        energy, forces = self.force_calc(radii, retain_grad)
-        noise = torch.randn_like(velocities)
-        #full step in velocities
-        velocities = velocities + self.dt*(forces/self.masses - self.gamma * velocities) + self.noise_f * noise
-        # # dump frames
-        if self.step%self.n_dump == 0:
-            print(self.step, self.thermo_log(energy), file=self.f)
-            step  = self.step if self.train else (self.epoch+1) * self.step #don't overwrite previous epochs at inference time
-            try:    
-                self.t.append(self.create_frame(frame = self.step/self.n_dump))
-            except:
-                pass
-        return radii, velocities, forces, noise
-
     #main MD loop
     def solve(self):
         self.mode = 'learning' if self.optimizer.param_groups[0]['lr'] > 0 else 'simulation'
@@ -574,6 +487,7 @@ class ImplicitMDSimulator():
         self.original_radii = self.radii.clone()
         self.original_velocities = self.velocities.clone()
         self.original_zeta = self.zeta.clone()
+
         #log checkpoint states for resetting
         if not self.all_unstable:
             self.checkpoint_radii.append(self.original_radii)
@@ -588,33 +502,32 @@ class ImplicitMDSimulator():
         #Initialize forces/potential of starting configuration
         with torch.no_grad():
             self.step = -1
-            _, forces = self.force_calc(self.radii)
-            # if self.integrator == 'Langevin':
-            #     #half-step outside loop to ensure symplecticity
-            #     self.velocities = self.velocities + self.dt/2*(forces/self.masses - self.gamma*self.velocities) + self.noise_f/torch.sqrt(torch.tensor(2.0).to(self.device))*torch.randn_like(self.velocities)
+            _, forces = self.integrator.calculator.calculate_energy_force(self.radii)
             zeta = self.zeta
             #Run MD
             print("Start MD trajectory", file=self.f)
             for step in tqdm(range(self.nsteps)):
                 self.step = step
                 #MD Step
-                if self.integrator == 'NoseHoover':
-                    radii, velocities, forces, zeta = self.forward_nosehoover(self.radii, self.velocities, forces, zeta, retain_grad = False)
-                elif self.integrator == 'Langevin':
-                    radii, velocities, forces, noise = self.forward_langevin(self.radii, self.velocities, forces, retain_grad = False)
-                else:
-                    raise RuntimeError("Must choose either NoseHoover or Langevin as integrator")
+                radii, velocities, energy, forces, zeta = self.integrator.step(self.radii, self.velocities, forces, zeta, retain_grad = False)
+                # dump frames
+                if self.step%self.n_dump == 0:
+                    print(self.step, self.thermo_log(energy), file=self.f)
+                    step  = self.step if self.train else (self.epoch+1) * self.step #don't overwrite previous epochs at inference time
+                    try:   
+                        self.t.append(self.create_frame(frame = step/self.n_dump))
+                    except:
+                        pass
                 
                 #save trajectory for gradient calculation
-                if step >= self.eq_steps:# and step % self.n_dump == 0:
+                if step >= self.eq_steps:
                     self.running_radii.append(radii.detach().clone())
                     self.running_vels.append(velocities.detach().clone())
                     self.running_accs.append((forces/self.masses).detach().clone())
-                    if self.integrator == "Langevin":
-                        self.running_noise.append(noise)
-                
+                    
                     if step % self.n_dump == 0 and not self.train:
                         self.all_radii.append(radii.detach().cpu()) #save whole trajectory without resetting at inference time
+                
                 self.radii.copy_(radii)
                 self.velocities.copy_(velocities)
                     
@@ -1044,11 +957,7 @@ if __name__ == "__main__":
         lrs.append(simulator.optimizer.param_groups[0]['lr'])
         #energy/force error
         if epoch == 0 or (simulator.optimizer.param_groups[0]['lr'] > 0 and params.train): #don't compute it unless we are in the learning phase
-            #energy_rmse, force_rmse, energy_mae, force_mae = simulator.energy_force_error()
-            energy_rmse = 0
-            force_rmse = 0
-            energy_mae = 0
-            force_mae = 0
+            energy_rmse, force_rmse, energy_mae, force_mae = simulator.energy_force_error()
             energy_rmses.append(energy_rmse)
             force_rmses.append(force_rmse)
             energy_maes.append(energy_mae)
