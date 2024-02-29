@@ -69,9 +69,9 @@ from boltzmann_estimator import BoltzmannEstimator
 
 MAX_SIZES = {'md17': '10k', 'md22': '100percent', 'water': '10k', 'lips': '20k'}
 
-class ImplicitMDSimulator():
+class Simulator():
     def __init__(self, config, params, model, model_path, model_config, gt_rdf):
-        super(ImplicitMDSimulator, self).__init__()
+        super(Simulator, self).__init__()
         print("Initializing MD simulation environment")
         self.params = params
         #GPU
@@ -360,25 +360,6 @@ class ImplicitMDSimulator():
                     test_metrics['energy_mae'], test_metrics['forces_mae']
 
     def energy_force_gradient(self):
-        '''
-        Inputs:
-        model
-        train_dataset
-        train_dataloader
-        device
-        n_atoms
-        atoms_batch
-        rescale_layers
-        model_config
-        r_max_key
-        nequip_loss
-
-        trainer
-        model
-        train_dataloader
-        device
-        '''
-
         #store original shapes of model parameters
         original_numel = [param.data.numel() for param in self.model.parameters()]
         original_shapes = [param.data.shape for param in self.model.parameters()]

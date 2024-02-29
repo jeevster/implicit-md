@@ -49,7 +49,7 @@ from mdsim.common.utils import (
 )
 from mdsim.common.flags import flags
 from boltzmann_estimator import BoltzmannEstimator
-from nvt_implicit import ImplicitMDSimulator
+from nvt_implicit import Simulator
 MAX_SIZES = {'md17': '10k', 'md22': '100percent', 'water': '10k', 'lips': '20k'}
 
 
@@ -86,6 +86,9 @@ if __name__ == "__main__":
                 if params.train else os.path.join(params.results_dir, f"IMPLICIT_{model_type}_{molecule_for_name}_{params.exp_name}_lr={params.lr}_efweight={params.energy_force_loss_weight}", "inference", params.eval_model)
     os.makedirs(results_dir, exist_ok = True)
     
+    ######## Load appropriate model checkpoint ##############
+
+
     print(f"Loading pretrained {model_type} model")
     lmax_string = f"lmax={params.l_max}_" if model_type == "nequip" else ""
     #load the correct checkpoint based on whether we're doing train or val
@@ -129,7 +132,6 @@ if __name__ == "__main__":
             #get model from finetuned directory
             model, _ = Trainer.load_model_from_training_session(pretrained_model_path, \
                                     config_dictionary=model_config, model_name = cname, device =  torch.device(device))
-            #model = torch.load(os.path.join(pretrained_model_path, cname), map_location = torch.device(device))
         else:
             ckpt_epoch = config['checkpoint_epoch']
             cname = 'best_model.pth' if ckpt_epoch == -1 else f"ckpt{ckpt_epoch}.pth"
@@ -153,14 +155,13 @@ if __name__ == "__main__":
     num_params = sum([np.prod(p.size()) for p in model_parameters])
     print(f"{num_params} trainable parameters in {model_type} model")
 
-    # #initialize RDF calculator
-    diff_rdf = DifferentiableRDF(params, device)
 
     integrator_config = config['integrator_config']
     timestep = config["timestep"]
     ttime = integrator_config["ttime"]
 
-    #load ground truth observables
+    ###########Compute ground truth observables###############
+
     print("Computing ground truth observables from datasets")
     if name == 'water':
         gt_rdf_package, gt_rdf_local_package, gt_diffusivity, gt_msd, gt_adf, oxygen_atoms_mask = find_water_rdfs_diffusivity_from_file(data_path, MAX_SIZES[name], params, device)
@@ -187,7 +188,6 @@ if __name__ == "__main__":
         gt_traj = torch.FloatTensor(gt_data.f.R).to(device)
         gt_vels = gt_traj[1:] - gt_traj[:-1] #finite difference approx
 
-
     gt_vacf = DifferentiableVACF(params, device)(gt_vels)
     if isinstance(gt_rdf, dict):
         for _type, _rdf in gt_rdf.items():
@@ -202,9 +202,10 @@ if __name__ == "__main__":
     if params.name == 'lips' or params.name == 'water':
         np.save(os.path.join(results_dir, 'gt_diffusivity.npy'), gt_diffusivity.cpu())
         np.save(os.path.join(results_dir, 'gt_msd.npy'), gt_msd.cpu())
+
+    ########## Training setup ############
     
     min_lr = params.lr / (5 ** params.max_times_reduce_lr) #LR reduction factor is 0.2 each time
-    #outer training loop
     losses = []
     rdf_losses = []
     adf_losses = []
@@ -231,9 +232,9 @@ if __name__ == "__main__":
     add_lists = lambda list1, list2, w1, w2: tuple([w1*l1 + w2*l2 \
                                                     for l1, l2 in zip(list1, list2)])
 
-    #Begin Main Training Loop
+    ######### Begin StABlE Training Loop #############
+
     for epoch in range(params.n_epochs):
-        
         #rdf = torch.zeros_like(gt_rdf).to(device)
         rdf_loss = torch.Tensor([0]).to(device)
         vacf_loss = torch.Tensor([0]).to(device)
@@ -243,9 +244,9 @@ if __name__ == "__main__":
         ratios = 0
         print(f"Epoch {epoch+1}")
         
-        if epoch==0: #draw IC from dataset
-            #initialize simulator parameterized by a NN model
-            simulator = ImplicitMDSimulator(config, params, model, model_path, model_config, gt_rdf)
+        if epoch==0:
+            #initialize MD simulator
+            simulator = Simulator(config, params, model, model_path, model_config, gt_rdf)
             #initialize Boltzmann_estimator
             boltzmann_estimator = BoltzmannEstimator(gt_rdf_package, gt_rdf_local_package, simulator.mean_bond_lens, gt_vacf, gt_adf, params, device)
             #initialize outer loop optimizer/scheduler
@@ -262,6 +263,7 @@ if __name__ == "__main__":
 
         simulator.optimizer.zero_grad()
         simulator.epoch = epoch
+
         #set starting states based on instability metric
         num_unstable_replicas = simulator.set_starting_states()
 
@@ -273,10 +275,11 @@ if __name__ == "__main__":
             changed_lr = True
 
         start = time.time()
-        #run simulation 
+        #Run MD simulation 
         print('Collect MD Simulation Data')
         equilibriated_simulator = simulator.solve()
-        #estimate gradients via Fabian method/adjoint
+        #If instability threshold reached, estimate gradients via Boltzmann estimator
+        #Otherwise, the gradients are None
         rdf_package, vacf_package, energy_force_grad_batches = \
                     boltzmann_estimator.compute(equilibriated_simulator)
                 
@@ -286,6 +289,7 @@ if __name__ == "__main__":
         if not params.train:
             all_vacfs_per_replica.append(vacfs_per_replica)
 
+        #Compute loss
         outer_loss = params.rdf_loss_weight*rdf_loss + params.adf_loss_weight*adf_loss + diffusion_loss + params.vacf_loss_weight*vacf_loss
         print(f"Loss: RDF={rdf_loss.item()}+ADF={adf_loss.item()}+Diffusion={diffusion_loss.item()}+VACF={vacf_loss.item()}={outer_loss.item()}")
         
@@ -297,7 +301,7 @@ if __name__ == "__main__":
         if energy_force_grad_batches is None:
             energy_force_grad_batches = rdf_grad_batches
         
-        #manual gradient updates for now
+        #Learning phase gradient update
         if vacf_grad_batches or rdf_grad_batches:
             grad_cosine_similarity = []
             ratios = []
@@ -325,6 +329,7 @@ if __name__ == "__main__":
             ratios = sum(ratios) / len(ratios)
         
         if simulator.all_unstable and params.train and (simulator.optimizer.param_groups[0]['lr'] < min_lr or num_unstable_replicas <= params.min_frac_unstable_threshold):
+            #Switch from learning to simulation phase
             print(f"Back to data collection")
             simulator.all_unstable = False
             simulator.first_simulation = True
@@ -410,7 +415,7 @@ if __name__ == "__main__":
         writer.add_scalar('Gradient Cosine Similarity (Observable vs Energy-Force)', grad_cosine_similarity, global_step=epoch+1)
         writer.add_scalar('Gradient Ratios (Observable vs Energy-Force)', ratios, global_step=epoch+1)
 
-        #add hyperparams and final metrics at inference time (do it every 5 epochs in case we time-out before the end)
+        #log hyperparams and final metrics at inference time (do it every 5 epochs in case we time-out before the end)
         if not params.train:
             if epoch % 5 == 0 and epoch > 175: #to save time
                 if name == "md17" or name == "md22":
@@ -419,8 +424,10 @@ if __name__ == "__main__":
                     hparams_logging = calculate_final_metrics(simulator, params, device, results_dir, energy_maes, force_maes, gt_rdf, gt_adf, gt_diffusivity = gt_diffusivity, oxygen_atoms_mask = oxygen_atoms_mask)
                 for i in hparams_logging:
                     writer.file_writer.add_summary(i)
-    
-    #save metrics at end too
+
+    ######### End StABlE Training Loop #############
+
+    #save metrics at the very end
     if not params.train:
         if name == "md17" or name == "md22":
             hparams_logging = calculate_final_metrics(simulator, params, device, results_dir, energy_maes, force_maes, gt_rdf, gt_adf, gt_vacf, all_vacfs_per_replica = all_vacfs_per_replica)
