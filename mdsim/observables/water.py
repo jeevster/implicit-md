@@ -1,20 +1,13 @@
 import torch
 import numpy as np
-from itertools import product
-from scipy.stats import maxwell
 import math
-import yaml
-from tqdm import tqdm
 import os
-import gc
-import matplotlib.pyplot as plt
-from torchmd.observable import DifferentiableRDF, DifferentiableADF
-from mdsim.common.custom_radius_graph import detach_numpy
+from torchmd.observable import DifferentiableADF
 from mdsim.common.utils import data_to_atoms
 from mdsim.observables.common import distance_pbc
 from mdsim.datasets.lmdb_dataset import LmdbDataset
 from ase.neighborlist import natural_cutoffs, NeighborList
-from mdsim.observables.common import radii_to_dists, get_smoothed_diffusivity
+from mdsim.observables.common import get_smoothed_diffusivity
 
 #Water utils
 class WaterRDFMAE(torch.nn.Module):
@@ -90,7 +83,6 @@ def n_closest_molecules(_xyz, center_idx, n, lattices):
     #return original (unwrapped) coordinates and corresponding indices
     final_coords = torch.stack([_xyz[i, atom_idx.long()] for i, atom_idx in enumerate(atom_idxs)])
     return final_coords, atom_idxs
-
 
 def expand_molecules_to_atoms(molecule_idxs):
     atom_idxs = []

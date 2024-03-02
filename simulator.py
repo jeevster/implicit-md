@@ -7,24 +7,24 @@ from tqdm import tqdm
 from torch_geometric.nn import radius_graph
 from torch.utils.data import DataLoader
 import ase
-from ase import Atoms, units
+from ase import units
 import nequip.scripts.deploy
-from nequip.train.trainer import Trainer
 from nequip.train.loss import Loss
-from nequip.data import AtomicData, AtomicDataDict
+from nequip.data import AtomicData
 from nequip.utils.torch_geometric import Batch
-from nequip.utils import atomic_write, load_file
+from nequip.utils import load_file
 from ase.neighborlist import natural_cutoffs, NeighborList
 from mdsim.md.ase_utils import OCPCalculator
-from mdsim.md.integrator import NoseHoover, Langevin
 from mdsim.md.calculator import ForceCalculator
+from mdsim.md.integrator import NoseHoover, Langevin
+from copy import deepcopy
 from mdsim.common.registry import registry
-from mdsim.common.utils import data_to_atoms, process_gradient, initialize_velocities, dump_params_to_yml
-from mdsim.common.custom_radius_graph import detach_numpy
+from mdsim.common.utils import data_to_atoms, initialize_velocities, dump_params_to_yml
 from mdsim.datasets.lmdb_dataset import LmdbDataset, data_list_collater
 from mdsim.observables.common import distance_pbc, BondLengthDeviation, compute_distance_matrix_batch
 from mdsim.observables.water import WaterRDFMAE, MinimumIntermolecularDistance
-from mdsim.observables.lips import LiPSRDFMAE, cart2frac, frac2cart
+from mdsim.observables.lips import LiPSRDFMAE
+from simulator_utils import create_frame, thermo_log
 
 MAX_SIZES = {'md17': '10k', 'md22': '100percent', 'water': '10k', 'lips': '20k'}
 
@@ -85,8 +85,8 @@ class Simulator():
                 outer_layer = getattr(outer_layer, "model", None)
         for param in self.model.parameters():
             param.requires_grad = True
-        self.model_config = model_config
-
+        self.model_config = deepcopy(model_config)
+    
         #initialize datasets
         train_src = os.path.join(self.data_dir, self.name, self.molecule, self.size, 'train')
         test_src = os.path.join(self.data_dir, self.name, self.molecule, MAX_SIZES[self.name], 'test')
@@ -127,6 +127,7 @@ class Simulator():
             self.final_atom_types = torch.Tensor(self.typeid).repeat(self.n_replicas).to(self.device).to(torch.long).unsqueeze(-1)
 
         #extract ground truth energies, forces, and bond length deviation
+        #TODO: duplicated with train_src
         self.DATAPATH_TRAIN = os.path.join(self.data_dir, self.name, self.molecule, self.size, 'train') 
         self.DATAPATH_TEST = os.path.join(self.data_dir, self.name, self.molecule, self.size, 'test')
         
@@ -280,95 +281,11 @@ class Simulator():
                 self.trainer = OCPCalculator(config_yml=self.model_config, checkpoint=self.curr_model_path, 
                                         test_data_src=self.DATAPATH_TEST, 
                                         energy_units_to_eV=1.).trainer
+                self.trainer.model = self.model
          
     def stability_per_replica(self):
         stability = (self.instability_per_replica > self.stability_tol) if self.params.stability_criterion == 'imd' else (self.instability_per_replica < self.stability_tol)
         return stability
-
-    '''compute energy/force error on test set'''
-    def energy_force_error(self):
-        self.model_config['model']['name'] = self.model_type
-        if self.model_type == 'nequip':
-            data_config = f"configs/{self.name}/nequip_data_cfg/{self.molecule}.yml"
-            # call nequip evaluation script
-            os.system(f'nequip-evaluate --train-dir {os.path.dirname(self.curr_model_path)} \
-                        --model {self.curr_model_path} --dataset-config {data_config} \
-                            --log {os.path.dirname(self.curr_model_path)}/test_metric.log --batch-size 4')
-            with open(f'{os.path.dirname(self.curr_model_path)}/test_metric.log', 'r') as f:
-                test_log = f.read().splitlines()
-                for i, line in enumerate(test_log):
-                    if 'Final result' in line:
-                        test_log = test_log[(i+1):]
-                        break
-                test_metrics = {}
-                for line in test_log:
-                    k, v = line.split('=')
-                    k = k.strip()
-                    v = float(v.strip())
-                    test_metrics[k] = v
-            return test_metrics['e_mae'], test_metrics['f_rmse'], test_metrics['e_mae'], test_metrics['f_mae']
-        #non-Nequip models use OCP calculator
-        else:
-            self.calculator = OCPCalculator(config_yml=self.model_config, checkpoint=self.curr_model_path, 
-                                    test_data_src=self.DATAPATH_TEST, 
-                                    energy_units_to_eV=1.) 
-            print(f"Computing bottom-up (energy-force) error on test set")
-            test_metrics = self.calculator.trainer.validate('test', max_points=1000)
-            test_metrics = {k: v['metric'] for k, v in test_metrics.items()}
-            return test_metrics['energy_rmse'], test_metrics['forces_rmse'], \
-                    test_metrics['energy_mae'], test_metrics['forces_mae']
-
-    def energy_force_gradient(self):
-        #store original shapes of model parameters
-        original_numel = [param.data.numel() for param in self.model.parameters()]
-        original_shapes = [param.data.shape for param in self.model.parameters()]
-        print(f"Computing gradients of bottom-up (energy-force) objective on {self.train_dataset.__len__()} samples")
-        gradients = []
-        losses = []
-        if self.model_type == "nequip":
-            with torch.enable_grad():
-                for data in tqdm(self.train_dataloader):
-                    # Do any target rescaling
-                    data = data.to(self.device)
-                    data = AtomicData.to_AtomicDataDict(data)
-                    actual_batch_size = int(data['pos'].shape[0]/self.n_atoms)
-                    data['cell'] = data['cell'][0].unsqueeze(0).repeat(actual_batch_size, 1, 1)
-                    data['pbc'] = self.atoms_batch['pbc'][0].unsqueeze(0).repeat(actual_batch_size, 1)
-                    data['atom_types'] = self.atoms_batch['atom_types'][0:self.n_atoms].repeat(actual_batch_size, 1)
-
-                    data_unscaled = data
-                    for layer in self.rescale_layers:
-                        # normalizes the targets
-                        data_unscaled = layer.unscale(data_unscaled)    
-                    # Run model
-                    data_unscaled['edge_index'] = radius_graph(data_unscaled['pos'].reshape(-1, 3), r=self.model_config['model'][self.r_max_key], batch=data_unscaled['batch'], max_num_neighbors=32)
-                    data_unscaled['edge_cell_shift'] = torch.zeros((data_unscaled['edge_index'].shape[1], 3)).to(self.device)
-                    out = self.model(data_unscaled)
-                    data_unscaled['forces'] = data_unscaled['force']
-                    data_unscaled['total_energy'] = data_unscaled['y'].unsqueeze(-1)
-                    loss, _ = self.nequip_loss(pred=out, ref=data_unscaled)
-                    grads = torch.autograd.grad(loss, self.model.parameters(), allow_unused = True)
-                    gradients.append(process_gradient(self.model.parameters(), grads, self.device))
-                    losses.append(loss.detach())
-        else:
-            self.trainer.model = self.model
-            with torch.enable_grad():
-                for batch in tqdm(self.train_dataloader):
-                    with torch.cuda.amp.autocast(enabled=self.trainer.scaler is not None):
-                        for key in batch.keys:
-                            if isinstance(batch[key], torch.Tensor):
-                                batch[key] = batch[key].to(self.device)
-                        out = self.trainer._forward(batch)
-                        loss = self.trainer._compute_loss(out, [batch])
-                        loss = self.trainer.scaler.scale(loss) if self.trainer.scaler else loss
-                        grads = torch.autograd.grad(loss, self.model.parameters(), allow_unused = True)
-                        gradients.append(process_gradient(self.model.parameters(), grads, self.device))
-                        losses.append(loss.detach())
-        grads_flattened = torch.stack([torch.cat([param.flatten().detach()\
-                                    for param in grad]) for grad in gradients])
-        mean_grads = grads_flattened.mean(0)
-        final_grads = tuple([g.reshape(shape) for g, shape in zip(mean_grads.split(original_numel), original_shapes)])
-        return final_grads
 
     def set_starting_states(self):
         #find replicas which violate the stability criterion
@@ -447,10 +364,15 @@ class Simulator():
                 radii, velocities, energy, forces, zeta = self.integrator.step(self.radii, self.velocities, self.forces, self.zeta, retain_grad = False)
                 # dump frames
                 if self.step%self.n_dump == 0:
-                    print(self.step, self.thermo_log(energy), file=self.f)
+                    print(self.step, thermo_log(self.radii, self.velocities, energy, \
+                                                self.masses, self.n_atoms, self.stability_criterion, \
+                                                self.bond_length_dev if self.pbc else None, self.rdf_mae \
+                                                    if self.pbc else None, self.pbc), file=self.f)
                     step  = self.step if self.train else (self.epoch+1) * self.step #don't overwrite previous epochs at inference time
                     try:   
-                        self.t.append(self.create_frame(frame = step/self.n_dump))
+                        self.t.append(create_frame(self.radii, self.velocities, self.cell, \
+                                                    self.bonds, self.pbc, self.diameter_viz, \
+                                                    self.n_atoms, self.dt, self.name, frame = step/self.n_dump))
                     except:
                         pass
                 
@@ -463,10 +385,13 @@ class Simulator():
                     if step % self.n_dump == 0 and not self.train:
                         self.all_radii.append(radii.detach().cpu()) #save whole trajectory without resetting at inference time
                 
+                #update state
                 self.radii.copy_(radii)
                 self.velocities.copy_(velocities)
                 self.zeta.copy_(zeta)
                 self.forces.copy_(forces)
+
+            #combine radii
             self.stacked_radii = torch.stack(self.running_radii[::self.n_dump])
 
             #compute instability metric (either bond length deviation, min intermolecular distance, or RDF MAE)
@@ -488,53 +413,4 @@ class Simulator():
         return self 
 
 
-    def create_frame(self, frame):
-        # Particle positions, velocities, diameter
-        radii = self.radii[0]
-        if self.pbc:
-            #wrap for visualization purposes
-            if self.name == 'lips': #account for non-cubic cell
-                frac_radii = cart2frac(radii, self.cell)
-                frac_radii = frac_radii % 1.0 #wrap
-                radii = frac2cart(frac_radii, self.cell)
-            else:
-                radii = ((radii / torch.diag(self.cell)) % 1) * torch.diag(self.cell)  - torch.diag(self.cell)/2 #wrap coords (last subtraction is for cell alignment in Ovito)
-        partpos = detach_numpy(radii).tolist()
-        velocities = detach_numpy(self.velocities[0]).tolist()
-        diameter = 10*self.diameter_viz*np.ones((self.n_atoms,))
-        diameter = diameter.tolist()
-        # Now make gsd file
-        s = gsd.hoomd.Frame()
-        s.configuration.step = frame
-        s.particles.N=self.n_atoms
-        s.particles.position = partpos
-        s.particles.velocity = velocities
-        s.particles.diameter = diameter
-        
-        cell = torch.Tensor(self.atoms.cell)
-        s.configuration.box=[cell[0][0], cell[1][1], cell[2][2], 0, 0, 0]
-        s.configuration.step = self.dt
 
-        if self.name != 'lips': #don't show bonds if lips
-            s.bonds.N = self.bonds.shape[0]
-            s.bonds.group = detach_numpy(self.bonds)
-        return s
-    
-    def thermo_log(self, pe):
-        #Log energies and instabilities
-        p_dof = 3*self.n_atoms
-        ke = 1/2 * (self.masses*torch.square(self.velocities)).sum(axis = (1,2)).unsqueeze(-1)
-        temp = (2*ke/p_dof).mean() / units.kB
-        instability = self.stability_criterion(self.radii.unsqueeze(0))
-        if isinstance(instability, tuple):
-            instability = instability[-1]
-        results_dict = {"Temperature": temp.item(),
-                        "Potential Energy": pe.mean().item(),
-                        "Total Energy": (ke+pe).mean().item(),
-                        "Momentum Magnitude": torch.norm(torch.sum(self.masses*self.velocities, axis =-2)).item(),
-                        'Max Bond Length Deviation': self.bond_length_dev(self.radii.unsqueeze(0))[1].mean().item() \
-                                                      if self.pbc else instability.mean().item()}
-        if self.pbc:
-            results_dict['Minimum Intermolecular Distance'] = instability.mean().item()
-            results_dict['RDF MAE'] = self.rdf_mae(self.radii.unsqueeze(0))[-1].mean().item()
-        return results_dict

@@ -1,19 +1,5 @@
 import torch
-import numpy as np
-from itertools import product
-from scipy.stats import maxwell
 from copy import deepcopy
-import math
-import yaml
-import json
-import os
-import gc
-import matplotlib.pyplot as plt
-from torchmd.observable import DifferentiableRDF, DifferentiableADF
-from mdsim.common.utils import data_to_atoms
-from mdsim.datasets.lmdb_dataset import LmdbDataset
-from ase.neighborlist import natural_cutoffs, NeighborList
-
 
 class ObservableMSELoss(torch.nn.Module):
     def __init__(self, target_obs):
@@ -63,10 +49,6 @@ class BondLengthDeviation(torch.nn.Module):
 def radii_to_dists(radii, params):
     #Get rij matrix
     r = radii.unsqueeze(-3) - radii.unsqueeze(-2)
-    
-    # #Enforce minimum image convention
-    # r = -1*torch.where(r > 0.5*params.box, r-params.box, torch.where(r<-0.5*params.box, r+params.box, r))
-
     #get rid of diagonal 0 entries of r matrix (for gradient stability)
     r = r[:, ~torch.eye(r.shape[1],dtype=bool)].reshape(r.shape[0], r.shape[1], -1, 3)
     try:

@@ -2,22 +2,16 @@ import numpy as np
 import torch
 import logging
 import gc
-import json
-from pathlib import Path
-import shutil
-from YParams import YParams
-import argparse
 import os
+import shutil
 import random
 import types
 from torchmd.observable import DifferentiableVACF
 import time
+from nequip.train.trainer import Trainer
 from torch.utils.tensorboard import SummaryWriter
-from torch.utils.tensorboard.summary import hparams
-import warnings
-from collections import OrderedDict
-from mdsim.common.utils import extract_cycle_epoch, load_config, build_config, save_checkpoint, setup_logging, compare_gradients
-from utils import calculate_final_metrics
+from mdsim.common.utils import extract_cycle_epoch, build_config, setup_logging, compare_gradients
+from simulator_utils import energy_force_error, save_checkpoint, calculate_final_metrics
 from mdsim.observables.md17_22 import find_hr_adf_from_file
 from mdsim.observables.water import find_water_rdfs_diffusivity_from_file
 from mdsim.observables.lips import find_lips_rdfs_diffusivity_from_file
@@ -354,7 +348,7 @@ if __name__ == "__main__":
         lrs.append(simulator.optimizer.param_groups[0]['lr'])
         #energy/force error
         if epoch == 0 or (simulator.optimizer.param_groups[0]['lr'] > 0 and params.train): #don't compute it unless we are in the learning phase
-            energy_rmse, force_rmse, energy_mae, force_mae = simulator.energy_force_error()
+            energy_rmse, force_rmse, energy_mae, force_mae = energy_force_error(simulator)
             energy_rmses.append(energy_rmse)
             force_rmses.append(force_rmse)
             energy_maes.append(energy_mae)

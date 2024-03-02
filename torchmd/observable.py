@@ -64,19 +64,10 @@ class DifferentiableRDF(torch.nn.Module):
         ).to(self.device)
 
     def forward(self, running_dists):
-        # nbr_list, pair_dis, _ = generate_nbr_list(xyz, 
-        #                                        self.cutoff_boundary, 
-        #                                        self.cell, 
-        #                                        index_tuple=self.index_tuple, 
-        #                                        get_dis=True)
         running_dists = torch.cat(running_dists)
-        # mask = running_dists !=0
-        # running_dists = running_dists[mask]
         count = self.smear(running_dists.reshape(-1).squeeze()[..., None]).sum(0) 
         norm = count.sum()   # normalization factor for histogram 
         count = count / norm   # normalize 
-        # gr =  count / (self.vol_bins / self.V)  
-        # return gr #to match with MD17 RDF computation
         return 100*count
 
 #differentiable angular distribution function

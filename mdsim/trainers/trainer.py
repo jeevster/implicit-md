@@ -26,7 +26,6 @@ from mdsim.common.data_parallel import (
     ParallelCollater,
 )
 from mdsim.common.registry import registry
-from mdsim.common.utils import save_checkpoint
 
 from mdsim.modules.evaluator import Evaluator
 from mdsim.modules.exponential_moving_average import (

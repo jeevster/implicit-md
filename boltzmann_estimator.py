@@ -5,11 +5,11 @@ from nff.utils.scatter import compute_grad
 import os
 from tqdm import tqdm
 from torchmd.observable import DifferentiableRDF, DifferentiableADF, DifferentiableVACF
-from functorch import vmap, vjp
-import warnings
+from functorch import vmap
 from ase import units
 from mdsim.common.utils import process_gradient
-from mdsim.observables.common import radii_to_dists, ObservableMAELoss, ObservableMSELoss, IMDHingeLoss
+from simulator_utils import energy_force_gradient
+from mdsim.observables.common import radii_to_dists, ObservableMSELoss, IMDHingeLoss
 from mdsim.observables.water import n_closest_molecules
 
 
@@ -106,7 +106,7 @@ class BoltzmannEstimator():
         
         #energy/force loss
         if (self.simulator.energy_force_loss_weight != 0 and self.simulator.train and simulator.optimizer.param_groups[0]['lr'] > 0):
-            energy_force_package = (self.simulator.energy_force_gradient(),)
+            energy_force_package = (energy_force_gradient(self.simulator),)
         else:
             energy_force_package = None
         
@@ -159,10 +159,6 @@ class BoltzmannEstimator():
             local_stacked_radii = torch.stack([local_neighborhood[0] for local_neighborhood in local_neighborhoods], dim = 1)
             atomic_indices = torch.stack([local_neighborhood[1] for local_neighborhood in local_neighborhoods], dim=1)
             
-            #compute observables on local environments
-            # rdfs = torch.cat([self.simulator.rdf_mae(s.unsqueeze(0).unsqueeze(0))[0] for s in local_stacked_radii.reshape(-1, self.simulator.n_atoms_local, 3)])
-            # rdfs = rdfs.reshape(local_stacked_radii.shape[0], local_stacked_radii.shape[1], -1)
-            # adfs = torch.zeros(rdfs.shape[0], rdfs.shape[1], 180).to(self.simulator.device) #TODO: temporary
             imds = torch.cat([self.simulator.min_imd(s.unsqueeze(0).unsqueeze(0)) for s in local_stacked_radii.reshape(-1, self.simulator.n_atoms_local, 3)])
             imds = imds.reshape(local_stacked_radii.shape[0], local_stacked_radii.shape[1], -1)
             bond_lens = torch.cat([self.simulator.bond_length_dev(s.unsqueeze(0).unsqueeze(0))[0] for s in local_stacked_radii.reshape(-1, self.simulator.n_atoms_local, 3)])
@@ -246,7 +242,7 @@ class BoltzmannEstimator():
                 if self.simulator.name == 'water':
                     atomic_indices_in = atomic_indices[start:end]
                 radii_in.requires_grad = True
-                energy_force_output = self.simulator.force_calc(radii_in, retain_grad = True, output_individual_energies = self.simulator.name == 'water')
+                energy_force_output = self.simulator.calculator.calculate_energy_force(radii_in, retain_grad = True, output_individual_energies = self.simulator.name == 'water')
                 if len(energy_force_output) == 2:
                     #global energy
                     energy = energy_force_output[0] 

@@ -19,10 +19,6 @@ def compute_grad(inputs, output, grad_outputs = None, create_graph=True, retain_
     else:
         assert inputs.requires_grad
     
-    #import pdb; pdb.set_trace()
-
-    # gradspred, = grad(output, inputs, grad_outputs=output.data.new(output.shape).fill_(1),
-    #             create_graph=create_graph, retain_graph=retain_graph)
     if grad_outputs is None:
         grad_outputs=output.data.new(output.shape).fill_(1)
     try:

@@ -1,7 +1,8 @@
 from mdsim.common.utils import cleanup_atoms_batch
-import numpy as np
 import torch
-from nff.utils.scatter import compute_grad
+from nequip.data import AtomicDataDict
+from torch_geometric.nn import radius_graph
+
 class ForceCalculator():
     def __init__(self, model, model_type, model_config, r_max_key, n_atoms, atomic_numbers, atoms_batch, device):
         self.model = model

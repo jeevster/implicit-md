@@ -2,12 +2,9 @@
 adapted from 
 https://github.com/torchmd/mdgrad/tree/master/nff/md
 """
-import numpy as np
 import torch
-from nff.utils.scatter import compute_grad
 from mdsim.common.registry import registry
 from ase import units
-
 
 
 @registry.register_integrator("NoseHoover")
@@ -66,8 +63,6 @@ class Langevin():
         self.temp *= units.kB
         self.gamma = config['integrator_config']["gamma"] / (1000*units.fs)
         self.noise_f = (2.0 * self.gamma/self.masses * self.temp * self.dt).sqrt().to(self.device)
-        
-
 
     def step(self, radii, velocities, forces, retain_grad = False):
         #full step in position

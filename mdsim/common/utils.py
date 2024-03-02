@@ -9,30 +9,26 @@ import logging
 import os
 import re
 import sys
+import gc
 import time
 from bisect import bisect
 from functools import wraps
 from itertools import product
-from mdsim.common.YParams import YParams
 from scipy.stats import maxwell
+from nequip.utils import atomic_write
 from nequip.data import AtomicData, AtomicDataDict
-from torch_geometric.data import Data, Batch
+from torch_geometric.data import Data
 from pathlib import Path
 import numpy as np
 import torch
 import yaml
-from ase import Atoms, units
+from ase import Atoms
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 from matplotlib.figure import Figure
-from mdsim.common.registry import registry
-from mdsim.datasets.lmdb_dataset import LmdbDataset, data_list_collater
-from torch_geometric.nn import radius_graph
-from ase.neighborlist import natural_cutoffs, NeighborList
+from mdsim.datasets.lmdb_dataset import data_list_collater
 from torch_geometric.utils import remove_self_loops
 from torch_scatter import segment_coo, segment_csr
 from torch_cluster import radius_graph as pyg_radius_graph
-from ase.data import atomic_masses
-from torchmd.observable import generate_vol_bins, DifferentiableRDF, DifferentiableADF
 
 
 HARTREE_TO_KCAL_MOL = 627.509
@@ -67,40 +63,6 @@ OFFSET_LIST = [
     [1, 1, 0],
     [1, 1, 1],
 ]
-
-def save_checkpoint(simulator, best=False, name_=None):
-    if simulator.model_type == "nequip":
-        if name_ is not None:
-            name = f"{name_}.pth"
-        else:
-            name = "best_ckpt.pth" if best else "ckpt.pth"
-        checkpoint_path = os.path.join(simulator.save_dir, name)
-        with atomic_write(checkpoint_path, blocking=True, binary=True) as write_to:
-            torch.save(simulator.model.state_dict(), write_to)
-    else:
-        if name_ is not None:
-            name = f"{name_}.pt"
-        else:
-            name = "best_ckpt.pt" if best else "ckpt.pt"
-        checkpoint_path = os.path.join(simulator.save_dir, name)
-        new_state_dict = OrderedDict(("module."+k if "module" not in k else k, v) for k, v in self.model.state_dict().items())
-        torch.save({
-                    "epoch": simulator.epoch,
-                    "step": simulator.epoch,
-                    "state_dict": new_state_dict,
-                    "normalizers": {
-                        key: value.state_dict()
-                        for key, value in simulator.trainer.normalizers.items()
-                    },
-                    "config": simulator.model_config,
-                    "ema": simulator.trainer.ema.state_dict() if simulator.trainer.ema else None,
-                    "amp": simulator.trainer.scaler.state_dict()
-                    if simulator.trainer.scaler
-                    else None,
-                }, checkpoint_path)
-    #also save in 'ckpt.pt'
-    shutil.copyfile(checkpoint_path, os.path.join(simulator.save_dir, 'ckpt.pth' if simulator.model_type == 'nequip' else 'ckpt.pt'))
-    return checkpoint_path
 
 def extract_cycle_epoch(s):
     # Regular expression to match the pattern
@@ -288,15 +250,12 @@ def distance_pbc(x0, x1, lattices):
     return torch.sqrt((delta ** 2).sum(dim=-1))
 
 
-def atoms_to_state_dict(atoms, r_max):#, zeta):
+def atoms_to_state_dict(atoms, r_max):
     data = AtomicData.from_ase(atoms=atoms, r_max= r_max)
     for k in AtomicDataDict.ALL_ENERGY_KEYS:
         if k in data:
             del data[k]
     data = AtomicData.to_AtomicDataDict(data)
-    #data = {k: v for k, v in data.items()}
-    #data['velocities'] = atoms.get_velocities()
-    #data['zeta'] = np.expand_dims(np.array(zeta), -1)
     return data
 
     
