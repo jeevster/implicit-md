@@ -30,10 +30,11 @@ class LinearWarmupExponentialDecay(LambdaLR):
             exponent = step / decay_steps
             if staircase:
                 exponent = int(exponent)
-            decay = decay_rate ** exponent
+            decay = decay_rate**exponent
             return warmup * decay
 
         super().__init__(optimizer, lr_lambda, last_epoch=last_step, verbose=verbose)
+
 
 class ReduceLROnPlateau:
     def __init__(
@@ -209,9 +210,9 @@ class LRScheduler:
                 self.scheduler = getattr(lr_scheduler, self.scheduler_type)
             except:
                 self.scheduler = eval(self.scheduler_type)
-            scheduler_args = self.filter_kwargs(config)            
-            if 'min_lr' in scheduler_args:
-                scheduler_args['min_lr'] = float(scheduler_args['min_lr'])
+            scheduler_args = self.filter_kwargs(config)
+            if "min_lr" in scheduler_args:
+                scheduler_args["min_lr"] = float(scheduler_args["min_lr"])
             self.scheduler = self.scheduler(optimizer, **scheduler_args)
 
     def step(self, metrics=None, epoch=None):
@@ -219,9 +220,7 @@ class LRScheduler:
             return
         if self.scheduler_type == "ReduceLROnPlateau":
             if metrics is None:
-                raise Exception(
-                    "Validation set required for ReduceLROnPlateau."
-                )
+                raise Exception("Validation set required for ReduceLROnPlateau.")
             self.scheduler.step(metrics)
         else:
             self.scheduler.step()

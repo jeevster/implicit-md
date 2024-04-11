@@ -3,28 +3,49 @@ from torch.autograd import grad
 import torch
 
 
-def compute_grad(inputs, output, grad_outputs = None, create_graph=True, retain_graph=True, allow_unused = False):
+def compute_grad(
+    inputs,
+    output,
+    grad_outputs=None,
+    create_graph=True,
+    retain_graph=True,
+    allow_unused=False,
+):
     """Compute gradient of the scalar output with respect to inputs.
-    
+
     Args:
         inputs (torch.Tensor): torch tensor, requires_grad=True
-        output (torch.Tensor): scalar output 
-    
+        output (torch.Tensor): scalar output
+
     Returns:
-        torch.Tensor: gradients with respect to each input component 
+        torch.Tensor: gradients with respect to each input component
     """
     if not isinstance(inputs, torch.Tensor):
         for inp in inputs:
             assert inp.requires_grad
     else:
         assert inputs.requires_grad
-    
+
     if grad_outputs is None:
-        grad_outputs=output.data.new(output.shape).fill_(1)
+        grad_outputs = output.data.new(output.shape).fill_(1)
     try:
-        gradspred, = grad(output, inputs, grad_outputs=grad_outputs, create_graph=create_graph, retain_graph=retain_graph, allow_unused = allow_unused)
+        (gradspred,) = grad(
+            output,
+            inputs,
+            grad_outputs=grad_outputs,
+            create_graph=create_graph,
+            retain_graph=retain_graph,
+            allow_unused=allow_unused,
+        )
     except:
-        gradspred = grad(output, inputs, grad_outputs=grad_outputs, create_graph=create_graph, retain_graph=retain_graph, allow_unused = allow_unused)
+        gradspred = grad(
+            output,
+            inputs,
+            grad_outputs=grad_outputs,
+            create_graph=create_graph,
+            retain_graph=retain_graph,
+            allow_unused=allow_unused,
+        )
 
     return gradspred
 

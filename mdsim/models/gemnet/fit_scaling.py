@@ -31,9 +31,7 @@ if __name__ == "__main__":
     config["logger"] = "tensorboard"
 
     if args.distributed:
-        raise ValueError(
-            "I don't think this works with DDP (race conditions)."
-        )
+        raise ValueError("I don't think this works with DDP (race conditions).")
 
     setup_imports()
 
@@ -68,36 +66,38 @@ if __name__ == "__main__":
     AutomaticFit.set2fitmode()
 
     # compose dataset configs.
-    train_data_cfg = config['dataset']
-    dataset_name = train_data_cfg['name']
-    if dataset_name == 'md17':
-        train_data_cfg['src'] = os.path.join(train_data_cfg['src'], train_data_cfg['molecule'])
-        train_data_cfg['name'] = 'md17-' + train_data_cfg['molecule']
-    src = os.path.join(train_data_cfg['src'], train_data_cfg['size'])
-    train_data_cfg['src'] = os.path.join(src, 'train')
-    
-    norm_stats = np.load(os.path.join(src, 'metadata.npy'), allow_pickle=True).item()
-    if not train_data_cfg['normalize_labels']:
+    train_data_cfg = config["dataset"]
+    dataset_name = train_data_cfg["name"]
+    if dataset_name == "md17":
+        train_data_cfg["src"] = os.path.join(
+            train_data_cfg["src"], train_data_cfg["molecule"]
+        )
+        train_data_cfg["name"] = "md17-" + train_data_cfg["molecule"]
+    src = os.path.join(train_data_cfg["src"], train_data_cfg["size"])
+    train_data_cfg["src"] = os.path.join(src, "train")
+
+    norm_stats = np.load(os.path.join(src, "metadata.npy"), allow_pickle=True).item()
+    if not train_data_cfg["normalize_labels"]:
         # mean of energy is arbitrary. should always substract.
         # this is done in <trainer.load_datasets>.
-        train_data_cfg['target_mean'] = norm_stats['e_mean']
-        train_data_cfg['target_std'] = 1.
-        train_data_cfg['grad_target_mean'] = 0.
-        train_data_cfg['grad_target_std'] = 1.
-        train_data_cfg['normalize_labels'] = True
+        train_data_cfg["target_mean"] = norm_stats["e_mean"]
+        train_data_cfg["target_std"] = 1.0
+        train_data_cfg["grad_target_mean"] = 0.0
+        train_data_cfg["grad_target_std"] = 1.0
+        train_data_cfg["normalize_labels"] = True
     else:
-        train_data_cfg['target_mean'] = float(norm_stats['e_mean'])
-        train_data_cfg['target_std'] = float(norm_stats['e_std'])
-        train_data_cfg['grad_target_mean'] = float(norm_stats['f_mean'])
-        train_data_cfg['grad_target_std'] = float(norm_stats['f_std'])
+        train_data_cfg["target_mean"] = float(norm_stats["e_mean"])
+        train_data_cfg["target_std"] = float(norm_stats["e_std"])
+        train_data_cfg["grad_target_mean"] = float(norm_stats["f_mean"])
+        train_data_cfg["grad_target_std"] = float(norm_stats["f_std"])
     # train, val, test
-    config['dataset'] = [train_data_cfg, 
-                            {'src': os.path.join(src, 'val')}, ] 
-        
+    config["dataset"] = [
+        train_data_cfg,
+        {"src": os.path.join(src, "val")},
+    ]
+
     # initialize trainer.
-    trainer = registry.get_trainer_class(
-        config.get("trainer", "energy")
-    )(
+    trainer = registry.get_trainer_class(config.get("trainer", "energy"))(
         task=config["task"],
         model=config["model"],
         dataset=config["dataset"],
@@ -113,7 +113,7 @@ if __name__ == "__main__":
         amp=config.get("amp", False),
         cpu=config.get("cpu", False),
         slurm=config.get("slurm", {}),
-        no_energy=config.get("no_energy", False)
+        no_energy=config.get("no_energy", False),
     )
 
     # Fitting loop
@@ -128,9 +128,7 @@ if __name__ == "__main__":
                 ), "Val dataset is required for making predictions"
 
                 for i, batch in enumerate(trainer.val_loader):
-                    with torch.cuda.amp.autocast(
-                        enabled=trainer.scaler is not None
-                    ):
+                    with torch.cuda.amp.autocast(enabled=trainer.scaler is not None):
                         out = trainer._forward(batch)
                     loss = trainer._compute_loss(out, batch)
                     del out, loss

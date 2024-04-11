@@ -8,7 +8,7 @@ from torch.nn import Parameter
 from torch.nn.init import xavier_uniform_, constant_
 
 
-zeros_initializer = partial(constant_, val=0.)
+zeros_initializer = partial(constant_, val=0.0)
 
 
 def gaussian_smearing(distances, offset, widths, centered=False):
@@ -51,19 +51,23 @@ class GaussianSmearing(nn.Module):
               is False.
     """
 
-    def __init__(self, start, stop, n_gaussians, width=None, centered=False, trainable=False):
+    def __init__(
+        self, start, stop, n_gaussians, width=None, centered=False, trainable=False
+    ):
         super().__init__()
         offset = torch.linspace(start, stop, n_gaussians)
         if width is None:
-            widths = torch.FloatTensor((offset[1] - offset[0]) * torch.ones_like(offset))
+            widths = torch.FloatTensor(
+                (offset[1] - offset[0]) * torch.ones_like(offset)
+            )
         else:
             widths = torch.FloatTensor(width * torch.ones_like(offset))
         if trainable:
             self.width = nn.Parameter(widths)
             self.offsets = nn.Parameter(offset)
         else:
-            self.register_buffer('width', widths)
-            self.register_buffer('offsets', offset)
+            self.register_buffer("width", widths)
+            self.register_buffer("offsets", offset)
         self.centered = centered
 
     def forward(self, distances):
@@ -75,16 +79,15 @@ class GaussianSmearing(nn.Module):
             torch.Tensor: Tensor of convolved distances.
 
         """
-        result = gaussian_smearing(distances,
-                                   self.offsets,
-                                   self.width,
-                                   centered=self.centered)
+        result = gaussian_smearing(
+            distances, self.offsets, self.width, centered=self.centered
+        )
 
         return result
 
 
 class Dense(nn.Linear):
-    """ Applies a dense layer with activation: :math:`y = activation(Wx + b)`
+    """Applies a dense layer with activation: :math:`y = activation(Wx + b)`
 
     Args:
         in_features (int): number of input feature
@@ -102,7 +105,7 @@ class Dense(nn.Linear):
         bias=True,
         activation=None,
         weight_init=xavier_uniform_,
-        bias_init=zeros_initializer
+        bias_init=zeros_initializer,
     ):
 
         self.weight_init = weight_init
@@ -113,7 +116,7 @@ class Dense(nn.Linear):
 
     def reset_parameters(self):
         """
-            Reinitialize model parameters.
+        Reinitialize model parameters.
         """
         self.weight_init(self.weight)
         if self.bias is not None:

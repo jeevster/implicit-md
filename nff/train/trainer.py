@@ -11,7 +11,8 @@ import gc
 
 from nff.utils.cuda import batch_to
 from nff.utils.scatter import compute_grad
-#from nff.train.evaluate import evaluate
+
+# from nff.train.evaluate import evaluate
 
 MAX_EPOCHS = 100
 
@@ -27,18 +28,18 @@ class Trainer:
        model (torch.Module): model to be trained.
        loss_fn (callable): training loss function.
        optimizer (torch.optim.optimizer.Optimizer): training optimizer.
-       train_loader (torch.utils.data.DataLoader): data loader for 
+       train_loader (torch.utils.data.DataLoader): data loader for
          training set.
-       validation_loader (torch.utils.data.DataLoader): data loader for 
+       validation_loader (torch.utils.data.DataLoader): data loader for
          validation set.
        checkpoints_to_keep (int, optional): number of saved checkpoints.
-       checkpoint_interval (int, optional): intervals after which checkpoints 
+       checkpoint_interval (int, optional): intervals after which checkpoints
          is saved.
        hooks (list, optional): hooks to customize training process.
        loss_is_normalized (bool, optional): if True, the loss per data point will be
            reported. Otherwise, the accumulated loss is reported.
 
-   """
+    """
 
     def __init__(
         self,
@@ -205,7 +206,6 @@ class Trainer:
                         loss.backward()
                         self.optimizer.step()
 
-
                         for h in self.hooks:
                             h.on_batch_end(self, batch, results, loss)
 
@@ -243,8 +243,7 @@ class Trainer:
             raise e
 
     def validate(self, device):
-        """Validate the current state of the model using the validation set
-        """
+        """Validate the current state of the model using the validation set"""
 
         for h in self.hooks:
             h.on_validation_begin(self)
@@ -253,11 +252,11 @@ class Trainer:
         n_val = 0
 
         for val_batch in self.validation_loader:
-            
+
             val_batch = batch_to(val_batch, device)
 
             # append batch_size
-            vsize = val_batch['nxyz'].size(0)
+            vsize = val_batch["nxyz"].size(0)
             n_val += vsize
 
             for h in self.hooks:
@@ -288,13 +287,11 @@ class Trainer:
             h.on_validation_end(self, val_loss)
 
     def evaluate(self, device):
-        """Evaluate the current state of the model using the validation loader
-        """
+        """Evaluate the current state of the model using the validation loader"""
         return evaluate(
             self._model,
             self.validation_loader,
             self.loss_fn,
             device,
-            self.loss_is_normalized
+            self.loss_is_normalized,
         )
-

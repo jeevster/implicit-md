@@ -34,13 +34,9 @@ class Evaluator:
         ]
     }
 
-    task_attributes = {
-        "s2ef": ["energy", "forces", "natoms"]
-    }
+    task_attributes = {"s2ef": ["energy", "forces", "natoms"]}
 
-    task_primary_metric = {
-        "s2ef": "forces_mae"
-    }
+    task_primary_metric = {"s2ef": "forces_mae"}
 
     def __init__(self, task=None, no_energy=False):
         assert task in ["s2ef"]
@@ -48,11 +44,11 @@ class Evaluator:
         self.metric_fn = self.task_metrics[task]
         self.no_energy = no_energy
         if self.no_energy:
-            if 'energy' in self.task_attributes[self.task]:
+            if "energy" in self.task_attributes[self.task]:
                 self.task_attributes[self.task].remove("energy")
                 self.task_metrics[self.task].remove("energy_rmse")
-                self.task_metrics[self.task].remove("energy_mae")         
-            
+                self.task_metrics[self.task].remove("energy_mae")
+
     def eval(self, prediction, target, prev_metrics={}):
         for attr in self.task_attributes[self.task]:
             assert attr in prediction
@@ -78,16 +74,12 @@ class Evaluator:
             # If dictionary, we expect it to have `metric`, `total`, `numel`.
             metrics[key]["total"] += stat["total"]
             metrics[key]["numel"] += stat["numel"]
-            metrics[key]["metric"] = (
-                metrics[key]["total"] / metrics[key]["numel"]
-            )
+            metrics[key]["metric"] = metrics[key]["total"] / metrics[key]["numel"]
         elif isinstance(stat, float) or isinstance(stat, int):
             # If float or int, just add to the total and increment numel by 1.
             metrics[key]["total"] += stat
             metrics[key]["numel"] += 1
-            metrics[key]["metric"] = (
-                metrics[key]["total"] / metrics[key]["numel"]
-            )
+            metrics[key]["metric"] = metrics[key]["total"] / metrics[key]["numel"]
         elif torch.is_tensor(stat):
             raise NotImplementedError
 
@@ -101,8 +93,10 @@ def energy_mae(prediction, target):
 def energy_mse(prediction, target):
     return squared_error(prediction["energy"], target["energy"])
 
+
 def energy_rmse(prediction, target):
     return rmse(prediction["energy"], target["energy"])
+
 
 def forcesx_mae(prediction, target):
     return absolute_error(prediction["forces"][:, 0], target["forces"][:, 0])
@@ -131,11 +125,14 @@ def forcesz_mse(prediction, target):
 def forces_mae(prediction, target):
     return absolute_error(prediction["forces"], target["forces"])
 
+
 def forces_mse(prediction, target):
     return squared_error(prediction["forces"], target["forces"])
 
+
 def forces_rmse(prediction, target):
     return rmse(prediction["forces"], target["forces"])
+
 
 def forces_cos(prediction, target):
     return cosine_similarity(prediction["forces"], target["forces"])
@@ -173,7 +170,7 @@ def energy_force_within_threshold(prediction, target):
     for i, n in enumerate(target["natoms"]):
         if (
             error_energy[i] < e_thresh
-            and error_forces[start_idx:start_idx + n].max() < f_thresh
+            and error_forces[start_idx : start_idx + n].max() < f_thresh
         ):
             success += 1
         start_idx += n
@@ -202,9 +199,7 @@ def energy_within_threshold(prediction, target):
 
 
 def average_distance_within_threshold(prediction, target):
-    pred_pos = torch.split(
-        prediction["positions"], prediction["natoms"].tolist()
-    )
+    pred_pos = torch.split(prediction["positions"], prediction["natoms"].tolist())
     target_pos = torch.split(target["positions"], target["natoms"].tolist())
 
     mean_distance = []
@@ -274,6 +269,7 @@ def squared_error(prediction, target):
         "numel": prediction.numel(),
     }
 
+
 def rmse(prediction, target):
     error = torch.sqrt((target - prediction) ** 2)
     return {
@@ -281,6 +277,7 @@ def rmse(prediction, target):
         "total": torch.sum(error).item(),
         "numel": prediction.numel(),
     }
+
 
 def magnitude_error(prediction, target, p=2):
     assert prediction.shape[1] > 1

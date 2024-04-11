@@ -64,13 +64,14 @@ OFFSET_LIST = [
     [1, 1, 1],
 ]
 
+
 def extract_cycle_epoch(s):
     # Regular expression to match the pattern
     pattern = r"post_cycle(\d+)(?:_epoch(\d+))?"
-    
+
     # Search for matches
     match = re.search(pattern, s)
-    
+
     if match:
         cycle = match.group(1)
         epoch = match.group(2) if match.group(2) else None
@@ -78,36 +79,39 @@ def extract_cycle_epoch(s):
     else:
         return None, None
 
+
 def cleanup_atoms_batch(atoms_batch):
     for key in ["cell_offsets", "edge_cell_shift", "edge_index", "neighbors", "ptr"]:
         if key in atoms_batch:
             del atoms_batch[key]
     return atoms_batch
 
+
 # Procedure to initialize velocities with Maxwell Boltzmann Distribution
 def initialize_velocities(n_particle, masses, temp, n_replicas):
 
     masses = masses.cpu().numpy()
     vel_dist = maxwell()
-    momenta = masses * vel_dist.rvs(size = (n_replicas, n_particle, 3))
-    #shift so that initial momentum is zero
-    momenta -= np.mean(momenta, axis = -2, keepdims=True)
+    momenta = masses * vel_dist.rvs(size=(n_replicas, n_particle, 3))
+    # shift so that initial momentum is zero
+    momenta -= np.mean(momenta, axis=-2, keepdims=True)
 
-    #scale velocities to match desired temperature
-    ke = (momenta**2 / (2*masses)).sum(axis = (1,2), keepdims=True)
+    # scale velocities to match desired temperature
+    ke = (momenta**2 / (2 * masses)).sum(axis=(1, 2), keepdims=True)
     targeEkin = 0.5 * (3.0 * n_particle) * temp
     correction_factor = np.sqrt(targeEkin / ke)
     momenta *= correction_factor
-    velocities = momenta/masses
+    velocities = momenta / masses
     return torch.Tensor(velocities)
 
-#inverse cdf for power law with exponent 'power' and min value y_min
+
+# inverse cdf for power law with exponent 'power' and min value y_min
 def powerlaw_inv_cdf(y, power, y_min):
-    return y_min*((1-y)**(1/(1-power)))
-    
+    return y_min * ((1 - y) ** (1 / (1 - power)))
+
 
 def dump_params_to_yml(params, filepath):
-    with open(os.path.join(filepath, "observable_finetuning_config.yml"), 'w') as f:
+    with open(os.path.join(filepath, "observable_finetuning_config.yml"), "w") as f:
         yaml.dump(params, f)
 
 
@@ -115,50 +119,70 @@ def print_active_torch_tensors():
     count = 0
     for obj in gc.get_objects():
         try:
-            if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
-                #print(type(obj), obj.size())
-                count +=1
+            if torch.is_tensor(obj) or (
+                hasattr(obj, "data") and torch.is_tensor(obj.data)
+            ):
+                # print(type(obj), obj.size())
+                count += 1
                 del obj
         except:
             pass
     print(f"{count} tensors in memory")
 
-'''Gradient utils'''
+
+"""Gradient utils"""
+
+
 def compare_gradients(grad1, grad2):
-    '''Compute cosine similarity and ratio between two sets of gradient updates for a given model'''
-    assert(len(grad1) ==  len(grad2))
+    """Compute cosine similarity and ratio between two sets of gradient updates for a given model"""
+    assert len(grad1) == len(grad2)
     grads1_flattened = torch.cat([grad.flatten() for grad in grad1])
     grads2_flattened = torch.cat([grad.flatten() for grad in grad2])
-    cosine_similarity = torch.nn.functional.cosine_similarity(grads1_flattened, grads2_flattened, dim=0)
+    cosine_similarity = torch.nn.functional.cosine_similarity(
+        grads1_flattened, grads2_flattened, dim=0
+    )
     ratio = (grads1_flattened / (grads2_flattened + 1e-8)).abs().median()
     return cosine_similarity, ratio
 
+
 def process_gradient(params, grads, device):
-    return [g.detach() if g is not None else torch.zeros_like(param).to(device) for g, param in zip(grads, params)]
+    return [
+        g.detach() if g is not None else torch.zeros_like(param).to(device)
+        for g, param in zip(grads, params)
+    ]
 
 
 def convert_atomic_numbers_to_types(atomic_numbers):
     unique_atomic_numbers = torch.unique(atomic_numbers)
-    atomic_number_to_type = {num.item(): idx for idx, num in enumerate(unique_atomic_numbers)}
-    
-    atomic_types = torch.tensor([atomic_number_to_type[num.item()] for num in atomic_numbers])
+    atomic_number_to_type = {
+        num.item(): idx for idx, num in enumerate(unique_atomic_numbers)
+    }
+
+    atomic_types = torch.tensor(
+        [atomic_number_to_type[num.item()] for num in atomic_numbers]
+    )
     return atomic_types
-    
+
 
 def get_atomic_types(atom_dict):
-    #assumes that all samples in batch are from the same molecule and thus the atomic types are all identical
+    # assumes that all samples in batch are from the same molecule and thus the atomic types are all identical
 
-    nums = torch.tensor(sorted(torch.unique(atom_dict['atomic_numbers'][0]))).unsqueeze(-1)
-    atomic_types = torch.zeros_like(atom_dict['atomic_numbers'][0])
+    nums = torch.tensor(sorted(torch.unique(atom_dict["atomic_numbers"][0]))).unsqueeze(
+        -1
+    )
+    atomic_types = torch.zeros_like(atom_dict["atomic_numbers"][0])
     for i in range(atomic_types.shape[0]):
-        atomic_types[i] = torch.where(nums == atom_dict['atomic_numbers'][0,i])[0]
-    
-    return atomic_types.unsqueeze(0).repeat(atom_dict['atomic_numbers'].shape[0], 1, 1).to(torch.int64)
-        
-        
+        atomic_types[i] = torch.where(nums == atom_dict["atomic_numbers"][0, i])[0]
+
+    return (
+        atomic_types.unsqueeze(0)
+        .repeat(atom_dict["atomic_numbers"].shape[0], 1, 1)
+        .to(torch.int64)
+    )
+
 
 def atoms_to_batch(atoms, device):
-    #convert list of atoms to a torch.geometric.data.Batch object
+    # convert list of atoms to a torch.geometric.data.Batch object
     data = []
     for atom in atoms:
         atomic_numbers = torch.Tensor(atom.get_atomic_numbers())
@@ -166,37 +190,46 @@ def atoms_to_batch(atoms, device):
         cell = torch.Tensor(np.array(atom.get_cell())).view(1, 3, 3)
         natoms = positions.shape[0]
 
-        data.append(Data(
-            cell=cell,
-            pos=positions,
-            atomic_numbers=atomic_numbers,
-            natoms=natoms,
-        ))
+        data.append(
+            Data(
+                cell=cell,
+                pos=positions,
+                atomic_numbers=atomic_numbers,
+                natoms=natoms,
+            )
+        )
 
     return data_list_collater(data, otf_graph=True).to(device)
+
 
 def data_to_atoms(data):
     numbers = data.atomic_numbers
     positions = data.pos
     cell = data.cell.squeeze()
-    atoms = Atoms(numbers=numbers, 
-                  positions=positions.cpu().detach().numpy(), 
-                  cell=cell.cpu().detach().numpy(),
-                  pbc=[True, True, True])
+    atoms = Atoms(
+        numbers=numbers,
+        positions=positions.cpu().detach().numpy(),
+        cell=cell.cpu().detach().numpy(),
+        pbc=[True, True, True],
+    )
     return atoms
 
+
 def dictdata_to_atoms(data):
-    #Now operates on batches
-    batch_size = data['atomic_numbers'].shape[0]
-    
+    # Now operates on batches
+    batch_size = data["atomic_numbers"].shape[0]
+
     atoms_objects = []
     for i in range(batch_size):
-        atoms = Atoms(numbers=data['atomic_numbers'][i].squeeze().cpu(), 
-                  positions=data['pos'][i].cpu(), 
-                  cell=data['cell'][i].cpu(),
-                  pbc=[True, True, True])
+        atoms = Atoms(
+            numbers=data["atomic_numbers"][i].squeeze().cpu(),
+            positions=data["pos"][i].cpu(),
+            cell=data["cell"][i].cpu(),
+            pbc=[True, True, True],
+        )
         atoms_objects.append(atoms)
     return atoms_objects
+
 
 def batch_to_atoms(batch):
     n_systems = batch.natoms.shape[0]
@@ -229,36 +262,39 @@ def batch_to_atoms(batch):
 
     return atoms_objects
 
-def compute_bond_lengths(atoms, bonds = None, r_max=5):
-   
-    data = AtomicData.from_ase(atoms, r_max) 
+
+def compute_bond_lengths(atoms, bonds=None, r_max=5):
+
+    data = AtomicData.from_ase(atoms, r_max)
     data = AtomicData.to_AtomicDataDict(data)
-    
+
     if bonds is None:
-        bonds = torch.unique(data['edge_index'], dim=1)
-    
+        bonds = torch.unique(data["edge_index"], dim=1)
+
     pos = torch.tensor(atoms.get_positions())
     bond_lens = distance_pbc(
-        pos[bonds[0]], pos[bonds[1]], torch.FloatTensor([30., 30., 30.]))
-    
+        pos[bonds[0]], pos[bonds[1]], torch.FloatTensor([30.0, 30.0, 30.0])
+    )
+
     return bond_lens, bonds
+
 
 def distance_pbc(x0, x1, lattices):
     delta = torch.abs(x0 - x1)
-    lattices = lattices.view(-1,1,3)
+    lattices = lattices.view(-1, 1, 3)
     delta = torch.where(delta > 0.5 * lattices, delta - lattices, delta)
-    return torch.sqrt((delta ** 2).sum(dim=-1))
+    return torch.sqrt((delta**2).sum(dim=-1))
 
 
 def atoms_to_state_dict(atoms, r_max):
-    data = AtomicData.from_ase(atoms=atoms, r_max= r_max)
+    data = AtomicData.from_ase(atoms=atoms, r_max=r_max)
     for k in AtomicDataDict.ALL_ENERGY_KEYS:
         if k in data:
             del data[k]
     data = AtomicData.to_AtomicDataDict(data)
     return data
 
-    
+
 class Complete(object):
     def __call__(self, data):
         device = data.edge_index.device
@@ -375,9 +411,7 @@ def collate(data_list):
     for item, key in product(data_list, keys):
         data[key].append(item[key])
         if torch.is_tensor(item[key]):
-            s = slices[key][-1] + item[key].size(
-                item.__cat_dim__(key, item[key])
-            )
+            s = slices[key][-1] + item[key].size(item.__cat_dim__(key, item[key]))
         elif isinstance(item[key], int) or isinstance(item[key], float):
             s = slices[key][-1] + 1
         else:
@@ -399,6 +433,7 @@ def collate(data_list):
         slices[key] = torch.tensor(slices[key], dtype=torch.long)
 
     return data, slices
+
 
 # Copied from https://github.com/facebookresearch/mmf/blob/master/mmf/utils/env.py#L89.
 def setup_imports():
@@ -440,9 +475,7 @@ def setup_imports():
                 splits = f.split(os.sep)
                 file_name = splits[-1]
                 module_name = file_name[: file_name.find(".py")]
-                importlib.import_module(
-                    "mdsim.%s.%s" % (key[1:], module_name)
-                )
+                importlib.import_module("mdsim.%s.%s" % (key[1:], module_name))
 
     experimental_folder = os.path.join(root_folder, "../experimental/")
     if os.path.exists(experimental_folder):
@@ -463,7 +496,7 @@ def setup_imports():
                 experimental_files.remove(f)
         for f in experimental_files:
             splits = f.split(os.sep)
-            file_name = ".".join(splits[-splits[::-1].index(".."):])
+            file_name = ".".join(splits[-splits[::-1].index("..") :])
             module_name = file_name[: file_name.find(".py")]
             importlib.import_module(module_name)
 
@@ -553,7 +586,7 @@ def load_config(path: str, previous_includes: list = []):
 
 def build_config(args, args_override):
     config, duplicates_warning, duplicates_error = load_config(args.config_yml)
-    
+
     if len(duplicates_warning) > 0:
         logging.warning(
             f"Overwritten config parameters from included configs "
@@ -570,11 +603,13 @@ def build_config(args, args_override):
         overrides = create_dict_from_args(args_override)
         config, _ = merge_dicts(config, overrides)
     if args.molecule is not None:
-        assert config['name'] == 'md17' or config['name'] == 'md22', 'only MD17 and MD22 datasets admit specification of the molecule.'
-        config['molecule'] = args.molecule
+        assert (
+            config["name"] == "md17" or config["name"] == "md22"
+        ), "only MD17 and MD22 datasets admit specification of the molecule."
+        config["molecule"] = args.molecule
     if args.size is not None:
-        config['size'] = args.size
-        
+        config["size"] = args.size
+
     # Some other flags.
     config["mode"] = args.mode
     config["timestamp_id"] = args.timestamp_id
@@ -595,45 +630,46 @@ def build_config(args, args_override):
     config["world_size"] = args.num_nodes * args.num_gpus
     config["distributed_backend"] = args.distributed_backend
     config["noddp"] = args.no_ddp
-    
+
     if args.identifier is not None:
         config["identifier"] = args.identifier
-    elif 'identifier' not in config:
+    elif "identifier" not in config:
         config["identifier"] = ""
 
     if args.cutoff is not None:
         config["model"]["cutoff"] = args.cutoff
-        
+
     if args.patience is not None:
         config["optim"]["patience"] = args.patience
-        
+
     if args.max_epochs:
         config["optim"]["max_epochs"] = args.max_epochs
 
     return config
 
+
 def compose_data_cfg(data_cfg):
-    dataset_name = data_cfg['name']
-    if dataset_name == 'md17':
-        data_cfg['src'] = os.path.join(data_cfg['src'], data_cfg['molecule'])
-        data_cfg['name'] = 'md17-' + data_cfg['molecule']
-    src = os.path.join(data_cfg['src'], data_cfg['size'])
-    data_cfg['src'] = os.path.join(src, 'train')
-    
-    norm_stats = np.load(os.path.join(src, 'metadata.npy'), allow_pickle=True).item()
-    if not data_cfg['normalize_labels']:
+    dataset_name = data_cfg["name"]
+    if dataset_name == "md17":
+        data_cfg["src"] = os.path.join(data_cfg["src"], data_cfg["molecule"])
+        data_cfg["name"] = "md17-" + data_cfg["molecule"]
+    src = os.path.join(data_cfg["src"], data_cfg["size"])
+    data_cfg["src"] = os.path.join(src, "train")
+
+    norm_stats = np.load(os.path.join(src, "metadata.npy"), allow_pickle=True).item()
+    if not data_cfg["normalize_labels"]:
         # always substract mean of energy, even when <normalize_labels==False>.
         # this is done in <trainer.load_datasets>.
-        data_cfg['target_mean'] = float(norm_stats['e_mean'])
-        data_cfg['target_std'] = 1.
-        data_cfg['grad_target_mean'] = 0.
-        data_cfg['grad_target_std'] = 1.
-        data_cfg['normalize_labels'] = True
+        data_cfg["target_mean"] = float(norm_stats["e_mean"])
+        data_cfg["target_std"] = 1.0
+        data_cfg["grad_target_mean"] = 0.0
+        data_cfg["grad_target_std"] = 1.0
+        data_cfg["normalize_labels"] = True
     else:
-        data_cfg['target_mean'] = float(norm_stats['e_mean'])
-        data_cfg['target_std'] = float(norm_stats['e_std'])
-        data_cfg['grad_target_mean'] = float(norm_stats['f_mean'])
-        data_cfg['grad_target_std'] = float(norm_stats['f_std'])
+        data_cfg["target_mean"] = float(norm_stats["e_mean"])
+        data_cfg["target_std"] = float(norm_stats["e_std"])
+        data_cfg["grad_target_mean"] = float(norm_stats["f_mean"])
+        data_cfg["grad_target_std"] = float(norm_stats["f_std"])
     # train, val, test
     return data_cfg
 
@@ -756,9 +792,7 @@ def setup_logging():
 
         # Send INFO to stdout
         handler_out = logging.StreamHandler(sys.stdout)
-        handler_out.addFilter(
-            SeverityLevelBetween(logging.INFO, logging.WARNING)
-        )
+        handler_out.addFilter(SeverityLevelBetween(logging.INFO, logging.WARNING))
         handler_out.setFormatter(log_formatter)
         root.addHandler(handler_out)
 
@@ -773,9 +807,7 @@ def compute_neighbors(data, edge_index):
     # Get number of neighbors
     # segment_coo assumes sorted index
     ones = edge_index[1].new_ones(1).expand_as(edge_index[1])
-    num_neighbors = segment_coo(
-        ones, edge_index[1], dim_size=data.natoms.sum()
-    )
+    num_neighbors = segment_coo(ones, edge_index[1], dim_size=data.natoms.sum())
 
     # Get number of neighbors per image
     image_indptr = torch.zeros(
@@ -797,39 +829,53 @@ def lattice_params_to_matrix_torch(lengths, angles):
 
     val = (coses[:, 0] * coses[:, 1] - coses[:, 2]) / (sins[:, 0] * sins[:, 1])
     # Sometimes rounding errors result in values slightly > 1.
-    val = torch.clamp(val, -1., 1.)
+    val = torch.clamp(val, -1.0, 1.0)
     gamma_star = torch.arccos(val)
 
-    vector_a = torch.stack([
-        lengths[:, 0] * sins[:, 1],
-        torch.zeros(lengths.size(0), device=lengths.device),
-        lengths[:, 0] * coses[:, 1]], dim=1)
-    vector_b = torch.stack([
-        -lengths[:, 1] * sins[:, 0] * torch.cos(gamma_star),
-        lengths[:, 1] * sins[:, 0] * torch.sin(gamma_star),
-        lengths[:, 1] * coses[:, 0]], dim=1)
-    vector_c = torch.stack([
-        torch.zeros(lengths.size(0), device=lengths.device),
-        torch.zeros(lengths.size(0), device=lengths.device),
-        lengths[:, 2]], dim=1)
+    vector_a = torch.stack(
+        [
+            lengths[:, 0] * sins[:, 1],
+            torch.zeros(lengths.size(0), device=lengths.device),
+            lengths[:, 0] * coses[:, 1],
+        ],
+        dim=1,
+    )
+    vector_b = torch.stack(
+        [
+            -lengths[:, 1] * sins[:, 0] * torch.cos(gamma_star),
+            lengths[:, 1] * sins[:, 0] * torch.sin(gamma_star),
+            lengths[:, 1] * coses[:, 0],
+        ],
+        dim=1,
+    )
+    vector_c = torch.stack(
+        [
+            torch.zeros(lengths.size(0), device=lengths.device),
+            torch.zeros(lengths.size(0), device=lengths.device),
+            lengths[:, 2],
+        ],
+        dim=1,
+    )
 
     return torch.stack([vector_a, vector_b, vector_c], dim=1)
 
+
 def radius_graph(positions, n_node, radius, bonds=None, add_self_edges=True):
-  batch = torch.arange(len(n_node)).to(n_node.device).repeat_interleave(n_node, dim=0)
-  senders, receivers = pyg_radius_graph(positions, radius, batch, loop=add_self_edges)
-  if bonds is not None:
-    edge_indices = torch.cat([senders.unsqueeze(1), receivers.unsqueeze(1)], dim=1)
-    all_edges = torch.cat([edge_indices, bonds], dim=0)
-    all_edges, counts = torch.unique(all_edges, dim=0, return_counts=True)
-    edge_types = (counts > 1).int()
-    senders, receivers = all_edges[:, 0], all_edges[:, 1]
-  else:
-    edge_types = None
-  # displacements normalized with radius.
-  displacements = (positions[senders] - positions[receivers]) / radius
-  distances = displacements.norm(dim=-1, keepdim=True)
-  return senders, receivers, displacements, distances, edge_types
+    batch = torch.arange(len(n_node)).to(n_node.device).repeat_interleave(n_node, dim=0)
+    senders, receivers = pyg_radius_graph(positions, radius, batch, loop=add_self_edges)
+    if bonds is not None:
+        edge_indices = torch.cat([senders.unsqueeze(1), receivers.unsqueeze(1)], dim=1)
+        all_edges = torch.cat([edge_indices, bonds], dim=0)
+        all_edges, counts = torch.unique(all_edges, dim=0, return_counts=True)
+        edge_types = (counts > 1).int()
+        senders, receivers = all_edges[:, 0], all_edges[:, 1]
+    else:
+        edge_types = None
+    # displacements normalized with radius.
+    displacements = (positions[senders] - positions[receivers]) / radius
+    distances = displacements.norm(dim=-1, keepdim=True)
+    return senders, receivers, displacements, distances, edge_types
+
 
 def radius_graph_pbc(data, radius, max_num_neighbors_threshold, topk_per_pair=None):
     """Computes pbc graph edges under pbc.
@@ -841,19 +887,15 @@ def radius_graph_pbc(data, radius, max_num_neighbors_threshold, topk_per_pair=No
     lattice = data.cell
     batch_size = len(num_atoms)
     device = atom_pos.device
-    #import pdb; pdb.set_trace()
+    # import pdb; pdb.set_trace()
     # Before computing the pairwise distances between atoms, first create a list of atom indices to compare for the entire batch
     num_atoms_per_image = num_atoms
-    num_atoms_per_image_sqr = (num_atoms_per_image ** 2).long()
+    num_atoms_per_image_sqr = (num_atoms_per_image**2).long()
 
     # index offset between images
-    index_offset = (
-        torch.cumsum(num_atoms_per_image, dim=0) - num_atoms_per_image
-    )
+    index_offset = torch.cumsum(num_atoms_per_image, dim=0) - num_atoms_per_image
 
-    index_offset_expand = torch.repeat_interleave(
-        index_offset, num_atoms_per_image_sqr
-    )
+    index_offset_expand = torch.repeat_interleave(index_offset, num_atoms_per_image_sqr)
     num_atoms_per_image_expand = torch.repeat_interleave(
         num_atoms_per_image, num_atoms_per_image_sqr
     )
@@ -870,37 +912,31 @@ def radius_graph_pbc(data, radius, max_num_neighbors_threshold, topk_per_pair=No
     index_sqr_offset = torch.repeat_interleave(
         index_sqr_offset, num_atoms_per_image_sqr
     )
-    atom_count_sqr = (
-        torch.arange(num_atom_pairs, device=device) - index_sqr_offset
-    )
+    atom_count_sqr = torch.arange(num_atom_pairs, device=device) - index_sqr_offset
 
     # Compute the indices for the pairs of atoms (using division and mod)
     # If the systems get too large this apporach could run into numerical precision issues
     index1 = (
         (atom_count_sqr // num_atoms_per_image_expand)
     ).long() + index_offset_expand
-    index2 = (
-        atom_count_sqr % num_atoms_per_image_expand
-    ).long() + index_offset_expand
+    index2 = (atom_count_sqr % num_atoms_per_image_expand).long() + index_offset_expand
     # Get the positions for each atom
     pos1 = torch.index_select(atom_pos, 0, index1.long())
     pos2 = torch.index_select(atom_pos, 0, index2.long())
-    
+
     unit_cell = torch.tensor(OFFSET_LIST, device=device).float()
     num_cells = len(unit_cell)
-    unit_cell_per_atom = unit_cell.view(1, num_cells, 3).repeat(
-        len(index2), 1, 1
-    )
+    unit_cell_per_atom = unit_cell.view(1, num_cells, 3).repeat(len(index2), 1, 1)
     unit_cell = torch.transpose(unit_cell, 0, 1)
-    unit_cell_batch = unit_cell.view(1, 3, num_cells).expand(
-        batch_size, -1, -1
-    )
-    
+    unit_cell_batch = unit_cell.view(1, 3, num_cells).expand(batch_size, -1, -1)
+
     # Compute the x, y, z positional offsets for each cell in each image
     data_cell = torch.transpose(lattice, 1, 2)
     pbc_offsets = torch.bmm(data_cell, unit_cell_batch)
-    
-    pbc_offsets_per_atom = torch.repeat_interleave(pbc_offsets, num_atoms_per_image_sqr, dim=0)
+
+    pbc_offsets_per_atom = torch.repeat_interleave(
+        pbc_offsets, num_atoms_per_image_sqr, dim=0
+    )
 
     # Expand the positions and indices for the 9 cells
     pos1 = pos1.view(-1, 3, 1).expand(-1, -1, num_cells)
@@ -918,15 +954,17 @@ def radius_graph_pbc(data, radius, max_num_neighbors_threshold, topk_per_pair=No
         atom_distance_sqr_sort_index = torch.argsort(atom_distance_sqr, dim=1)
         assert atom_distance_sqr_sort_index.size() == (num_atom_pairs, num_cells)
         atom_distance_sqr_sort_index = (
-            atom_distance_sqr_sort_index +
-            torch.arange(num_atom_pairs, device=device)[:, None] * num_cells).view(-1)
-        topk_mask = (torch.arange(num_cells, device=device)[None, :] <
-                     topk_per_pair[:, None])
+            atom_distance_sqr_sort_index
+            + torch.arange(num_atom_pairs, device=device)[:, None] * num_cells
+        ).view(-1)
+        topk_mask = (
+            torch.arange(num_cells, device=device)[None, :] < topk_per_pair[:, None]
+        )
         topk_mask = topk_mask.view(-1)
         topk_indices = atom_distance_sqr_sort_index.masked_select(topk_mask)
 
         topk_mask = torch.zeros(num_atom_pairs * num_cells, device=device)
-        topk_mask.scatter_(0, topk_indices, 1.)
+        topk_mask.scatter_(0, topk_indices, 1.0)
         topk_mask = topk_mask.bool()
 
     atom_distance_sqr = atom_distance_sqr.view(-1)
@@ -959,26 +997,29 @@ def radius_graph_pbc(data, radius, max_num_neighbors_threshold, topk_per_pair=No
     _natoms = torch.zeros(num_atoms.shape[0] + 1, device=device).long()
     _num_neighbors[1:] = torch.cumsum(_max_neighbors, dim=0)
     _natoms[1:] = torch.cumsum(num_atoms, dim=0)
-    num_neighbors_image = (
-        _num_neighbors[_natoms[1:]] - _num_neighbors[_natoms[:-1]]
-    )
+    num_neighbors_image = _num_neighbors[_natoms[1:]] - _num_neighbors[_natoms[:-1]]
 
     atom_distance_sqr = torch.masked_select(atom_distance_sqr, mask)
-    # return torch.stack((index2, index1)), unit_cell, atom_distance_sqr.sqrt(), num_neighbors_image    
-    
+    # return torch.stack((index2, index1)), unit_cell, atom_distance_sqr.sqrt(), num_neighbors_image
+
     # If max_num_neighbors is below the threshold, return early
     if (
         max_num_neighbors <= max_num_neighbors_threshold
         or max_num_neighbors_threshold <= 0
     ):
-        return torch.stack((index2, index1)), unit_cell, atom_distance_sqr.sqrt(), num_neighbors_image
+        return (
+            torch.stack((index2, index1)),
+            unit_cell,
+            atom_distance_sqr.sqrt(),
+            num_neighbors_image,
+        )
     # atom_distance_sqr.sqrt() distance
 
     # Create a tensor of size [num_atoms, max_num_neighbors] to sort the distances of the neighbors.
     # Fill with values greater than radius*radius so we can easily remove unused distances later.
-    distance_sort = torch.zeros(
-        len(atom_pos) * max_num_neighbors, device=device
-    ).fill_(radius * radius + 1.0)
+    distance_sort = torch.zeros(len(atom_pos) * max_num_neighbors, device=device).fill_(
+        radius * radius + 1.0
+    )
 
     # Create an index map to map distances from atom_distance_sqr to distance_sort
     index_neighbor_offset = torch.cumsum(num_neighbors, dim=0) - num_neighbors
@@ -1023,12 +1064,13 @@ def radius_graph_pbc(data, radius, max_num_neighbors_threshold, topk_per_pair=No
     if topk_per_pair is not None:
         topk_mask = torch.masked_select(topk_mask, mask_num_neighbors)
 
-    edge_index = torch.stack((index2, index1))   
+    edge_index = torch.stack((index2, index1))
     atom_distance_sqr = torch.masked_select(atom_distance_sqr, mask_num_neighbors)
-    
+
     return edge_index, unit_cell, atom_distance_sqr.sqrt(), num_neighbors_image
     # atom_distance_sqr.sqrt() distance
-    
+
+
 def get_pbc_distances(
     pos,
     edge_index,
@@ -1044,7 +1086,7 @@ def get_pbc_distances(
 
     # correct for pbc
     lattice_edges = torch.repeat_interleave(lattice, num_edges, dim=0)
-    offsets = torch.einsum('bi,bij->bj', cell_offsets, lattice_edges)
+    offsets = torch.einsum("bi,bij->bj", cell_offsets, lattice_edges)
     distance_vectors += offsets
 
     # compute distances
@@ -1063,15 +1105,21 @@ def get_pbc_distances(
 
     return out
 
-def get_n_edge(senders, n_node):
-  """
-  return number of edges for each graph in the batched graph. 
-  Has the same shape as <n_node>.
-  """
-  index_offsets = torch.cat([torch.zeros(1).to(n_node.device), 
-                             torch.cumsum(n_node, -1)], dim=-1)
-  n_edge = torch.LongTensor([torch.logical_and(senders >= index_offsets[i], 
-                                               senders < index_offsets[i+1]).sum() 
-                             for i in range(len(n_node))]).to(n_node.device)
-  return n_edge
 
+def get_n_edge(senders, n_node):
+    """
+    return number of edges for each graph in the batched graph.
+    Has the same shape as <n_node>.
+    """
+    index_offsets = torch.cat(
+        [torch.zeros(1).to(n_node.device), torch.cumsum(n_node, -1)], dim=-1
+    )
+    n_edge = torch.LongTensor(
+        [
+            torch.logical_and(
+                senders >= index_offsets[i], senders < index_offsets[i + 1]
+            ).sum()
+            for i in range(len(n_node))
+        ]
+    ).to(n_node.device)
+    return n_edge

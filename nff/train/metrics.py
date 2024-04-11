@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 
+
 class Metric:
     r"""
     Base class for all metrics.
@@ -31,7 +32,7 @@ class Metric:
         self.n_entries = 0.0
 
     def add_batch(self, batch, results):
-        """ Add a batch to calculate the metric on """
+        """Add a batch to calculate the metric on"""
 
         y = batch[self.target]
         yp = results[self.target]
@@ -94,9 +95,7 @@ class RootMeanSquaredError(MeanSquaredError):
         name=None,
     ):
         name = "RMSE_" + target if name is None else name
-        super().__init__(
-            target, name
-        )
+        super().__init__(target, name)
 
     def aggregate(self):
         """Aggregate metric over all previously added batches."""
@@ -130,4 +129,3 @@ class MeanAbsoluteError(Metric):
         # pdb.set_trace()
         diff = y - yp.view(y.shape)
         return torch.sum(torch.abs(diff).view(-1)).detach().cpu().data.numpy()
-

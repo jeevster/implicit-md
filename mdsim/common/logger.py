@@ -3,6 +3,7 @@ from abc import ABC, abstractmethod
 
 import torch
 import wandb
+
 try:
     from torch.utils.tensorboard import SummaryWriter
 except:
@@ -88,9 +89,7 @@ class TensorboardLogger(Logger):
         self.writer = SummaryWriter(self.config["cmd"]["logs_dir"])
 
     def watch(self, model):
-        logging.warning(
-            "Model gradient logging to tensorboard not yet supported."
-        )
+        logging.warning("Model gradient logging to tensorboard not yet supported.")
         return False
 
     def log(self, update_dict, step=None, split=""):

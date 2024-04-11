@@ -1,4 +1,2 @@
-__all__ = [
-    "Trainer"
-]
+__all__ = ["Trainer"]
 from .trainer import Trainer

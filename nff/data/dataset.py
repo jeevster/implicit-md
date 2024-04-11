@@ -14,7 +14,8 @@ from torch.utils.data import Dataset as TorchDataset
 from nff.data.sparse import sparsify_tensor
 from nff.data.topology import update_props_topologies
 from nff.data.graphs import reconstruct_atoms
-#from nff.io import AtomsBatch
+
+# from nff.io import AtomsBatch
 
 
 class Dataset(TorchDataset):
@@ -25,7 +26,7 @@ class Dataset(TorchDataset):
         props (list of dicts): list of dictionaries containing all properties of the system.
             Keys are the name of the property and values are the properties. Each value
             is given by `props[idx][key]`. The only mandatory key is 'nxyz'. If inputting
-            energies, forces or hessians of different electronic states, the quantities 
+            energies, forces or hessians of different electronic states, the quantities
             should be distinguished with a "_n" suffix, where n = 0, 1, 2, ...
             Whatever name is given to the energy of state n, the corresponding force name
             must be the exact same name, but with "energy" replaced by "force".
@@ -53,20 +54,18 @@ class Dataset(TorchDataset):
 
     """
 
-    def __init__(self,
-                 props,
-                 units='kcal/mol'):
+    def __init__(self, props, units="kcal/mol"):
         """Constructor for Dataset class.
 
         Args:
             props (dictionary of lists): dictionary containing the
-                properties of the system. Each key has a list, and 
+                properties of the system. Each key has a list, and
                 all lists have the same length.
             units (str): units of the system.
         """
         self.props = self._check_dictionary(deepcopy(props))
         self.units = units
-        self.to_units('kcal/mol')
+        self.to_units("kcal/mol")
 
     def __len__(self):
         """Summary
@@ -74,7 +73,7 @@ class Dataset(TorchDataset):
         Returns:
             TYPE: Description
         """
-        return len(self.props['nxyz'])
+        return len(self.props["nxyz"])
 
     def __getitem__(self, idx):
         """Summary
@@ -114,14 +113,14 @@ class Dataset(TorchDataset):
             TYPE: Description
         """
 
-        assert 'nxyz' in props.keys()
-        n_atoms = [len(x) for x in props['nxyz']]
-        n_geoms = len(props['nxyz'])
+        assert "nxyz" in props.keys()
+        n_atoms = [len(x) for x in props["nxyz"]]
+        n_geoms = len(props["nxyz"])
 
-        if 'num_atoms' not in props.keys():
-            props['num_atoms'] = torch.LongTensor(n_atoms)
+        if "num_atoms" not in props.keys():
+            props["num_atoms"] = torch.LongTensor(n_atoms)
         else:
-            props['num_atoms'] = torch.LongTensor(props['num_atoms'])
+            props["num_atoms"] = torch.LongTensor(props["num_atoms"])
 
         for key, val in props.items():
 
@@ -130,22 +129,24 @@ class Dataset(TorchDataset):
 
             elif any([x is None for x in val]):
                 bad_indices = [i for i, item in enumerate(val) if item is None]
-                good_indices = [index for index in range(
-                    len(val)) if index not in bad_indices]
+                good_indices = [
+                    index for index in range(len(val)) if index not in bad_indices
+                ]
                 if len(good_indices) == 0:
                     nan_list = np.array([float("NaN")]).tolist()
                 else:
                     good_index = good_indices[0]
-                    nan_list = (np.array(val[good_index])
-                                * float('NaN')).tolist()
+                    nan_list = (np.array(val[good_index]) * float("NaN")).tolist()
                 for index in bad_indices:
                     props[key][index] = nan_list
                 props.update({key: to_tensor(val)})
 
             else:
-                assert len(val) == n_geoms, \
-                    'length of {} is not compatible with {} geometries'.format(
-                        key, n_geoms)
+                assert (
+                    len(val) == n_geoms
+                ), "length of {} is not compatible with {} geometries".format(
+                    key, n_geoms
+                )
                 props[key] = to_tensor(val)
 
         return props
@@ -161,9 +162,9 @@ class Dataset(TorchDataset):
         Returns:
             TYPE: Description
         """
-        self.props['nbr_list'] = [
+        self.props["nbr_list"] = [
             get_neighbor_list(nxyz[:, 1:4], cutoff, undirected)
-            for nxyz in self.props['nxyz']
+            for nxyz in self.props["nxyz"]
         ]
 
         return
@@ -190,22 +191,16 @@ class Dataset(TorchDataset):
             NotImplementedError: Description
         """
 
-        if target_unit not in ['kcal/mol', 'atomic']:
+        if target_unit not in ["kcal/mol", "atomic"]:
             raise NotImplementedError(
-                'unit conversion for {} not implemented'.format(target_unit)
+                "unit conversion for {} not implemented".format(target_unit)
             )
 
-        if target_unit == 'kcal/mol' and self.units == 'atomic':
-            self.props = const.convert_units(
-                self.props,
-                const.AU_TO_KCAL
-            )
+        if target_unit == "kcal/mol" and self.units == "atomic":
+            self.props = const.convert_units(self.props, const.AU_TO_KCAL)
 
-        elif target_unit == 'atomic' and self.units == 'kcal/mol':
-            self.props = const.convert_units(
-                self.props,
-                const.KCAL_TO_AU
-            )
+        elif target_unit == "atomic" and self.units == "kcal/mol":
+            self.props = const.convert_units(self.props, const.KCAL_TO_AU)
         else:
             return
 
@@ -232,20 +227,21 @@ class Dataset(TorchDataset):
         Args:
             mol_dic (dict): dictionary of nodes of each disconnected subgraphs
         """
-        for i in range(len(self.props['nxyz'])):
+        for i in range(len(self.props["nxyz"])):
             # makes atoms object
-            atoms = AtomsBatch(positions=self.props['nxyz'][i][:, 1:4],
-                               numbers=self.props['nxyz'][i][:, 0],
-                               cell=self.props["cell"][i],
-                               pbc=True
-                               )
+            atoms = AtomsBatch(
+                positions=self.props["nxyz"][i][:, 1:4],
+                numbers=self.props["nxyz"][i][:, 0],
+                cell=self.props["cell"][i],
+                pbc=True,
+            )
 
             # recontruct coordinates based on subgraphs index
-            if self.props['smiles']:
-                mol_idx = mol_dic[self.props['smiles'][i]]
+            if self.props["smiles"]:
+                mol_idx = mol_dic[self.props["smiles"][i]]
                 atoms.set_positions(reconstruct_atoms(atoms, mol_idx))
                 nxyz = atoms.get_nxyz()
-            self.props['nxyz'][i] = torch.Tensor(nxyz)
+            self.props["nxyz"][i] = torch.Tensor(nxyz)
 
     def generate_topologies(self, bond_dic, use_1_4_pairs=True):
         """
@@ -257,7 +253,8 @@ class Dataset(TorchDataset):
         """
         # use the bond list to generate topologies for the props
         new_props = update_props_topologies(
-            props=self.props, bond_dic=bond_dic, use_1_4_pairs=use_1_4_pairs)
+            props=self.props, bond_dic=bond_dic, use_1_4_pairs=use_1_4_pairs
+        )
         self.props = new_props
 
     def save(self, path):
@@ -285,9 +282,7 @@ class Dataset(TorchDataset):
         if isinstance(obj, cls):
             return obj
         else:
-            raise TypeError(
-                '{} is not an instance from {}'.format(path, type(cls))
-            )
+            raise TypeError("{} is not an instance from {}".format(path, type(cls)))
 
 
 def force_to_energy_grad(dataset):
@@ -304,13 +299,10 @@ def force_to_energy_grad(dataset):
         success (bool): if True, forces were removed and energy_grad
             became the new key.
     """
-    if 'forces' not in dataset.props.keys():
+    if "forces" not in dataset.props.keys():
         return False
     else:
-        dataset.props['energy_grad'] = [
-            -x
-            for x in dataset.props.pop('forces')
-        ]
+        dataset.props["energy_grad"] = [-x for x in dataset.props.pop("forces")]
         return True
 
 
@@ -374,7 +366,7 @@ def to_tensor(x, stack=False):
         if any([isinstance(y, (list, np.ndarray)) for y in x]):
             return [torch.Tensor(y) for y in x]
 
-    raise TypeError('Data type not understood')
+    raise TypeError("Data type not understood")
 
 
 def concatenate_dict(*dicts):
@@ -401,8 +393,9 @@ def concatenate_dict(*dicts):
 
     """
 
-    assert all([type(d) == dict for d in dicts]), \
-        'all arguments have to be dictionaries'
+    assert all(
+        [type(d) == dict for d in dicts]
+    ), "all arguments have to be dictionaries"
 
     keys = set(sum([list(d.keys()) for d in dicts], []))
 
@@ -452,19 +445,16 @@ def split_train_test(dataset, test_size=0.2):
 
     idx = list(range(len(dataset)))
     idx_train, idx_test = train_test_split(idx, test_size=test_size)
-    
-    props = {key: [val[i] for i in idx_train]
-             for key, val in dataset.props.items()}
+
+    props = {key: [val[i] for i in idx_train] for key, val in dataset.props.items()}
 
     train = Dataset(
-        props={key: [val[i] for i in idx_train]
-               for key, val in dataset.props.items()},
-        units=dataset.units
+        props={key: [val[i] for i in idx_train] for key, val in dataset.props.items()},
+        units=dataset.units,
     )
     test = Dataset(
-        props={key: [val[i] for i in idx_test]
-               for key, val in dataset.props.items()},
-        units=dataset.units
+        props={key: [val[i] for i in idx_test] for key, val in dataset.props.items()},
+        units=dataset.units,
     )
 
     return train, test

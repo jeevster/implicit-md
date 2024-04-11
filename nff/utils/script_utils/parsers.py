@@ -6,12 +6,12 @@ import argparse
 
 
 def get_main_parser():
-    """ Setup parser for command line arguments """
+    """Setup parser for command line arguments"""
     ## command-specific
     cmd_parser = argparse.ArgumentParser(add_help=False)
     cmd_parser.add_argument(
         "--device",
-        default='cuda',
+        default="cuda",
         help="Device to use",
     )
     cmd_parser.add_argument(
@@ -115,13 +115,13 @@ def add_subparsers(cmd_parser, defaults={}):
     eval_parser = argparse.ArgumentParser(add_help=False, parents=[cmd_parser])
     eval_parser.add_argument("data_path", help="Dataset to use")
     eval_parser.add_argument("model_path", help="Path of stored model")
-#    eval_parser.add_argument(
-#        "--split",
-#        help="Evaluate trained model on given split",
-#        choices=["train", "validation", "test"],
-#        default=["test"],
-#        nargs="+",
-#    )
+    #    eval_parser.add_argument(
+    #        "--split",
+    #        help="Evaluate trained model on given split",
+    #        choices=["train", "validation", "test"],
+    #        default=["test"],
+    #        nargs="+",
+    #    )
 
     # model-specific parsers
     model_parser = argparse.ArgumentParser(add_help=False)
@@ -154,7 +154,7 @@ def add_subparsers(cmd_parser, defaults={}):
     )
     schnet_parser.add_argument(
         "--trainable_gauss",
-        action='store_true',
+        action="store_true",
         help="If set, sets gaussians as learnable parameters (default: False)",
     )
 

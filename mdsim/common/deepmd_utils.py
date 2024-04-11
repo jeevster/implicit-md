@@ -20,21 +20,23 @@ from tensorflow.python.framework import tensor_util
 
 log = logging.getLogger(__name__)
 
+
 def get_param_count(graph_pb_path):
     with tf.compat.v1.Session(config=default_tf_session_config) as sess:
-      with gfile.FastGFile(graph_pb_path, 'rb') as f:
-        graph_def = tf.GraphDef()
-        graph_def.ParseFromString(f.read())
-        sess.graph.as_default()
-        tf.import_graph_def(graph_def, name='')
-        graph_nodes = [n for n in graph_def.node]
-        wts = [n for n in graph_nodes if n.op == 'Const']
+        with gfile.FastGFile(graph_pb_path, "rb") as f:
+            graph_def = tf.GraphDef()
+            graph_def.ParseFromString(f.read())
+            sess.graph.as_default()
+            tf.import_graph_def(graph_def, name="")
+            graph_nodes = [n for n in graph_def.node]
+            wts = [n for n in graph_nodes if n.op == "Const"]
 
     shapes = []
     for n in wts:
-        shapes.append(tensor_util.MakeNdarray(n.attr['value'].tensor).shape)
-        
+        shapes.append(tensor_util.MakeNdarray(n.attr["value"].tensor).shape)
+
     return sum([np.prod(x) for x in shapes])
+
 
 def dp_test(
     *,
@@ -42,7 +44,7 @@ def dp_test(
     system: str,
     numb_test: int,
     batch_size=1000,
-    set_prefix='set',
+    set_prefix="set",
     rand_seed=None,
     shuffle_test=False,
     detail_file=None,
@@ -81,11 +83,11 @@ def dp_test(
 
     # init random seed
     if rand_seed is not None:
-        dp_random.seed(rand_seed % (2 ** 32))
+        dp_random.seed(rand_seed % (2**32))
 
     # init model
     dp = DeepPotential(model)
-    
+
     for cc, system in enumerate(all_sys):
         log.info("# ---------------output of dp test--------------- ")
         log.info(f"# testing system : {system}")
@@ -105,8 +107,9 @@ def dp_test(
             append_detail=(cc != 0),
         )
         log.info("# ----------------------------------------------- ")
-        
+
     return err
+
 
 def rmse(diff: np.ndarray) -> np.ndarray:
     """Calculate average root mean square error.
@@ -215,7 +218,7 @@ def test_ener(
         aparam = test_data["aparam"][:numb_test]
     else:
         aparam = None
-    
+
     all_ener = []
     all_force = []
     n_batches = int(np.ceil(numb_test / batch_size))
@@ -242,12 +245,13 @@ def test_ener(
     mae_e = (np.abs(energy - test_data["energy"][:numb_test].reshape([-1, 1]))).mean()
     mae_f = (np.abs((force - test_data["force"][:numb_test]))).mean()
     mae_ea = mae_e / natoms
-    
+
     return {
         "mae_e": mae_e,
         "mae_ea": mae_ea,
         "mae_f": mae_f,
     }
+
 
 def run_test(dp: "DeepTensor", test_data: dict, numb_test: int):
     """Run tests.

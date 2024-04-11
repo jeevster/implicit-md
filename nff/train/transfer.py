@@ -30,4 +30,3 @@ def unfreeze_readout(model):
     """
     for param in model.atomwisereadout.parameters():
         param.requires_grad = True
-

@@ -32,8 +32,7 @@ def remove_outliers(array, std_away=3, max_value=np.inf):
     mean = np.mean(array)
 
     non_outlier = np.bitwise_and(
-        np.abs(array - mean) < std_away * std,
-        array < max_value
+        np.abs(array - mean) < std_away * std, array < max_value
     )
 
     non_outlier = np.arange(len(array))[non_outlier]
@@ -41,7 +40,7 @@ def remove_outliers(array, std_away=3, max_value=np.inf):
     return array[non_outlier], non_outlier
 
 
-def remove_dataset_outliers(dset, reference_key='energy', std_away=3, max_value=np.inf):
+def remove_dataset_outliers(dset, reference_key="energy", std_away=3, max_value=np.inf):
     """
     Remove outliers from given dataset using both a number of standard
         deviations and a hard cutoff.
@@ -66,9 +65,6 @@ def remove_dataset_outliers(dset, reference_key='energy', std_away=3, max_value=
 
     _, idx = remove_outliers(array, std_away, max_value)
 
-    new_props = {
-        key: [val[i] for i in idx]
-        for key, val in dset.props.items()
-    }
+    new_props = {key: [val[i] for i in idx] for key, val in dset.props.items()}
 
     return Dataset(new_props, units=dset.units)

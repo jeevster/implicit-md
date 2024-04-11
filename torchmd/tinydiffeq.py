@@ -1,21 +1,22 @@
-
 import warnings
 import torch
 import abc
 
-'''
+"""
     Adapted from https://github.com/rtqichen/torchdiffeq
 
     [1] Ricky T. Q. Chen, Yulia Rubanova, Jesse Bettencourt, David Duvenaud. "Neural Ordinary Differential Equations." Advances in Neural Information Processing Systems. 2018. 
-'''
+"""
 
-# Solver Class 
+# Solver Class
 class FixedGridODESolver(object):
     __metaclass__ = abc.ABCMeta
 
-    def __init__(self, func, y0, step_size=None, grid_constructor=None, **unused_kwargs):
-        unused_kwargs.pop('rtol', None)
-        unused_kwargs.pop('atol', None)
+    def __init__(
+        self, func, y0, step_size=None, grid_constructor=None, **unused_kwargs
+    ):
+        unused_kwargs.pop("rtol", None)
+        unused_kwargs.pop("atol", None)
         _handle_unused_kwargs(self, unused_kwargs)
         del unused_kwargs
 
@@ -30,7 +31,6 @@ class FixedGridODESolver(object):
             raise ValueError("step_size and grid_constructor are exclusive arguments.")
 
     def _grid_constructor_from_step_size(self, step_size):
-
         def _grid_constructor(func, y0, t):
             start_time = t[0]
             end_time = t[-1]
@@ -86,7 +86,6 @@ class FixedGridODESolver(object):
 
 
 class RK4(FixedGridODESolver):
-
     def step_func(self, func, t, dt, y):
         return rk4_alt_step_func(func, t, dt, y)
 
@@ -94,13 +93,24 @@ class RK4(FixedGridODESolver):
     def order(self):
         return 4
 
+
 def rk4_alt_step_func(func, t, dt, y, k1=None):
     """Smaller error with slightly more compute."""
-    if k1 is None: k1 = func(t, y)
+    if k1 is None:
+        k1 = func(t, y)
     k2 = func(t + dt / 3, tuple(y_ + dt * k1_ / 3 for y_, k1_ in zip(y, k1)))
-    k3 = func(t + dt * 2 / 3, tuple(y_ + dt * (k1_ / -3 + k2_) for y_, k1_, k2_ in zip(y, k1, k2)))
-    k4 = func(t + dt, tuple(y_ + dt * (k1_ - k2_ + k3_) for y_, k1_, k2_, k3_ in zip(y, k1, k2, k3)))
-    return tuple((k1_ + 3 * k2_ + 3 * k3_ + k4_) * (dt / 8) for k1_, k2_, k3_, k4_ in zip(k1, k2, k3, k4))
+    k3 = func(
+        t + dt * 2 / 3,
+        tuple(y_ + dt * (k1_ / -3 + k2_) for y_, k1_, k2_ in zip(y, k1, k2)),
+    )
+    k4 = func(
+        t + dt,
+        tuple(y_ + dt * (k1_ - k2_ + k3_) for y_, k1_, k2_, k3_ in zip(y, k1, k2, k3)),
+    )
+    return tuple(
+        (k1_ + 3 * k2_ + 3 * k3_ + k4_) * (dt / 8)
+        for k1_, k2_, k3_, k4_ in zip(k1, k2, k3, k4)
+    )
 
 
 def _flatten(sequence):
@@ -115,8 +125,10 @@ def _flatten_convert_none_to_zeros(sequence, like_sequence):
     ]
     return torch.cat(flat) if len(flat) > 0 else torch.tensor([])
 
+
 def _decreasing(t):
     return (t[1:] < t[:-1]).all()
+
 
 def _check_inputs(func, y0, t):
     tensor_input = False
@@ -125,9 +137,11 @@ def _check_inputs(func, y0, t):
         y0 = (y0,)
         _base_nontuple_func_ = func
         func = lambda t, y: (_base_nontuple_func_(t, y[0]),)
-    assert isinstance(y0, tuple), 'y0 must be either a torch.Tensor or a tuple'
+    assert isinstance(y0, tuple), "y0 must be either a torch.Tensor or a tuple"
     for y0_ in y0:
-        assert torch.is_tensor(y0_), 'each element must be a torch.Tensor but received {}'.format(type(y0_))
+        assert torch.is_tensor(
+            y0_
+        ), "each element must be a torch.Tensor but received {}".format(type(y0_))
 
     if _decreasing(t):
         t = -t
@@ -136,16 +150,25 @@ def _check_inputs(func, y0, t):
 
     for y0_ in y0:
         if not torch.is_floating_point(y0_):
-            raise TypeError('`y0` must be a floating point Tensor but is a {}'.format(y0_.type()))
+            raise TypeError(
+                "`y0` must be a floating point Tensor but is a {}".format(y0_.type())
+            )
     if not torch.is_floating_point(t):
-        raise TypeError('`t` must be a floating point Tensor but is a {}'.format(t.type()))
+        raise TypeError(
+            "`t` must be a floating point Tensor but is a {}".format(t.type())
+        )
 
     return tensor_input, func, y0, t
 
+
 def _handle_unused_kwargs(solver, unused_kwargs):
     if len(unused_kwargs) > 0:
-        warnings.warn('{}: Unexpected arguments {}'.format(solver.__class__.__name__, unused_kwargs))
+        warnings.warn(
+            "{}: Unexpected arguments {}".format(
+                solver.__class__.__name__, unused_kwargs
+            )
+        )
+
 
 def _assert_increasing(t):
-    assert (t[1:] > t[:-1]).all(), 't must be strictly increasing or decrasing'
-
+    assert (t[1:] > t[:-1]).all(), "t must be strictly increasing or decrasing"

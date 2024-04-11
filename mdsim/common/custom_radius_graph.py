@@ -57,7 +57,6 @@ def radius(x, y, r, batch_x=None, batch_y=None, max_num_neighbors=32):
     # assert x.size(0) == batch_x.size(0)
     # assert y.size(0) == batch_y.size(0)
 
-    
     # #     return torch_cluster.radius_cuda.radius(x, y, r, batch_x, batch_y,
     # #                                             max_num_neighbors)
 
@@ -71,18 +70,15 @@ def radius(x, y, r, batch_x=None, batch_y=None, max_num_neighbors=32):
     # row, col = torch.cat(row, dim=0), torch.cat(col, dim=0)
     # mask = col < int(tree.n)
     # return torch.stack([row[mask], col[mask]], dim=0).cuda()
-    
+
     ###Sanjeev implementation
     dists = (x.unsqueeze(0) - y.unsqueeze(1)).square().sum(-1).sqrt()
     return torch.where(dists <= r)
-    
 
-def radius_graph(x,
-                 r,
-                 batch=None,
-                 loop=False,
-                 max_num_neighbors=32,
-                 flow='source_to_target'):
+
+def radius_graph(
+    x, r, batch=None, loop=False, max_num_neighbors=32, flow="source_to_target"
+):
     r"""Computes graph edges to all points within a given distance.
 
     Args:
@@ -114,11 +110,11 @@ def radius_graph(x,
         >>> edge_index = radius_graph(x, r=1.5, batch=batch, loop=False)
     """
 
-    assert flow in ['source_to_target', 'target_to_source']
+    assert flow in ["source_to_target", "target_to_source"]
     row, col = radius(x, x, r, batch, batch, max_num_neighbors + 1)
-    row, col = (col, row) if flow == 'source_to_target' else (row, col)
+    row, col = (col, row) if flow == "source_to_target" else (row, col)
 
-    #remove self-connections
+    # remove self-connections
     if not loop:
         mask = row != col
         row, col = row[mask], col[mask]

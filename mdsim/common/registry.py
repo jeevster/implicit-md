@@ -112,9 +112,7 @@ class Registry:
         def wrap(func):
             from mdsim.common.logger import Logger
 
-            assert issubclass(
-                func, Logger
-            ), "All loggers must inherit Logger class"
+            assert issubclass(func, Logger), "All loggers must inherit Logger class"
             cls.mapping["logger_name_mapping"][name] = func
             return func
 
@@ -141,7 +139,7 @@ class Registry:
             return func
 
         return wrap
-    
+
     @classmethod
     def register_integrator(cls, name):
         def wrap(func):
@@ -192,7 +190,7 @@ class Registry:
     @classmethod
     def get_trainer_class(cls, name):
         return cls.mapping["trainer_name_mapping"].get(name, None)
-    
+
     @classmethod
     def get_integrator_class(cls, name):
         return cls.mapping["integrator_name_mapping"].get(name, None)

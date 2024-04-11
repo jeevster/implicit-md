@@ -18,6 +18,7 @@ from mdsim.common.registry import registry
 from mdsim.common.utils import setup_imports, setup_logging
 from mdsim.datasets import data_list_collater
 
+
 def atoms_to_batch(atoms):
     atomic_numbers = torch.Tensor(atoms.get_atomic_numbers())
     positions = torch.Tensor(atoms.get_positions())
@@ -31,15 +32,19 @@ def atoms_to_batch(atoms):
         natoms=natoms,
     )
 
+
 def data_to_atoms(data):
     numbers = data.atomic_numbers
     positions = data.pos
     cell = data.cell.squeeze()
-    atoms = Atoms(numbers=numbers, 
-                  positions=positions.cpu().detach().numpy(), 
-                  cell=cell.cpu().detach().numpy(),
-                  pbc=[True, True, True])
+    atoms = Atoms(
+        numbers=numbers,
+        positions=positions.cpu().detach().numpy(),
+        cell=cell.cpu().detach().numpy(),
+        pbc=[True, True, True],
+    )
     return atoms
+
 
 def batch_to_atoms(batch):
     n_systems = batch.natoms.shape[0]
@@ -76,8 +81,13 @@ def batch_to_atoms(batch):
 class OCPCalculator(Calculator):
     implemented_properties = ["energy", "forces"]
 
-    def __init__(self, config_yml=None, checkpoint=None, 
-                 test_data_src=None, energy_units_to_eV=1.):
+    def __init__(
+        self,
+        config_yml=None,
+        checkpoint=None,
+        test_data_src=None,
+        energy_units_to_eV=1.0,
+    ):
         """
         OCP-ASE Calculator. The default unit for energy is eV.
 
@@ -101,18 +111,14 @@ class OCPCalculator(Calculator):
                 if "includes" in config:
                     for include in config["includes"]:
                         # Change the path based on absolute path of config_yml
-                        path = os.path.join(
-                            config_yml.split("configs")[0], include
-                        )
+                        path = os.path.join(config_yml.split("configs")[0], include)
                         include_config = yaml.safe_load(open(path, "r"))
                         config.update(include_config)
             else:
                 config = config_yml
         else:
             # Loads the config from the checkpoint directly
-            config = torch.load(checkpoint, map_location=torch.device("cpu"))[
-                "config"
-            ]
+            config = torch.load(checkpoint, map_location=torch.device("cpu"))["config"]
 
             config["trainer"] = "forces"
             config["model_attributes"]["name"] = config.pop("model")
@@ -120,16 +126,15 @@ class OCPCalculator(Calculator):
 
         # Calculate the edge indices on the fly
         config["model"]["otf_graph"] = True
-        
 
         # Save config so obj can be transported over network (pkl)
         self.config = copy.deepcopy(config)
         self.config["checkpoint"] = checkpoint
-        
-        for cfg in config['dataset']:
-            cfg['src'] = test_data_src
-        config['dataset'].append({'src': test_data_src, 'name': 'test'})
-        
+
+        for cfg in config["dataset"]:
+            cfg["src"] = test_data_src
+        config["dataset"].append({"src": test_data_src, "name": "test"})
+
         # config['dataset'].append(
         #     {'src': '/'.join(self.config['dataset'][1]['src'].split('/')[:-1] + ['test'])})
         self.trainer = registry.get_trainer_class(config.get("trainer", "energy"))(
@@ -149,12 +154,12 @@ class OCPCalculator(Calculator):
             cpu=config.get("cpu", False),
             slurm=config.get("slurm", {}),
             no_energy=config.get("no_energy", False),
-            simulate=True
+            simulate=True,
         )
-        
+
         if checkpoint is not None:
             self.load_checkpoint(checkpoint)
-            
+
         self.energy_units_to_eV = energy_units_to_eV
 
     def load_checkpoint(self, checkpoint_path):
@@ -175,20 +180,16 @@ class OCPCalculator(Calculator):
         data_object = atoms_to_batch(atoms)
         batch = data_list_collater([data_object], otf_graph=True)
 
-        predictions = self.trainer.predict(
-            batch, per_image=False, disable_tqdm=True
-        )
-        
+        predictions = self.trainer.predict(batch, per_image=False, disable_tqdm=True)
+
         self.results["energy"] = predictions["energy"].item() * self.energy_units_to_eV
-        self.results["forces"] = predictions["forces"].cpu().numpy() * self.energy_units_to_eV
-            
+        self.results["forces"] = (
+            predictions["forces"].cpu().numpy() * self.energy_units_to_eV
+        )
+
 
 class NeuralMDLogger(MDLogger):
-    def __init__(self,
-                 *args,
-                 start_time=0,
-                 verbose=True,
-                 **kwargs):
+    def __init__(self, *args, start_time=0, verbose=True, **kwargs):
         if start_time == 0:
             header = True
         else:
@@ -213,11 +214,11 @@ class NeuralMDLogger(MDLogger):
             epot /= self.natoms
             ekin /= self.natoms
         if self.dyn is not None:
-            t = self.dyn.get_time() / (1000*units.fs) + self.start_time
+            t = self.dyn.get_time() / (1000 * units.fs) + self.start_time
             dat = (t,)
         else:
             dat = ()
-        dat += (epot+ekin, epot, ekin, temp)
+        dat += (epot + ekin, epot, ekin, temp)
         if self.stress:
             dat += tuple(self.atoms.get_stress() / units.GPa)
         self.logfile.write(self.fmt % dat)
@@ -226,17 +227,20 @@ class NeuralMDLogger(MDLogger):
         if self.verbose:
             print(self.fmt % dat)
 
+
 class Simulator:
-    def __init__(self, 
-                 atoms, 
-                 integrator,
-                 T_init,
-                 start_time=0,
-                 save_dir='./log',
-                 restart=False,
-                 save_frequency=100,
-                 min_temp=0.1,
-                 max_temp=100000):
+    def __init__(
+        self,
+        atoms,
+        integrator,
+        T_init,
+        start_time=0,
+        save_dir="./log",
+        restart=False,
+        save_frequency=100,
+        min_temp=0.1,
+        max_temp=100000,
+    ):
         self.atoms = atoms
         self.integrator = integrator
         self.save_dir = Path(save_dir)
@@ -244,35 +248,43 @@ class Simulator:
         self.max_temp = max_temp
         self.natoms = self.atoms.get_number_of_atoms()
 
-        # intialize system momentum 
+        # intialize system momentum
         if not restart:
             assert (self.atoms.get_momenta() == 0).all()
             MaxwellBoltzmannDistribution(self.atoms, T_init * units.kB)
-        
-        # attach trajectory dump 
-        self.traj = Trajectory(self.save_dir / 'atoms.traj', 'a', self.atoms)
+
+        # attach trajectory dump
+        self.traj = Trajectory(self.save_dir / "atoms.traj", "a", self.atoms)
         self.integrator.attach(self.traj.write, interval=save_frequency)
-        
+
         # attach log file
-        self.integrator.attach(NeuralMDLogger(self.integrator, self.atoms, 
-                                        self.save_dir / 'thermo.log', 
-                                        start_time=start_time, mode='a'), 
-                               interval=save_frequency)
-        
+        self.integrator.attach(
+            NeuralMDLogger(
+                self.integrator,
+                self.atoms,
+                self.save_dir / "thermo.log",
+                start_time=start_time,
+                mode="a",
+            ),
+            interval=save_frequency,
+        )
+
     def run(self, steps):
         early_stop = False
         step = 0
         for step in tqdm(range(steps)):
             self.integrator.run(1)
-            
+
             ekin = self.atoms.get_kinetic_energy()
             temp = ekin / (1.5 * units.kB * self.natoms)
             if temp < self.min_temp or temp > self.max_temp:
-                print(f'Temprature {temp:.2f} is out of range: \
+                print(
+                    f"Temprature {temp:.2f} is out of range: \
                         [{self.min_temp:.2f}, {self.max_temp:.2f}]. \
-                        Early stopping the simulation.')
+                        Early stopping the simulation."
+                )
                 early_stop = True
                 break
-            
+
         self.traj.close()
-        return early_stop, (step+1)
+        return early_stop, (step + 1)

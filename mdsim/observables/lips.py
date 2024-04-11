@@ -2,9 +2,13 @@ import torch
 import numpy as np
 import os
 from ase.io import read
-from mdsim.observables.common import get_smoothed_diffusivity, compute_distance_matrix_batch
+from mdsim.observables.common import (
+    get_smoothed_diffusivity,
+    compute_distance_matrix_batch,
+)
 from tqdm import tqdm
 import itertools
+
 
 class LiPSRDFMAE(torch.nn.Module):
     def __init__(self, base_path, gt_rdf, n_atoms, n_replicas, params, device):
@@ -15,10 +19,12 @@ class LiPSRDFMAE(torch.nn.Module):
         self.device = device
         self.params = params
         self.xlim = params.max_rdf_dist
-        n_bins = int(self.xlim/params.dr)
-        self.bins = np.linspace(1e-6, self.xlim, n_bins + 1) # for computing RDF
+        n_bins = int(self.xlim / params.dr)
+        self.bins = np.linspace(1e-6, self.xlim, n_bins + 1)  # for computing RDF
         # get ground truth data
-        atoms = read(os.path.join(base_path, 'lips', 'lips.xyz'), index=':', format='extxyz')
+        atoms = read(
+            os.path.join(base_path, "lips", "lips.xyz"), index=":", format="extxyz"
+        )
         n_points = len(atoms)
         positions, cell, atomic_numbers = [], [], []
         for i in range(n_points):
@@ -28,18 +34,22 @@ class LiPSRDFMAE(torch.nn.Module):
         positions = torch.from_numpy(np.array(positions))
         self.cell = torch.from_numpy(np.array(cell)[0])
 
-
     def forward(self, stacked_radii):
         maes = []
         rdf_list = []
-        for i in range(self.n_replicas): #explicit loop since vmap makes some numpy things weird
-            rdf = get_lips_rdf(stacked_radii[:, i], self.cell, self.bins).to(self.device)
-            #compute MAEs of all element-conditioned RDFs
-            maes.append(self.xlim*torch.abs(rdf-self.gt_rdf).mean().unsqueeze(-1))
+        for i in range(
+            self.n_replicas
+        ):  # explicit loop since vmap makes some numpy things weird
+            rdf = get_lips_rdf(stacked_radii[:, i], self.cell, self.bins).to(
+                self.device
+            )
+            # compute MAEs of all element-conditioned RDFs
+            maes.append(self.xlim * torch.abs(rdf - self.gt_rdf).mean().unsqueeze(-1))
             rdf_list.append(rdf)
         return torch.stack(rdf_list).to(self.device), torch.cat(maes).to(self.device)
-  
-#minimum distance between two atoms
+
+
+# minimum distance between two atoms
 class MinimumInteratomicDistance(torch.nn.Module):
     def __init__(self, cell, device):
         super(MinimumIntermolecularDistance, self).__init__()
@@ -48,13 +58,20 @@ class MinimumInteratomicDistance(torch.nn.Module):
 
     def forward(self, stacked_radii):
         dists = compute_distance_matrix_batch(self.cell, stacked_radii)
-        intermolecular_distances = distance_pbc(stacked_radii[:, :, self.not_bonds[:, 0]], \
-                                                stacked_radii[:,:, self.not_bonds[:, 1]], \
-                                                torch.diag(self.cell)).to(self.device) #compute distances under minimum image convention
+        intermolecular_distances = distance_pbc(
+            stacked_radii[:, :, self.not_bonds[:, 0]],
+            stacked_radii[:, :, self.not_bonds[:, 1]],
+            torch.diag(self.cell),
+        ).to(
+            self.device
+        )  # compute distances under minimum image convention
         return intermolecular_distances.min(dim=-1)[0].min(dim=0)[0].detach()
 
+
 def compute_image_flag(cell, fcoord1, fcoord2):
-    supercells = torch.FloatTensor(list(itertools.product((-1, 0, 1), repeat=3))).to(cell.device)
+    supercells = torch.FloatTensor(list(itertools.product((-1, 0, 1), repeat=3))).to(
+        cell.device
+    )
     fcoords = fcoord2[:, None] + supercells
     coords = fcoords @ cell
     coord1 = fcoord1 @ cell
@@ -62,12 +79,15 @@ def compute_image_flag(cell, fcoord1, fcoord2):
     image = dists.argmin(dim=-1)
     return supercells[image].long()
 
+
 def frac2cart(fcoord, cell):
     return fcoord @ cell
+
 
 def cart2frac(coord, cell):
     invcell = torch.linalg.inv(cell)
     return coord @ invcell
+
 
 # the source data is in wrapped coordinates. need to unwrap it for computing diffusivity.
 def unwrap(pos0, pos1, cell):
@@ -78,11 +98,10 @@ def unwrap(pos0, pos1, cell):
     return frac2cart(remapped_frac_coords, cell)
 
 
-    
-def get_lips_rdf(data_seq, lattices, bins, device='cpu'):
+def get_lips_rdf(data_seq, lattices, bins, device="cpu"):
     data_seq = data_seq.to(device).float()
     lattices = lattices.to(device).float()
-    
+
     lattice_np = lattices.cpu().numpy()
     volume = float(abs(np.dot(np.cross(lattice_np[0], lattice_np[1]), lattice_np[2])))
     data_dist = compute_distance_matrix_batch(lattices, data_seq)
@@ -96,15 +115,18 @@ def get_lips_rdf(data_seq, lattices, bins, device='cpu'):
     rho_data = data_shape / volume
     Z_data = rho_data * 4 / 3 * np.pi * (bins[1:] ** 3 - bins[:-1] ** 3)
     rdf = data_hist / Z_data
-        
+
     return torch.Tensor(rdf).to(device)
+
 
 def find_lips_rdfs_diffusivity_from_file(base_path: str, size: str, params, device):
     xlim = params.max_rdf_dist
-    n_bins = int(xlim/params.dr)
-    bins = np.linspace(1e-6, xlim, n_bins + 1) # for computing RDF
+    n_bins = int(xlim / params.dr)
+    bins = np.linspace(1e-6, xlim, n_bins + 1)  # for computing RDF
 
-    atoms = read(os.path.join(base_path, 'lips', 'lips.xyz'), index=':', format='extxyz')
+    atoms = read(
+        os.path.join(base_path, "lips", "lips.xyz"), index=":", format="extxyz"
+    )
     n_points = len(atoms)
     positions, cell, atomic_numbers = [], [], []
     for i in tqdm(range(n_points)):
@@ -118,16 +140,21 @@ def find_lips_rdfs_diffusivity_from_file(base_path: str, size: str, params, devi
     # unwrap positions
     all_displacements = []
     for i in tqdm(range(1, len(positions))):
-        next_pos = unwrap(positions[i-1], positions[i], cell)
-        displacements = next_pos - positions[i-1]
+        next_pos = unwrap(positions[i - 1], positions[i], cell)
+        displacements = next_pos - positions[i - 1]
         all_displacements.append(displacements)
     displacements = torch.stack(all_displacements)
     accum_displacements = torch.cumsum(displacements, dim=0)
-    positions = torch.cat([positions[0].unsqueeze(0), positions[0] + accum_displacements], dim=0)
+    positions = torch.cat(
+        [positions[0].unsqueeze(0), positions[0] + accum_displacements], dim=0
+    )
 
-    gt_rdf = get_lips_rdf(positions[::], cell, bins, device='cpu')
+    gt_rdf = get_lips_rdf(positions[::], cell, bins, device="cpu")
     # Li diffusivity unit in m^2/s. remove the first 5 ps as equilibrium.
     # Desirably, we want longer trajectories for computing diffusivity.
-    gt_diffusivity = get_smoothed_diffusivity((positions[2500:None:25, atomic_numbers == 3])) * 20 * 1e-8
+    gt_diffusivity = (
+        get_smoothed_diffusivity((positions[2500:None:25, atomic_numbers == 3]))
+        * 20
+        * 1e-8
+    )
     return torch.Tensor(gt_rdf).to(device), torch.Tensor(gt_diffusivity).to(device)
-

@@ -118,7 +118,7 @@ class MaxEpochHook(Hook):
     Args:
        max_epochs (int): maximal number of epochs.
 
-   """
+    """
 
     def __init__(self, max_epochs):
         self.max_epochs = max_epochs

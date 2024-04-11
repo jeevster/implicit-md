@@ -28,7 +28,6 @@ def build_mse_loss(loss_coef, correspondence_keys=None):
 
     correspondence_keys = {} if (correspondence_keys is None) else correspondence_keys
 
-
     def loss_fn(ground_truth, results):
         """Calculates the MSE between ground_truth and results.
 
@@ -41,7 +40,12 @@ def build_mse_loss(loss_coef, correspondence_keys=None):
         """
 
         assert all([k in results.keys() for k in loss_coef.keys()])
-        assert all([k in [*ground_truth.keys(), *correspondence_keys.keys()] for k in loss_coef.keys()])
+        assert all(
+            [
+                k in [*ground_truth.keys(), *correspondence_keys.keys()]
+                for k in loss_coef.keys()
+            ]
+        )
 
         loss = 0.0
         for key, coef in loss_coef.items():
@@ -60,7 +64,7 @@ def build_mse_loss(loss_coef, correspondence_keys=None):
             pred = pred[valid_idx]
 
             if len(targ) != 0:
-                diff = (targ - pred ) ** 2
+                diff = (targ - pred) ** 2
                 err_sq = coef * torch.mean(diff)
                 loss += err_sq
 

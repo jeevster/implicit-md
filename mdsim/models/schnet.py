@@ -81,14 +81,15 @@ class SchNetWrap(SchNet):
             readout=readout,
         )
 
-
     @conditional_grad(torch.enable_grad())
     def _forward(self, data):
         z = data.atomic_numbers.long()
         pos = data.pos
         batch = data.batch
         if self.otf_graph:
-            edge_index, cell_offsets, _, neighbors = radius_graph_pbc(data, self.cutoff, 500)
+            edge_index, cell_offsets, _, neighbors = radius_graph_pbc(
+                data, self.cutoff, 500
+            )
             data.edge_index = edge_index.long()
             data.cell_offsets = cell_offsets
             data.neighbors = neighbors
@@ -111,21 +112,21 @@ class SchNetWrap(SchNet):
             h = self.embedding(z)
             for interaction in self.interactions:
                 h = h + interaction(h, edge_index, edge_weight, edge_attr)
-            
-            #energy head
+
+            # energy head
             h = self.lin1(h)
             h = self.act(h)
             h = self.lin2(h)
 
             batch = torch.zeros_like(z) if batch is None else batch
             energy = scatter(h, batch, dim=0, reduce=self.readout)
-            
+
         else:
             energy = super(SchNetWrap, self).forward(z, pos, batch)
         return energy
 
     def forward(self, data):
-        
+
         if self.regress_forces:
             data.pos.requires_grad_(True)
         energy = self._forward(data)
@@ -139,10 +140,10 @@ class SchNetWrap(SchNet):
                     create_graph=True,
                 )[0]
             )
-            #import pdb; pdb.set_trace()
+            # import pdb; pdb.set_trace()
             return energy, forces
         else:
-            #import pdb; pdb.set_trace()
+            # import pdb; pdb.set_trace()
             return energy
 
     @property

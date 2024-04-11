@@ -9,7 +9,11 @@ import numpy as np
 import itertools
 
 TOPOLOGIES = ["bonds", "angles", "dihedrals", "impropers", "pairs"]
-ALL_TOPOLOGY_KEYS = [*TOPOLOGIES, *["num_{}".format(key) for key in TOPOLOGIES], "bonded_nbr_list"]
+ALL_TOPOLOGY_KEYS = [
+    *TOPOLOGIES,
+    *["num_{}".format(key) for key in TOPOLOGIES],
+    "bonded_nbr_list",
+]
 RE_INDEX_TOPOLOGY_KEYS = [*TOPOLOGIES, "bonded_nbr_list"]
 
 
@@ -50,8 +54,13 @@ def create_smiles_dic(props):
     # get the unique smiles strings in the properties
     unique_smiles = list(set(props["smiles"]))
     # initialize "sub_dic", a subdictionary for each smiles
-    sub_dic = {"num_atoms": None, "bonded_nbr_list": None, "degree_vec": None, "neighbors": None,
-        **{key: None for key in ALL_TOPOLOGY_KEYS}}
+    sub_dic = {
+        "num_atoms": None,
+        "bonded_nbr_list": None,
+        "degree_vec": None,
+        "neighbors": None,
+        **{key: None for key in ALL_TOPOLOGY_KEYS},
+    }
     # full_dic is what we will output
     full_dic = {key: copy.deepcopy(sub_dic) for key in unique_smiles}
 
@@ -62,6 +71,7 @@ def create_smiles_dic(props):
         full_dic[smiles]["num_atoms"] = props["num_atoms"][i]
 
     return full_dic
+
 
 def set_preliminaries(bond_dic, smiles_dic):
 
@@ -88,8 +98,9 @@ def set_preliminaries(bond_dic, smiles_dic):
         # sum over one of the dimensions to get an array with bond number
         # for each atom
         d = A.sum(1)
-        sub_dic["degree_vec"] = d 
+        sub_dic["degree_vec"] = d
         sub_dic["bonded_nbr_list"] = torch.tensor(bonded_nbr_list)
+
 
 def unique_pairs(bonded_nbr_list):
 
@@ -125,6 +136,7 @@ def unique_pairs(bonded_nbr_list):
 
     return sorted_pairs
 
+
 def set_bonds(smiles_dic):
 
     """
@@ -134,7 +146,6 @@ def set_bonds(smiles_dic):
     Returns:
         None
     """
-
 
     for smiles, sub_dic in smiles_dic.items():
 
@@ -148,8 +159,7 @@ def set_bonds(smiles_dic):
         # second_arg_neighbors is just the second node in each set of bonded
         # neighbor pairs. Since the first node is already given implicitly by
         # the first index of `neighbors`, we don't need to use it anymore
-        second_arg_neighbors = [neigbor[:, 1].tolist()
-                                for neigbor in neighbors]
+        second_arg_neighbors = [neigbor[:, 1].tolist() for neigbor in neighbors]
         # props["bonds"] is the full set of unique pairs of bonded atoms
         sub_dic["bonds"] = bonds
         # props["num_bonds"] is teh number of bonds
@@ -158,6 +168,7 @@ def set_bonds(smiles_dic):
         # Note that props["neighbors"] is for bonded neighbors, as opposed
         # to props["nbr_list"], which is just everything within a 5 A radius.
         sub_dic["neighbors"] = second_arg_neighbors
+
 
 def set_angles(smiles_dic):
 
@@ -175,8 +186,10 @@ def set_angles(smiles_dic):
         neighbors = sub_dic["neighbors"]
 
         angles = [list(itertools.combinations(x, 2)) for x in neighbors]
-        angles = [[[pair[0]]+[i]+[pair[1]] for pair in pairs]
-                  for i, pairs in enumerate(angles)]
+        angles = [
+            [[pair[0]] + [i] + [pair[1]] for pair in pairs]
+            for i, pairs in enumerate(angles)
+        ]
         angles = list(itertools.chain(*angles))
         angles = torch.LongTensor(angles)
 
@@ -201,14 +214,15 @@ def set_dihedrals(smiles_dic):
         dihedrals = copy.deepcopy(neighbors)
         for i in range(len(neighbors)):
             for counter, j in enumerate(neighbors[i]):
-                k = set(neighbors[i])-set([j])
-                l = set(neighbors[j])-set([i])
+                k = set(neighbors[i]) - set([j])
+                l = set(neighbors[j]) - set([i])
                 pairs = list(
-                    filter(lambda pair: pair[0] < pair[1], itertools.product(k, l)))
-                dihedrals[i][counter] = [[pair[0]]+[i]+[j]+[pair[1]]
-                                         for pair in pairs]
-        dihedrals = list(itertools.chain(
-            *list(itertools.chain(*dihedrals))))
+                    filter(lambda pair: pair[0] < pair[1], itertools.product(k, l))
+                )
+                dihedrals[i][counter] = [
+                    [pair[0]] + [i] + [j] + [pair[1]] for pair in pairs
+                ]
+        dihedrals = list(itertools.chain(*list(itertools.chain(*dihedrals))))
         dihedrals = torch.LongTensor(dihedrals)
 
         sub_dic["dihedrals"] = dihedrals
@@ -230,12 +244,14 @@ def set_impropers(smiles_dic):
         impropers = copy.deepcopy(neighbors)
         for i in range(len(impropers)):
             impropers[i] = [
-                [i]+list(x) for x in itertools.combinations(neighbors[i], 3)]
+                [i] + list(x) for x in itertools.combinations(neighbors[i], 3)
+            ]
         impropers = list(itertools.chain(*impropers))
         impropers = torch.LongTensor(impropers)
 
         sub_dic["impropers"] = impropers
         sub_dic["num_impropers"] = torch.tensor(len(impropers))
+
 
 def set_pairs(smiles_dic, use_1_4_pairs):
 
@@ -273,6 +289,7 @@ def set_pairs(smiles_dic, use_1_4_pairs):
         sub_dic["pairs"] = pairs
         sub_dic["num_pairs"] = torch.tensor(len(pairs))
 
+
 def smiles_dic_to_props(smiles_dic, props):
 
     """
@@ -303,6 +320,7 @@ def smiles_dic_to_props(smiles_dic, props):
                 new_props[key].append(sub_dic[key])
 
     return new_props
+
 
 def update_props_topologies(props, bond_dic, use_1_4_pairs=True):
 
@@ -345,5 +363,3 @@ def update_props_topologies(props, bond_dic, use_1_4_pairs=True):
     new_props = smiles_dic_to_props(smiles_dic=smiles_dic, props=props)
 
     return new_props
-
-

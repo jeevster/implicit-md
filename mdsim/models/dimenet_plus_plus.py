@@ -63,17 +63,11 @@ class InteractionPPBlock(torch.nn.Module):
 
         # Residual layers before and after skip connection.
         self.layers_before_skip = torch.nn.ModuleList(
-            [
-                ResidualLayer(hidden_channels, act)
-                for _ in range(num_before_skip)
-            ]
+            [ResidualLayer(hidden_channels, act) for _ in range(num_before_skip)]
         )
         self.lin = nn.Linear(hidden_channels, hidden_channels)
         self.layers_after_skip = torch.nn.ModuleList(
-            [
-                ResidualLayer(hidden_channels, act)
-                for _ in range(num_after_skip)
-            ]
+            [ResidualLayer(hidden_channels, act) for _ in range(num_after_skip)]
         )
 
         self.reset_parameters()
@@ -381,7 +375,7 @@ class DimeNetPlusPlusWrap(DimeNetPlusPlus):
             edge_index = (edge_index[0].to(torch.long), edge_index[1].to(torch.long))
             j, i = edge_index
             dist = (pos[i] - pos[j]).pow(2).sum(dim=-1).sqrt()
-        
+
         _, _, idx_i, idx_j, idx_k, idx_kj, idx_ji = self.triplets(
             edge_index,
             data.cell_offsets,

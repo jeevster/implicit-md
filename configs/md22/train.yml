@@ -22,19 +22,16 @@ timestep: 0.5
 temperature: 500.
 train: True
 eval_model: lmax=2
-diffusion_loss_weight: 0
 stability_criterion: bond_length_deviation
 training_observable: rdf
 rdf_loss_weight: 1
-adf_loss_weight: 0
-vacf_loss_weight: 0
 energy_force_loss_weight: 1
 diffusion_window: 1000
 vacf_window: 100
 ic_stddev: 0.0
-bond_dev_tol: 0.50 #decay this?
-max_frac_unstable_threshold: 0.5 #decay this?
-min_frac_unstable_threshold: 0.0 #increase this?
+bond_dev_tol: 0.50
+max_frac_unstable_threshold: 0.5
+min_frac_unstable_threshold: 0.0
 eq_steps: 0
 steps: 2000 # 1 picosecond per epoch
 n_dump: 50
@@ -44,10 +41,8 @@ minibatch_size: 40
 adjoint: True
 only_learn_if_unstable_threshold_reached: True
 only_train_on_unstable_replicas: False
-allow_off_policy_updates: False
 gradient_clipping: True
 grad_clip_norm_threshold: 1.0
-use_mse_gradient: True
 shuffle: True
 optimizer: SGD
 reset_probability: 0.05

@@ -2,8 +2,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-class shifted_softplus(torch.nn.Module):
 
+class shifted_softplus(torch.nn.Module):
     def __init__(self):
         super(shifted_softplus, self).__init__()
 

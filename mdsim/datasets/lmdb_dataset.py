@@ -8,11 +8,13 @@ import lmdb
 import numpy as np
 import torch
 from torch.utils.data import Dataset
-#from torch_geometric.data import Batch
+
+# from torch_geometric.data import Batch
 from nequip.utils.torch_geometric import Batch, Dataset
 
 
 from mdsim.common.registry import registry
+
 
 @registry.register_dataset("lmdb")
 @registry.register_dataset("single_point_lmdb")
@@ -53,8 +55,7 @@ class LmdbDataset(Dataset):
             self.metadata_path = self.path.parent / "metadata.npz"
             self.env = self.connect_db(self.path)
             self._keys = [
-                f"{j}".encode("ascii")
-                for j in range(self.env.stat()["entries"])
+                f"{j}".encode("ascii") for j in range(self.env.stat()["entries"])
             ]
             self.num_samples = len(self._keys)
 
@@ -108,6 +109,7 @@ class LmdbDataset(Dataset):
                 env.close()
         else:
             self.env.close()
+
 
 def data_list_collater(data_list, otf_graph=True):
     batch = Batch.from_data_list(data_list)
