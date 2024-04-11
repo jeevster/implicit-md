@@ -1,21 +1,21 @@
 #TODO: specify different integrator configs for different molecules based on MD22 paper
 src: /pscratch/sd/s/sanjeevr #/data/sanjeevr
 name: md22
-size: 5percent
+size: 25percent
 molecule: ac_Ala3_NHMe
 normalize_labels: False
 checkpoint_epoch: -1 #which model to start from
 model: nequip
 l_max: 1
 log_dir: /global/cfs/projectdirs/m4319/sanjeevr #/home/sanjeevr/implicit-md
-results_dir: 'results_md22_correctedlogging_l=1'
+results_dir: 'results_md22_final_l=1_25percent'
 model_dir: /pscratch/sd/s/sanjeevr/MODELPATH #/data/sanjeevr/MODELPATH
 seed: 123
 dr: 0.02
 max_rdf_dist: 15
 dv: 0.1
 angle_range: [0, 180]
-exp_name: "TEST_vizstructures" #"TEST_lmax1_10percent_resumestrategy0.25_learn_continuous"
+exp_name: "FINAL" #"TEST_lmax1_10percent_resumestrategy0.25_learn_continuous"
 integrator: NoseHoover
 integrator_config: {"ttime": 20., "gamma": 0.1}
 timestep: 0.5

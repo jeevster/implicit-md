@@ -11,7 +11,6 @@ from torch.utils.data import Dataset
 #from torch_geometric.data import Batch
 from nequip.utils.torch_geometric import Batch, Dataset
 
-
 from mdsim.common.registry import registry
 
 @registry.register_dataset("lmdb")
