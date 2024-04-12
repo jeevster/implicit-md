@@ -256,141 +256,14 @@ class BoltzmannEstimator:
         stacked_radii = stacked_radii[:, mask]
         stacked_radii = stacked_radii.reshape(-1, self.simulator.n_atoms, 3)
 
-        ###Start water subsampling - TODO: make this a separate function
         if self.simulator.name == "water":
-            # extract all local neighborhoods of size n_molecules centered around each atom
-
-            # pick centers of each local neighborhood (always an Oxygen atom)
-            center_atoms = 3 * np.random.choice(
-                np.arange(int(self.simulator.n_atoms / 3)),
-                self.simulator.n_local_neighborhoods,
-                replace=False,
-            )
-            local_neighborhoods = [
-                n_closest_molecules(
-                    stacked_radii,
-                    center_atom,
-                    self.simulator.n_closest_molecules,
-                    self.simulator.cell,
-                )
-                for center_atom in center_atoms
-            ]
-
-            local_stacked_radii = torch.stack(
-                [local_neighborhood[0] for local_neighborhood in local_neighborhoods],
-                dim=1,
-            )
-            atomic_indices = torch.stack(
-                [local_neighborhood[1] for local_neighborhood in local_neighborhoods],
-                dim=1,
-            )
-
-            imds = torch.cat(
-                [
-                    self.simulator.min_imd(s.unsqueeze(0).unsqueeze(0))
-                    for s in local_stacked_radii.reshape(
-                        -1, self.simulator.n_atoms_local, 3
-                    )
-                ]
-            )
-            imds = imds.reshape(
-                local_stacked_radii.shape[0], local_stacked_radii.shape[1], -1
-            )
-            bond_lens = torch.cat(
-                [
-                    self.simulator.bond_length_dev(s.unsqueeze(0).unsqueeze(0))[0]
-                    for s in local_stacked_radii.reshape(
-                        -1, self.simulator.n_atoms_local, 3
-                    )
-                ]
-            )
-            bond_len_devs = torch.cat(
-                [
-                    self.simulator.bond_length_dev(s.unsqueeze(0).unsqueeze(0))[1]
-                    for s in local_stacked_radii.reshape(
-                        -1, self.simulator.n_atoms_local, 3
-                    )
-                ]
-            )
-            bond_lens = bond_lens.reshape(
-                local_stacked_radii.shape[0], local_stacked_radii.shape[1], -1
-            )
-            bond_len_devs = bond_len_devs.reshape(
-                local_stacked_radii.shape[0], local_stacked_radii.shape[1], -1
-            )
-
-            # scheme to subsample local neighborhoods
-            bond_len_devs_temp = bond_len_devs.reshape(-1, 1).cpu()
-            bond_lens_temp = bond_lens.reshape(-1, bond_lens.shape[-1]).cpu()
-            _, bins = np.histogram(bond_len_devs_temp, bins=100)
-            bin_assignments = np.digitize(bond_len_devs_temp, bins)
-            samples_per_bin = 5 * self.simulator.n_replicas
-
-            full_list = []
-            for bin_index in range(1, 101):
-                # Filter elements belonging to the current bin
-                bin_elements = bond_lens_temp[
-                    (bin_assignments == bin_index).squeeze(-1)
-                ]
-
-                # Randomly sample elements from the bin, if available
-                if len(bin_elements) >= samples_per_bin:
-                    shuffle_idx = torch.randperm(bin_elements.shape[0])
-                    sampled_elements = bin_elements[shuffle_idx][:samples_per_bin]
-                else:
-                    # If less than 5 elements, take all available
-                    sampled_elements = torch.Tensor(bin_elements)
-
-                full_list = full_list + [sampled_elements]
-            full_list = torch.cat(full_list).to(self.simulator.device)
-            # subsample the relevant frames
-            indices = [
-                torch.cat(
-                    [
-                        x[0].unsqueeze(0).to(self.simulator.device)
-                        for x in torch.where(bond_lens == value)[0:2]
-                    ]
-                )
-                for value in full_list
-            ]
-            local_stacked_radii = torch.stack(
-                [local_stacked_radii[idx[0], idx[1]] for idx in indices]
-            )
-            stacked_radii = torch.stack([stacked_radii[idx[0]] for idx in indices])
-            atomic_indices = torch.stack(
-                [atomic_indices[idx[0], idx[1]] for idx in indices]
-            )
-            bond_lens = full_list
-
-            np.save(
-                os.path.join(
-                    self.simulator.save_dir,
-                    f"local_stacked_radii_epoch{self.simulator.epoch}.npy",
-                ),
-                local_stacked_radii.cpu(),
-            )
-            np.save(
-                os.path.join(
-                    self.simulator.save_dir,
-                    f"local_rdfs_epoch{self.simulator.epoch}.npy",
-                ),
-                rdfs.cpu(),
-            )
-            np.save(
-                os.path.join(
-                    self.simulator.save_dir,
-                    f"local_imds_epoch{self.simulator.epoch}.npy",
-                ),
-                imds.cpu(),
-            )
-            np.save(
-                os.path.join(
-                    self.simulator.save_dir,
-                    f"local_bond_len_devs_epoch{self.simulator.epoch}.npy",
-                ),
-                bond_len_devs.cpu(),
-            )
-        ### End water subsampling
+            #Water subsampling
+            (
+                stacked_radii, 
+                local_stacked_radii, 
+                atomic_indices, 
+                bond_lens,
+            ) = self.process_local_neighborhoods(stacked_radii)
 
         else:
             obs = obs[:, mask].reshape(-1, obs.shape[-1])
@@ -437,7 +310,7 @@ class BoltzmannEstimator:
                 energy_force_output = self.simulator.calculator.calculate_energy_force(
                     radii_in,
                     retain_grad=True,
-                    output_individual_energies=self.simulator.name == "water",
+                    output_individual_energies= self.simulator.name == "water",
                 )
                 if len(energy_force_output) == 2:
                     # global energy
@@ -541,3 +414,135 @@ class BoltzmannEstimator:
         )
 
         return obs_package, vacf_package, energy_force_package
+
+
+    def process_local_neighborhoods(self, stacked_radii):
+        # extract all local neighborhoods of size n_molecules centered around each atom
+
+        # pick centers of each local neighborhood (always an Oxygen atom)
+        center_atoms = 3 * np.random.choice(
+            np.arange(int(self.simulator.n_atoms / 3)),
+            self.simulator.n_local_neighborhoods,
+            replace=False,
+        )
+        local_neighborhoods = [
+            n_closest_molecules(
+                stacked_radii,
+                center_atom,
+                self.simulator.n_closest_molecules,
+                self.simulator.cell,
+            )
+            for center_atom in center_atoms
+        ]
+
+        local_stacked_radii = torch.stack(
+            [local_neighborhood[0] for local_neighborhood in local_neighborhoods],
+            dim=1,
+        )
+        atomic_indices = torch.stack(
+            [local_neighborhood[1] for local_neighborhood in local_neighborhoods],
+            dim=1,
+        )
+
+        imds = torch.cat(
+            [
+                self.simulator.min_imd(s.unsqueeze(0).unsqueeze(0))
+                for s in local_stacked_radii.reshape(
+                    -1, self.simulator.n_atoms_local, 3
+                )
+            ]
+        )
+        imds = imds.reshape(
+            local_stacked_radii.shape[0], local_stacked_radii.shape[1], -1
+        )
+        bond_lens = torch.cat(
+            [
+                self.simulator.bond_length_dev(s.unsqueeze(0).unsqueeze(0))[0]
+                for s in local_stacked_radii.reshape(
+                    -1, self.simulator.n_atoms_local, 3
+                )
+            ]
+        )
+        bond_len_devs = torch.cat(
+            [
+                self.simulator.bond_length_dev(s.unsqueeze(0).unsqueeze(0))[1]
+                for s in local_stacked_radii.reshape(
+                    -1, self.simulator.n_atoms_local, 3
+                )
+            ]
+        )
+        bond_lens = bond_lens.reshape(
+            local_stacked_radii.shape[0], local_stacked_radii.shape[1], -1
+        )
+        bond_len_devs = bond_len_devs.reshape(
+            local_stacked_radii.shape[0], local_stacked_radii.shape[1], -1
+        )
+
+        # scheme to subsample local neighborhoods
+        bond_len_devs_temp = bond_len_devs.reshape(-1, 1).cpu()
+        bond_lens_temp = bond_lens.reshape(-1, bond_lens.shape[-1]).cpu()
+        _, bins = np.histogram(bond_len_devs_temp, bins=100)
+        bin_assignments = np.digitize(bond_len_devs_temp, bins)
+        samples_per_bin = 5 * self.simulator.n_replicas
+
+        full_list = []
+        for bin_index in range(1, 101):
+            # Filter elements belonging to the current bin
+            bin_elements = bond_lens_temp[
+                (bin_assignments == bin_index).squeeze(-1)
+            ]
+
+            # Randomly sample elements from the bin, if available
+            if len(bin_elements) >= samples_per_bin:
+                shuffle_idx = torch.randperm(bin_elements.shape[0])
+                sampled_elements = bin_elements[shuffle_idx][:samples_per_bin]
+            else:
+                # If less than 5 elements, take all available
+                sampled_elements = torch.Tensor(bin_elements)
+
+            full_list = full_list + [sampled_elements]
+        full_list = torch.cat(full_list).to(self.simulator.device)
+        # subsample the relevant frames
+        indices = [
+            torch.cat(
+                [
+                    x[0].unsqueeze(0).to(self.simulator.device)
+                    for x in torch.where(bond_lens == value)[0:2]
+                ]
+            )
+            for value in full_list
+        ]
+        local_stacked_radii = torch.stack(
+            [local_stacked_radii[idx[0], idx[1]] for idx in indices]
+        )
+        stacked_radii = torch.stack([stacked_radii[idx[0]] for idx in indices])
+        atomic_indices = torch.stack(
+            [atomic_indices[idx[0], idx[1]] for idx in indices]
+        )
+        bond_lens = full_list
+
+        np.save(
+            os.path.join(
+                self.simulator.save_dir,
+                f"local_stacked_radii_epoch{self.simulator.epoch}.npy",
+            ),
+            local_stacked_radii.cpu(),
+        )
+        
+        np.save(
+            os.path.join(
+                self.simulator.save_dir,
+                f"local_imds_epoch{self.simulator.epoch}.npy",
+            ),
+            imds.cpu(),
+        )
+        np.save(
+            os.path.join(
+                self.simulator.save_dir,
+                f"local_bond_len_devs_epoch{self.simulator.epoch}.npy",
+            ),
+            bond_len_devs.cpu(),
+        )
+
+        return stacked_radii, local_stacked_radii, atomic_indices, bond_lens
+
