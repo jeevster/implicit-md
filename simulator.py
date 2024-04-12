@@ -362,7 +362,7 @@ class Simulator:
         self.energy_force_loss_weight = params.energy_force_loss_weight
 
         # limit CPU usage
-        torch.set_num_threads(1)
+        torch.set_num_threads(10)
 
         molecule_for_name = (
             self.name if self.name == "water" or self.name == "lips" else self.molecule
@@ -582,9 +582,7 @@ class Simulator:
                 self.instability_per_replica = self.instability_per_replica[-1]
             self.mean_instability = self.instability_per_replica.mean()
             if self.pbc:
-                self.mean_bond_length_dev = self.bond_length_dev(self.stacked_radii)[
-                    1
-                ].mean()
+                self.mean_bond_length_dev = self.bond_length_dev(self.stacked_radii)[1].mean()
                 self.mean_rdf_mae = self.rdf_mae(self.stacked_radii)[-1].mean()
             self.stacked_vels = torch.cat(self.running_vels)
 

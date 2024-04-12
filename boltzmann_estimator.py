@@ -28,59 +28,57 @@ class BoltzmannEstimator:
         self.params = params
         self.device = device
         self.diff_rdf = DifferentiableRDF(self.params, device)
-        self.gt_rdf, self.gt_rdf_var = gt_rdf_package
-        self.gt_rdf_local, self.gt_rdf_var_local = gt_rdf_local_package
+        gt_rdf, gt_rdf_var = gt_rdf_package
+        gt_rdf_local, gt_rdf_var_local = gt_rdf_local_package
 
-        if isinstance(self.gt_rdf, dict):
+        # Water system
+        if self.params.name == "water":
             if params.training_observable == "rdf":
-                self.gt_rdf = torch.cat(
-                    [rdf.flatten() for rdf in self.gt_rdf.values()]
+                self.gt_obs = torch.cat(
+                    [rdf.flatten() for rdf in gt_rdf.values()]
                 )  # combine RDFs together
-                self.gt_rdf_local = torch.cat(
-                    [rdf.flatten() for rdf in self.gt_rdf_local.values()]
+                self.gt_obs_local = torch.cat(
+                    [rdf.flatten() for rdf in gt_rdf_local.values()]
                 )  # combine RDFs together
-                self.gt_rdf_var = torch.cat(
-                    [var.flatten() for var in self.gt_rdf_var.values()]
+                self.gt_obs_var = torch.cat(
+                    [var.flatten() for var in gt_rdf_var.values()]
                 )  # combine RDF variances together
-                self.gt_rdf_var = torch.where(
-                    self.gt_rdf_var == 0, 1e-2, self.gt_rdf_var
+                self.gt_obs_var = torch.where(
+                    gt_rdf_var == 0, 1e-2, gt_rdf_var
                 )  # add "hyperprior" to gt variance
-                self.gt_rdf_var_local = torch.cat(
-                    [var.flatten() for var in self.gt_rdf_var_local.values()]
+                self.gt_obs_var_local = torch.cat(
+                    [var.flatten() for var in gt_rdf_var_local.values()]
                 )  # combine RDF variances together
-                self.gt_rdf_var_local = torch.where(
-                    self.gt_rdf_var_local == 0, 1e-2, self.gt_rdf_var_local
+                self.gt_obs_var_local = torch.where(
+                    gt_rdf_var_local == 0, 1e-2, gt_rdf_var_local
                 )  # add "hyperprior" to gt variance
-            else:
-                if params.training_observable == "imd":
-                    self.gt_rdf = torch.Tensor([1.44]).to(
-                        self.device
-                    )  # ground truth min IMD
-                    self.gt_rdf_var_local = torch.Tensor([1.0]).to(
-                        self.device
-                    )  # identity
-                elif params.training_observable == "bond_length_dev":
-                    self.gt_rdf = mean_bond_lens[:2].to(
-                        self.device
-                    )  # ground truth bond length dev
-                    self.gt_rdf_var_local = torch.Tensor([1.0]).to(
-                        self.device
-                    )  # identity for now
-                self.gt_rdf_local = self.gt_rdf
+                self.obs_loss = ObservableMSELoss(self.gt_obs)
+            elif params.training_observable == "imd":
+                self.gt_obs = torch.Tensor([1.44]).to(self.device)  # ground truth min IMD
+                self.gt_obs_var_local = torch.Tensor([1.0]).to(self.device)  # identity
+                self.gt_obs_local = self.gt_obs
+                self.obs_loss = IMDHingeLoss(self.gt_obs)
+            elif params.training_observable == "bond_length_dev":
+                self.gt_obs = mean_bond_lens[:2].to(self.device)  # ground truth bond length dev
+                self.gt_obs_var_local = torch.Tensor([1.0]).to(self.device)  # identity for now
+                self.gt_obs_local = self.gt_obs
+                self.obs_loss = ObservableMSELoss(self.gt_obs)
 
+        else: #MD17 or MD22 system
+            self.gt_obs = gt_rdf
+            self.gt_obs_var = gt_rdf_var
+            self.gt_obs_local = gt_rdf_local
+            self.gt_obs_var_local = gt_rdf_var_local
+            self.obs_loss = ObservableMSELoss(self.gt_obs)
+
+        #Initialize remaining observables and losses
         self.gt_vacf = gt_vacf
         self.gt_adf = gt_adf
 
-        # define losses - need to set up config options to use others if needed
-        self.rdf_loss = (
-            IMDHingeLoss(self.gt_rdf)
-            if params.training_observable == "imd"
-            else ObservableMSELoss(self.gt_rdf)
-        )
         self.adf_loss = ObservableMSELoss(self.gt_adf)
         self.vacf_loss = ObservableMSELoss(self.gt_vacf)
 
-    # Function to compute the gradient estimator
+    # Core Function to compute the gradient estimator
     def estimator(self, g, df_dtheta, mse_gradient):
         estimator = (
             df_dtheta.mean(0).unsqueeze(0) * g.mean(0).unsqueeze(-1)
@@ -94,10 +92,6 @@ class BoltzmannEstimator:
 
     def compute(self, simulator):
         self.simulator = simulator
-
-        MINIBATCH_SIZE = (
-            self.simulator.minibatch_size
-        )  # how many structures to include at a time (match rare events sampling paper for now)
         diff_rdf = DifferentiableRDF(self.params, self.device)
         diff_adf = DifferentiableADF(
             self.simulator.n_atoms,
@@ -130,9 +124,8 @@ class BoltzmannEstimator:
         # get continuous trajectories (permute to make replica dimension come first)
         radii_traj = torch.stack(self.simulator.running_radii)
 
-        stacked_radii = radii_traj[
-            :: self.simulator.n_dump
-        ]  # take i.i.d samples for RDF loss
+        # take i.i.d samples for RDF loss
+        stacked_radii = radii_traj[::self.simulator.n_dump]  
         if self.simulator.mode == "learning":
             # save replicas
             np.save(
@@ -161,8 +154,7 @@ class BoltzmannEstimator:
             self.device
         )  # zero out the unstable replica vacfs
         # split into sub-trajectories of length = vacf_window
-        velocities_traj = velocities_traj[
-            :,
+        velocities_traj = velocities_traj[:,
             : math.floor(velocities_traj.shape[1] / self.simulator.vacf_window)
             * self.simulator.vacf_window,
         ]
@@ -173,9 +165,9 @@ class BoltzmannEstimator:
             self.simulator.n_atoms,
             3,
         )
-        velocities_traj = velocities_traj[
-            :, :: self.simulator.n_dump_vacf
-        ]  # sample i.i.d paths
+
+        # sample i.i.d paths
+        velocities_traj = velocities_traj[:, :: self.simulator.n_dump_vacf]  
 
         vacfs = vmap(vmap(diff_vacf))(velocities_traj)
         mean_vacf = vacfs.mean(dim=(0, 1))
@@ -191,7 +183,7 @@ class BoltzmannEstimator:
         else:
             energy_force_package = None
 
-        # VACF stuff
+        # VACF stuff - always none - TODO: remove
         vacf_gradient_estimators = None
         vacf_package = (
             vacf_gradient_estimators,
@@ -199,80 +191,74 @@ class BoltzmannEstimator:
             mean_vacf_loss.to(self.device),
         )
 
-        ###RDF Stuff ###
+        ###Main Observable Stuff ###
         if self.simulator.pbc:  # LiPS or Water
-            # replace RDF with IMD (didn't change variable name yet)
             if self.simulator.training_observable == "imd":
-                rdfs = torch.cat(
-                    [self.simulator.min_imd(s.unsqueeze(0)) for s in stacked_radii]
-                )
+                obs = torch.cat(
+                    [self.simulator.min_imd(s.unsqueeze(0)) for s in stacked_radii])
             elif self.simulator.training_observable == "rdf":
-                rdfs = torch.cat(
-                    [self.simulator.rdf_mae(s.unsqueeze(0))[0] for s in stacked_radii]
-                )
+                obs = torch.cat(
+                    [self.simulator.rdf_mae(s.unsqueeze(0))[0] for s in stacked_radii])
             elif self.simulator.training_observable == "bond_length_dev":
-                rdfs = torch.cat(
-                    [
-                        self.simulator.bond_length_dev(s.unsqueeze(0))[0]
-                        for s in stacked_radii
-                    ]
-                )
-
-            rdfs = rdfs.reshape(-1, simulator.n_replicas, self.gt_rdf_local.shape[-1])
+                obs = torch.cat(
+                    [self.simulator.bond_length_dev(s.unsqueeze(0))[0]
+                    for s in stacked_radii])
+                
+            obs = obs.reshape(-1, simulator.n_replicas, self.gt_obs_local.shape[-1])
             adfs = torch.stack(
-                [
-                    diff_adf(rad)
-                    for rad in stacked_radii.reshape(-1, self.simulator.n_atoms, 3)
-                ]
-            ).reshape(-1, self.simulator.n_replicas, self.gt_adf.shape[-1])
-        else:
+                [diff_adf(rad)
+                for rad in stacked_radii.reshape(-1, self.simulator.n_atoms, 3)]
+                ).reshape(-1, self.simulator.n_replicas, self.gt_adf.shape[-1])
+                
+        else: #observable is always RDF
             r2d = lambda r: radii_to_dists(r, self.simulator.params)
             dists = vmap(r2d)(stacked_radii).reshape(
-                -1, self.simulator.n_atoms, self.simulator.n_atoms - 1, 1
-            )
-            rdfs = torch.stack([diff_rdf(tuple(dist)) for dist in dists]).reshape(
-                -1, self.simulator.n_replicas, self.gt_rdf.shape[-1]
+                -1, self.simulator.n_atoms, self.simulator.n_atoms - 1, 1)
+            
+            obs = torch.stack([diff_rdf(tuple(dist)) for dist in dists]).reshape(
+                -1, self.simulator.n_replicas, self.gt_obs.shape[-1]
             )  # this way of calculating uses less memory
 
             adfs = torch.stack(
-                [
-                    diff_adf(rad)
-                    for rad in stacked_radii.reshape(-1, self.simulator.n_atoms, 3)
-                ]
-            ).reshape(
-                -1, self.simulator.n_replicas, self.gt_adf.shape[-1]
-            )  # this way of calculating uses less memory
-
+                [diff_adf(rad)
+                    for rad in stacked_radii.reshape(-1, self.simulator.n_atoms, 3)]
+                ).reshape(-1, self.simulator.n_replicas, self.gt_adf.shape[-1])
+        
         np.save(
             os.path.join(
-                self.simulator.save_dir, f"rdfs_epoch{self.simulator.epoch}.npy"
+                self.simulator.save_dir, f"obs_epoch{self.simulator.epoch}.npy"
             ),
-            rdfs.cpu(),
+            obs.cpu(),
         )
-        mean_rdf = rdfs.mean(dim=(0, 1))
+        mean_obs = obs.mean(dim=(0, 1))
         mean_adf = adfs.mean(dim=(0, 1))
-        mean_rdf_loss = self.rdf_loss(mean_rdf)
+        mean_obs_loss = self.obs_loss(mean_obs)
         mean_adf_loss = self.adf_loss(mean_adf)
 
+        #If we aren't in the learning phase, return without computing the Boltzmann estimator
         if (
             self.params.rdf_loss_weight == 0
             or not self.simulator.train
             or simulator.optimizer.param_groups[0]["lr"] == 0
         ):
-            rdf_gradient_estimators = None
-            rdf_package = (
-                rdf_gradient_estimators,
-                mean_rdf,
-                self.rdf_loss(mean_rdf).to(self.device),
+            obs_gradient_estimators = None
+            obs_package = (
+                obs_gradient_estimators,
+                mean_obs,
+                self.obs_loss(mean_obs).to(self.device),
                 mean_adf,
                 self.adf_loss(mean_adf).to(self.device),
             )
-            return (rdf_package, vacf_package, energy_force_package)
+            return (obs_package, vacf_package, energy_force_package)
+
+        #### Simulation phase computations #####
 
         stacked_radii = stacked_radii[:, mask]
         stacked_radii = stacked_radii.reshape(-1, self.simulator.n_atoms, 3)
+
+        ###Start water subsampling - TODO: make this a separate function
         if self.simulator.name == "water":
-            # extract all local neighborhoods of n_molecules molecules (centered around each atom)
+            # extract all local neighborhoods of size n_molecules centered around each atom
 
             # pick centers of each local neighborhood (always an Oxygen atom)
             center_atoms = 3 * np.random.choice(
@@ -404,12 +390,13 @@ class BoltzmannEstimator:
                 ),
                 bond_len_devs.cpu(),
             )
+        ### End water subsampling
 
         else:
-            rdfs = rdfs[:, mask].reshape(-1, rdfs.shape[-1])
+            obs = obs[:, mask].reshape(-1, obs.shape[-1])
             adfs = adfs[:, mask].reshape(-1, adfs.shape[-1])
 
-        rdfs.requires_grad = True
+        obs.requires_grad = True
         adfs.requires_grad = True
 
         # TODO: scale the estimator by Kb*T
@@ -421,28 +408,27 @@ class BoltzmannEstimator:
                 atomic_indices = atomic_indices[shuffle_idx]
                 bond_lens = bond_lens[shuffle_idx]
             else:
-                rdfs = rdfs[shuffle_idx]
+                obs = obs[shuffle_idx]
                 adfs = adfs[shuffle_idx]
 
-        bsize = MINIBATCH_SIZE
-        num_blocks = math.ceil(stacked_radii.shape[0] / bsize)
-        rdf_gradient_estimators = []
+        num_blocks = math.ceil(stacked_radii.shape[0] / self.simulator.minibatch_size)
+        obs_gradient_estimators = []
         raw_grads = []
         pe_grads_flattened = []
         if self.simulator.name == "water":
             print(
-                f"Computing RDF/ADF gradients from {stacked_radii.shape[0]} local environments of {local_stacked_radii.shape[-2]} atoms in minibatches of size {MINIBATCH_SIZE}"
+                f"Computing {self.simulator.training_observable} gradients from {stacked_radii.shape[0]} local environments of {local_stacked_radii.shape[-2]} atoms in minibatches of size {self.simulator.minibatch_size}"
             )
         else:
             print(
-                f"Computing RDF/ADF gradients from {stacked_radii.shape[0]} structures in minibatches of size {MINIBATCH_SIZE}"
+                f"Computing {self.simulator.training_observable} gradients from {stacked_radii.shape[0]} structures in minibatches of size {self.simulator.minibatch_size}"
             )
         num_params = len(list(model.parameters()))
-        # first compute gradients of potential energy (in batches of size n_replicas)
 
+        # first compute gradients of potential energy (in batches of size n_replicas)
         for i in tqdm(range(num_blocks)):
-            start = bsize * i
-            end = bsize * (i + 1)
+            start = self.simulator.minibatch_size * i
+            end = self.simulator.minibatch_size * (i + 1)
             with torch.enable_grad():
                 radii_in = stacked_radii[start:end]
                 if self.simulator.name == "water":
@@ -469,10 +455,10 @@ class BoltzmannEstimator:
                     energy = energy.reshape(-1, 1)
 
             # need to do another loop here over batches of local neighborhoods
-            num_local_blocks = math.ceil(energy.shape[0] / bsize)
+            num_local_blocks = math.ceil(energy.shape[0] / self.simulator.minibatch_size)
             for i in range(num_local_blocks):
-                start_inner = bsize * i
-                end_inner = bsize * (i + 1)
+                start_inner = self.simulator.minibatch_size * i
+                end_inner = self.simulator.minibatch_size * (i + 1)
                 local_energy = energy[start_inner:end_inner]
 
                 def get_vjp(v):
@@ -487,60 +473,31 @@ class BoltzmannEstimator:
                 vectorized_vjp = vmap(get_vjp)
                 I_N = torch.eye(local_energy.shape[0]).unsqueeze(-1).to(self.device)
                 num_samples = local_energy.shape[0]
-                if (
-                    self.simulator.model_type == "forcenet"
-                ):  # dealing with device mismatch error
-                    grads_vectorized = [
-                        process_gradient(
-                            model.parameters(),
-                            compute_grad(
-                                inputs=list(model.parameters()),
-                                output=e,
-                                allow_unused=True,
-                                create_graph=False,
-                            ),
-                            self.device,
+                
+                grads_vectorized = vectorized_vjp(I_N)
+                # flatten the gradients for vectorization
+                grads_flattened = torch.stack(
+                    [
+                        torch.cat(
+                            [
+                                grads_vectorized[i][j].flatten().detach()
+                                for i in range(num_params)
+                            ]
                         )
-                        for e in local_energy
+                        for j in range(num_samples)
                     ]
-                    grads_flattened = torch.stack(
-                        [
-                            torch.cat(
-                                [
-                                    grads_vectorized[i][j].flatten().detach()
-                                    for j in range(num_params)
-                                ]
-                            )
-                            for i in range(num_samples)
-                        ]
-                    )
-                else:
-                    grads_vectorized = vectorized_vjp(I_N)
-                    # flatten the gradients for vectorization
-                    grads_flattened = torch.stack(
-                        [
-                            torch.cat(
-                                [
-                                    grads_vectorized[i][j].flatten().detach()
-                                    for i in range(num_params)
-                                ]
-                            )
-                            for j in range(num_samples)
-                        ]
-                    )
+                )
 
                 pe_grads_flattened.append(grads_flattened)
 
         pe_grads_flattened = torch.cat(pe_grads_flattened)
-        # Now compute final gradient estimators in batches of size MINIBATCH_SIZE
-        num_blocks = math.ceil(stacked_radii.shape[0] / (MINIBATCH_SIZE))
+        # Now compute final gradient estimators in batches of size self.simulator.minibatch_size
+        num_blocks = math.ceil(stacked_radii.shape[0] / (self.simulator.minibatch_size))
 
         for i in tqdm(range(num_blocks)):
-            start = MINIBATCH_SIZE * i
-            end = MINIBATCH_SIZE * (i + 1)
-            if self.simulator.training_observable == "rdf":
-                obs = rdfs
-            elif self.simulator.training_observable == "imd":
+            start = self.simulator.minibatch_size * i
+            end = self.simulator.minibatch_size * (i + 1)
+            if self.simulator.training_observable == "imd":
                 obs = imds
             elif self.simulator.training_observable == "bond_length_dev":
                 obs = bond_lens
@@ -549,11 +506,11 @@ class BoltzmannEstimator:
             obs_batch = [obs[start:end]]
             pe_grads_batch = pe_grads_flattened[start:end]
             grad_outputs_obs = [
-                2 / gt_rdf_var_local * (ob.mean(0) - gt_ob).unsqueeze(0)
-                for ob, gt_ob, gt_rdf_var_local in zip(
+                2 / gt_obs_var_local * (ob.mean(0) - gt_ob).unsqueeze(0)
+                for ob, gt_ob, gt_obs_var_local in zip(
                     obs_batch,
-                    self.gt_rdf_local.chunk(len(obs_batch)),
-                    self.gt_rdf_var_local.chunk(len(obs_batch)),
+                    self.gt_obs_local.chunk(len(obs_batch)),
+                    self.gt_obs_var_local.chunk(len(obs_batch)),
                 )
             ]
             final_vjp = [
@@ -573,14 +530,14 @@ class BoltzmannEstimator:
                     )
                 ]
             )
-            rdf_gradient_estimators.append(mean_vjps)
+            obs_gradient_estimators.append(mean_vjps)
 
-        rdf_package = (
-            rdf_gradient_estimators,
-            mean_rdf,
-            mean_rdf_loss.to(self.device),
+        obs_package = (
+            obs_gradient_estimators,
+            mean_obs,
+            mean_obs_loss.to(self.device),
             mean_adf,
             mean_adf_loss.to(self.device),
         )
 
-        return rdf_package, vacf_package, energy_force_package
+        return obs_package, vacf_package, energy_force_package
