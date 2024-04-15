@@ -28,10 +28,7 @@ from mdsim.observables.common import (
     compute_distance_matrix_batch,
 )
 from mdsim.observables.water import WaterRDFMAE, MinimumIntermolecularDistance
-from mdsim.observables.lips import LiPSRDFMAE
 from simulator_utils import create_frame, thermo_log
-
-MAX_SIZES = {"md17": "10k", "md22": "100percent", "water": "10k", "lips": "20k"}
 
 
 class Simulator:
@@ -45,7 +42,7 @@ class Simulator:
         except:
             self.device = "cpu"
         self.name = config["name"]
-        self.pbc = self.name == "water" or self.name == "lips"
+        self.pbc = self.name == "water"
         self.molecule = config["molecule"] if "molecule" in config else ""
         self.size = config["size"]
         self.model_type = config["model"]
@@ -152,9 +149,6 @@ class Simulator:
         if self.name == "water":
             pos_field_train = gt_data_train.f.wrapped_coords
             self.gt_data_spacing_fs = 10
-        elif self.name == "lips":
-            pos_field_train = gt_data_train.f.pos
-            self.gt_data_spacing_fs = 2.0  # TODO: check this
         else:
             pos_field_train = gt_data_train.f.R
             if self.name == "md17":
@@ -211,24 +205,19 @@ class Simulator:
 
         self.raw_atoms = [data_to_atoms(dataset.__getitem__(i)) for i in samples]
         self.cell = torch.Tensor(self.raw_atoms[0].cell).to(self.device)
-        if self.name == "lips":
-            dists = compute_distance_matrix_batch(self.cell, self.gt_traj_train)
-            self.mean_bond_lens = dists[:, self.bonds[:, 0], self.bonds[:, 1]].mean(
-                dim=0
-            )
-        else:
-            bond_lens = torch.stack(
-                [
-                    distance_pbc(
-                        gt_traj_train.unsqueeze(0)[:, self.bonds[:, 0]],
-                        gt_traj_train.unsqueeze(0)[:, self.bonds[:, 1]],
-                        torch.diag(self.cell).to(self.device),
-                    ).mean(dim=0)
-                    for gt_traj_train in self.gt_traj_train
-                ]
-            )
-            self.mean_bond_lens = bond_lens.mean(0)
-            self.bond_lens_var = bond_lens.var(0)
+        
+        bond_lens = torch.stack(
+            [
+                distance_pbc(
+                    gt_traj_train.unsqueeze(0)[:, self.bonds[:, 0]],
+                    gt_traj_train.unsqueeze(0)[:, self.bonds[:, 1]],
+                    torch.diag(self.cell).to(self.device),
+                ).mean(dim=0)
+                for gt_traj_train in self.gt_traj_train
+            ]
+        )
+        self.mean_bond_lens = bond_lens.mean(0)
+        self.bond_lens_var = bond_lens.var(0)
 
         self.gt_rdf = gt_rdf
         # choose the appropriate stability criterion based on the type of system
@@ -250,31 +239,7 @@ class Simulator:
             self.bond_length_dev = BondLengthDeviation(
                 self.name, self.bonds, self.mean_bond_lens, self.cell, self.device
             )
-        elif self.name == "lips":
-            if params.stability_criterion == "imd":
-                self.stability_criterion = MinimumIntermolecularDistance(
-                    self.bonds, self.cell, self.device
-                )
-            else:
-                self.stability_criterion = LiPSRDFMAE(
-                    self.data_dir,
-                    self.gt_rdf,
-                    self.n_atoms,
-                    self.n_replicas,
-                    self.params,
-                    self.device,
-                )
-            self.rdf_mae = LiPSRDFMAE(
-                self.data_dir,
-                self.gt_rdf,
-                self.n_atoms,
-                self.n_replicas,
-                self.params,
-                self.device,
-            )
-            self.bond_length_dev = BondLengthDeviation(
-                self.name, self.bonds, self.mean_bond_lens, self.cell, self.device
-            )
+        
         else:
             self.stability_criterion = BondLengthDeviation(
                 self.name, self.bonds, self.mean_bond_lens, self.cell, self.device
@@ -365,7 +330,7 @@ class Simulator:
         torch.set_num_threads(10)
 
         molecule_for_name = (
-            self.name if self.name == "water" or self.name == "lips" else self.molecule
+            self.name if self.name == "water" else self.molecule
         )
         name = f"IMPLICIT_{self.model_type}_{molecule_for_name}_{params.exp_name}_lr={params.lr}_efweight={params.energy_force_loss_weight}"
         self.save_dir = (

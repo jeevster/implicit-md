@@ -19,13 +19,12 @@ from mdsim.common.utils import (
 from simulator_utils import energy_force_error, save_checkpoint, calculate_final_metrics
 from mdsim.observables.md17_22 import find_hr_adf_from_file
 from mdsim.observables.water import find_water_rdfs_diffusivity_from_file
-from mdsim.observables.lips import find_lips_rdfs_diffusivity_from_file
 from mdsim.models.load_models import load_pretrained_model
 from mdsim.common.flags import flags
 from boltzmann_estimator import BoltzmannEstimator
 from simulator import Simulator
 
-MAX_SIZES = {"md17": "10k", "md22": "100percent", "water": "10k", "lips": "20k"}
+MAX_SIZES = {"md17": "10k", "md22": "100percent", "water": "10k"}
 
 if __name__ == "__main__":
     logging.basicConfig(level=os.environ.get("LOGLEVEL", "WARNING"))
@@ -52,7 +51,7 @@ if __name__ == "__main__":
     data_path = config["src"]
     name = config["name"]
     molecule = f"{config['molecule']}" if name == "md17" or name == "md22" else ""
-    molecule_for_name = name if name == "water" or name == "lips" else molecule
+    molecule_for_name = name if name == "water" else molecule
     size = config["size"]
     model_type = config["model"]
 
@@ -206,8 +205,10 @@ if __name__ == "__main__":
     ###########Compute ground truth observables###############
 
     print("Computing ground truth observables from datasets")
+    
 
     if name == "water":
+        #TODO: compute the ground truth imd and bond length dev here instead of hardcoding
         (
             gt_rdf,
             gt_rdf_local,

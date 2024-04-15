@@ -12,7 +12,6 @@ from nequip.data import AtomicData
 from mdsim.md.ase_utils import OCPCalculator
 from mdsim.common.utils import process_gradient
 from mdsim.common.custom_radius_graph import detach_numpy
-from mdsim.observables.lips import cart2frac, frac2cart
 from mdsim.observables.md17_22 import get_hr
 from mdsim.observables.water import get_water_rdfs
 from mdsim.observables.common import get_smoothed_diffusivity
@@ -235,13 +234,13 @@ def energy_force_gradient(simulator):
                 # Run model
                 data_unscaled["edge_index"] = radius_graph(
                     data_unscaled["pos"].reshape(-1, 3),
-                    r=model_config["model"][r_max_key],
+                    r=simulator.model_config["model"][simulator.r_max_key],
                     batch=data_unscaled["batch"],
                     max_num_neighbors=32,
                 )
                 data_unscaled["edge_cell_shift"] = torch.zeros(
                     (data_unscaled["edge_index"].shape[1], 3)
-                ).to(device)
+                ).to(simulator.device)
                 out = simulator.model(data_unscaled)
                 data_unscaled["forces"] = data_unscaled["force"]
                 data_unscaled["total_energy"] = data_unscaled["y"].unsqueeze(-1)
@@ -294,8 +293,6 @@ def energy_force_gradient(simulator):
 
 
 """compute energy/force error on test set"""
-
-
 def energy_force_error(simulator):
     if simulator.model_type == "nequip":
         data_config = (
@@ -402,15 +399,9 @@ def create_frame(
     # Particle positions, velocities, diameter
     radii = radii[0]
     if pbc:
-        # wrap for visualization purposes
-        if name == "lips":  # account for non-cubic cell
-            frac_radii = cart2frac(radii, cell)
-            frac_radii = frac_radii % 1.0  # wrap
-            radii = frac2cart(frac_radii, cell)
-        else:
-            radii = ((radii / torch.diag(cell)) % 1) * torch.diag(cell) - torch.diag(
-                cell
-            ) / 2  # wrap coords (last subtraction is for cell alignment in Ovito)
+        # wrap for visualization purposes (last subtraction is for cell alignment in Ovito)
+        # assumes cubic cell
+        radii = ((radii / torch.diag(cell)) % 1) * torch.diag(cell) - torch.diag(cell) / 2 
     partpos = detach_numpy(radii).tolist()
     velocities = detach_numpy(velocities[0]).tolist()
     diameter = 10 * diameter_viz * np.ones((n_atoms,))
