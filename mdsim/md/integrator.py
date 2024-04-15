@@ -1,7 +1,4 @@
-"""
-adapted from 
-https://github.com/torchmd/mdgrad/tree/master/nff/md
-"""
+
 import torch
 from mdsim.common.registry import registry
 from ase import units
@@ -9,6 +6,11 @@ from ase import units
 
 @registry.register_integrator("NoseHoover")
 class NoseHoover:
+    """
+    NoseHoover thermostat operating on a batch of MD trajectories in parallel.
+    Adapted from https://github.com/torchmd/mdgrad/tree/master/nff/md
+    """
+    
     def __init__(self, calculator, masses, n_replicas, n_atoms, config, device):
         self.device = device
         self.calculator = calculator
@@ -25,6 +27,19 @@ class NoseHoover:
         self.zeta = torch.zeros((self.n_replicas, 1, 1)).to(self.device)
 
     def step(self, radii, velocities, forces, zeta, retain_grad=False):
+        """
+        Make a step forward in time with the Nose-Hoover integrator.
+        Args:
+            radii (torch.Tensor): Atom positions (Shape: (N_replicas, N_atoms, 3))
+            velocities (torch.Tensor): Atom velocities (Shape: (N_replicas, N_atoms, 3))
+            forces (torch.Tensor): Atomic forces (Shape: (N_replicas, N_atoms, 3))
+            zeta (torch.Tensor): Thermostat zeta parameter (Shape: (N_replicas, 1, 1))
+            retain_grad (bool): Whether to store the computational graph 
+                                of the force calculation (default: False)
+        Returns:
+            Updated radii, velocities, energy, forces, zeta
+        """
+
         # get current accelerations
         accel = forces / self.masses
         # make full step in position
@@ -62,10 +77,14 @@ class NoseHoover:
 
 @registry.register_integrator("Langevin")
 class Langevin:
+    """
+    Langevin thermostat operating on a batch of MD trajectories in parallel.
+    """
     def __init__(self, calculator, masses, n_replicas, n_atoms, config, device):
         self.device = device
         self.calculator = calculator
         self.masses = masses
+        self.n_replicas = n_replicas
         self.n_atoms = n_atoms
         self.dt = config["timestep"] * units.fs
         self.temp = config["temperature"]
@@ -79,6 +98,17 @@ class Langevin:
         )
 
     def step(self, radii, velocities, forces, retain_grad=False):
+        """
+        Make a step forward in time with the Langevin integrator.
+        Args:
+            radii (torch.Tensor): Atom positions (Shape: (N_replicas, N_atoms, 3))
+            velocities (torch.Tensor): Atom velocities (Shape: (N_replicas, N_atoms, 3))
+            forces (torch.Tensor): Atomic forces (Shape: (N_replicas, N_atoms, 3))
+            retain_grad (bool): Whether to store the computational graph 
+                                of the force calculation (default: False)
+        Returns:
+            Updated radii, velocities, energy, forces, and random noise used to make the update
+        """
         # full step in position
         radii = radii + self.dt * velocities
         # calculate force at new position

@@ -55,7 +55,7 @@ class ForceCalculator:
                     batch=batch,
                     max_num_neighbors=32,
                 )
-                # TODO: edge cell shift is nonzero for LiPS (non cubic cell)
+                #Assumes cubic cell
                 self.atoms_batch["edge_cell_shift"] = torch.zeros(
                     (self.atoms_batch["edge_index"].shape[1], 3)
                 ).to(self.device)

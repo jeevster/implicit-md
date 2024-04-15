@@ -65,22 +65,27 @@ class BoltzmannEstimator:
     def estimator(self, g, df_dtheta, mse_gradient):
         """
         Computes the Boltzmann gradient estimator described in Eqn. 6 of 
-        the paper. Note: Technically, we should scale the estimator by k_B*T, 
-        but we skip this step as it is essentially like scaling the learning rate
+        the paper for a minibatch of simulation states (either global or 
+        local states depending on the system). Note: Technically, we should scale 
+        the estimator by k_B*T, but we skip this step as it is essentially 
+        like scaling the learning rate.
         Args:
-            g (torch.Tensor): 
-            df_dtheta (torch.Tensor):
-            mse_gradient (torch.Tensor): 
+            g (torch.Tensor): Simulation observable estimates (Shape: (minibatch_size, d_observable))
+            df_dtheta (torch.Tensor): Potential energy gradients (Shape: (minibatch_size, num_model_parameters))
+            mse_gradient (torch.Tensor): Gradient of the upstream observable loss function, 
+                                        averaged over the minibatch (Shape: (1, d_observable))
+        Returns:
+            estimator (torch.Tensor): Gradient of the observable component of the StABlE loss 
+                                        w.r.t model parameters (Shape: (num_model_parameters))
         """
 
-        # TODO: scale the estimator by Kb*T
-        estimator = (
+        jacobian = (
             df_dtheta.mean(0).unsqueeze(0) * g.mean(0).unsqueeze(-1)
             - df_dtheta.unsqueeze(1) * g.unsqueeze(-1)
         ).mean(dim=0)
-        # compute VJP with MSE gradient
+        # compute Vector-Jacobian product to obtain the final gradient
         estimator = torch.mm(
-            mse_gradient.to(torch.float32), estimator.to(torch.float32)
+            mse_gradient.to(torch.float32), jacobian.to(torch.float32)
         )[0]
         return estimator.detach()
 
@@ -415,6 +420,20 @@ class BoltzmannEstimator:
 
 
     def process_local_neighborhoods(self, stacked_radii):
+        """
+        Extracts local "shells" of water molecules with which to compute the 
+        localized Boltzmann estimator, and computes ground truth observables.
+        #TODO: include details on sampling procedure
+        Args:
+            stacked_radii (torch.Tensor): 
+        Returns:
+            stacked_radii (torch.Tensor): 
+            local_stacked_radii (torch.Tensor): 
+            atomic_indices (torch.Tensor): 
+            bond_lens (torch.Tensor): 
+            imds (torch.Tensor): 
+        """
+        
         # extract all local neighborhoods of size n_molecules centered around each atom
 
         # pick centers of each local neighborhood (always an Oxygen atom)
