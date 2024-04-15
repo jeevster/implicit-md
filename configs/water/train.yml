@@ -26,7 +26,7 @@ stability_criterion: imd
 training_observable: bond_length_dev
 n_closest_molecules: 0
 n_local_neighborhoods: 5
-rdf_loss_weight: 1
+obs_loss_weight: 1
 energy_force_loss_weight: 0
 diffusion_window: 1000
 vacf_window: 100

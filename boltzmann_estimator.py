@@ -17,7 +17,6 @@ class BoltzmannEstimator:
     def __init__(
         self,
         gt_rdf_package,
-        gt_rdf_local_package,
         mean_bond_lens,
         gt_vacf,
         gt_adf,
@@ -27,12 +26,11 @@ class BoltzmannEstimator:
         super(BoltzmannEstimator, self).__init__()
         self.params = params
         self.device = device
-        self.diff_rdf = DifferentiableRDF(self.params, device)
-        gt_rdf, gt_rdf_var = gt_rdf_package
-        gt_rdf_local, gt_rdf_var_local = gt_rdf_local_package
 
         # Water system
         if self.params.name == "water":
+            gt_rdf, gt_rdf_local = gt_rdf_package
+            #Training to match RDF
             if params.training_observable == "rdf":
                 self.gt_obs = torch.cat(
                     [rdf.flatten() for rdf in gt_rdf.values()]
@@ -40,35 +38,20 @@ class BoltzmannEstimator:
                 self.gt_obs_local = torch.cat(
                     [rdf.flatten() for rdf in gt_rdf_local.values()]
                 )  # combine RDFs together
-                self.gt_obs_var = torch.cat(
-                    [var.flatten() for var in gt_rdf_var.values()]
-                )  # combine RDF variances together
-                self.gt_obs_var = torch.where(
-                    gt_rdf_var == 0, 1e-2, gt_rdf_var
-                )  # add "hyperprior" to gt variance
-                self.gt_obs_var_local = torch.cat(
-                    [var.flatten() for var in gt_rdf_var_local.values()]
-                )  # combine RDF variances together
-                self.gt_obs_var_local = torch.where(
-                    gt_rdf_var_local == 0, 1e-2, gt_rdf_var_local
-                )  # add "hyperprior" to gt variance
                 self.obs_loss = ObservableMSELoss(self.gt_obs)
             elif params.training_observable == "imd":
+                # Training to match minimum intermolecular distance
                 self.gt_obs = torch.Tensor([1.44]).to(self.device)  # ground truth min IMD
-                self.gt_obs_var_local = torch.Tensor([1.0]).to(self.device)  # identity
                 self.gt_obs_local = self.gt_obs
                 self.obs_loss = IMDHingeLoss(self.gt_obs)
             elif params.training_observable == "bond_length_dev":
                 self.gt_obs = mean_bond_lens[:2].to(self.device)  # ground truth bond length dev
-                self.gt_obs_var_local = torch.Tensor([1.0]).to(self.device)  # identity for now
                 self.gt_obs_local = self.gt_obs
                 self.obs_loss = ObservableMSELoss(self.gt_obs)
 
         else: #MD17 or MD22 system
-            self.gt_obs = gt_rdf
-            self.gt_obs_var = gt_rdf_var
-            self.gt_obs_local = gt_rdf_local
-            self.gt_obs_var_local = gt_rdf_var_local
+            self.gt_obs = gt_rdf_package[0]
+            self.gt_obs_local = self.gt_obs
             self.obs_loss = ObservableMSELoss(self.gt_obs)
 
         #Initialize remaining observables and losses
@@ -78,8 +61,19 @@ class BoltzmannEstimator:
         self.adf_loss = ObservableMSELoss(self.gt_adf)
         self.vacf_loss = ObservableMSELoss(self.gt_vacf)
 
-    # Core Function to compute the gradient estimator
+    
     def estimator(self, g, df_dtheta, mse_gradient):
+        """
+        Computes the Boltzmann gradient estimator described in Eqn. 6 of 
+        the paper. Note: Technically, we should scale the estimator by k_B*T, 
+        but we skip this step as it is essentially like scaling the learning rate
+        Args:
+            g (torch.Tensor): 
+            df_dtheta (torch.Tensor):
+            mse_gradient (torch.Tensor): 
+        """
+
+        # TODO: scale the estimator by Kb*T
         estimator = (
             df_dtheta.mean(0).unsqueeze(0) * g.mean(0).unsqueeze(-1)
             - df_dtheta.unsqueeze(1) * g.unsqueeze(-1)
@@ -90,8 +84,11 @@ class BoltzmannEstimator:
         )[0]
         return estimator.detach()
 
+
     def compute(self, simulator):
         self.simulator = simulator
+
+        #initialize observable computation functions
         diff_rdf = DifferentiableRDF(self.params, self.device)
         diff_adf = DifferentiableADF(
             self.simulator.n_atoms,
@@ -183,16 +180,14 @@ class BoltzmannEstimator:
         else:
             energy_force_package = None
 
-        # VACF stuff - always none - TODO: remove
-        vacf_gradient_estimators = None
+        # VACF stuff
         vacf_package = (
-            vacf_gradient_estimators,
             vacfs_per_replica,
             mean_vacf_loss.to(self.device),
         )
 
         ###Main Observable Stuff ###
-        if self.simulator.pbc:  # LiPS or Water
+        if self.simulator.pbc:  # Water
             if self.simulator.training_observable == "imd":
                 obs = torch.cat(
                     [self.simulator.min_imd(s.unsqueeze(0)) for s in stacked_radii])
@@ -237,7 +232,7 @@ class BoltzmannEstimator:
 
         #If we aren't in the learning phase, return without computing the Boltzmann estimator
         if (
-            self.params.rdf_loss_weight == 0
+            self.params.obs_loss_weight == 0
             or not self.simulator.train
             or simulator.optimizer.param_groups[0]["lr"] == 0
         ):
@@ -263,6 +258,7 @@ class BoltzmannEstimator:
                 local_stacked_radii, 
                 atomic_indices, 
                 bond_lens,
+                imds,
             ) = self.process_local_neighborhoods(stacked_radii)
 
         else:
@@ -272,7 +268,6 @@ class BoltzmannEstimator:
         obs.requires_grad = True
         adfs.requires_grad = True
 
-        # TODO: scale the estimator by Kb*T
         # shuffle the radii, rdfs, and losses
         if self.simulator.shuffle:
             shuffle_idx = torch.randperm(stacked_radii.shape[0])
@@ -379,11 +374,10 @@ class BoltzmannEstimator:
             obs_batch = [obs[start:end]]
             pe_grads_batch = pe_grads_flattened[start:end]
             grad_outputs_obs = [
-                2 / gt_obs_var_local * (ob.mean(0) - gt_ob).unsqueeze(0)
-                for ob, gt_ob, gt_obs_var_local in zip(
+                2  * (ob.mean(0) - gt_ob).unsqueeze(0)
+                for ob, gt_ob in zip(
                     obs_batch,
                     self.gt_obs_local.chunk(len(obs_batch)),
-                    self.gt_obs_var_local.chunk(len(obs_batch)),
                 )
             ]
             final_vjp = [
@@ -393,18 +387,21 @@ class BoltzmannEstimator:
             final_vjp = torch.stack(final_vjp).mean(0)
 
             raw_grads.append(final_vjp)
-            mean_vjps = torch.stack(raw_grads).mean(dim=0)
-            # re-assemble flattened gradients into correct shape
-            mean_vjps = tuple(
-                [
-                    g.reshape(shape)
-                    for g, shape in zip(
-                        mean_vjps.split(original_numel), original_shapes
-                    )
-                ]
-            )
-            obs_gradient_estimators.append(mean_vjps)
+        
+        # compute mean across minibatches
+        mean_vjps = torch.stack(raw_grads).mean(dim=0)
+        # re-assemble flattened gradients into correct shape
+        mean_vjps = tuple(
+            [
+                g.reshape(shape)
+                for g, shape in zip(
+                    mean_vjps.split(original_numel), original_shapes
+                )
+            ]
+        )
+        obs_gradient_estimators.append(mean_vjps)
 
+        #return final quantities
         obs_package = (
             obs_gradient_estimators,
             mean_obs,
@@ -414,6 +411,7 @@ class BoltzmannEstimator:
         )
 
         return obs_package, vacf_package, energy_force_package
+
 
 
     def process_local_neighborhoods(self, stacked_radii):
@@ -521,6 +519,7 @@ class BoltzmannEstimator:
         )
         bond_lens = full_list
 
+        #Save relevant quantities
         np.save(
             os.path.join(
                 self.simulator.save_dir,
@@ -544,5 +543,5 @@ class BoltzmannEstimator:
             bond_len_devs.cpu(),
         )
 
-        return stacked_radii, local_stacked_radii, atomic_indices, bond_lens
+        return stacked_radii, local_stacked_radii, atomic_indices, bond_lens, imds
 

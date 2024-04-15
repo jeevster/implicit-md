@@ -206,10 +206,11 @@ if __name__ == "__main__":
     ###########Compute ground truth observables###############
 
     print("Computing ground truth observables from datasets")
+
     if name == "water":
         (
-            gt_rdf_package,
-            gt_rdf_local_package,
+            gt_rdf,
+            gt_rdf_local,
             gt_diffusivity,
             gt_msd,
             gt_adf,
@@ -217,56 +218,37 @@ if __name__ == "__main__":
         ) = find_water_rdfs_diffusivity_from_file(
             data_path, MAX_SIZES[name], params, device
         )
-        gt_rdf, gt_rdf_var = gt_rdf_package
-        gt_rdf_local, gt_rdf_var_local = gt_rdf_local_package
-    elif name == "lips":
-        gt_rdf, gt_diffusivity = find_lips_rdfs_diffusivity_from_file(
-            data_path, MAX_SIZES[name], params, device
-        )
-        gt_rdf_var = torch.ones_like(gt_rdf)
-        gt_adf = torch.zeros((100, 1)).to(device)  # TODO: temporary
-
+        gt_rdf_package = (gt_rdf, gt_rdf_local)
+        
     else:
         gt_rdf, gt_adf = find_hr_adf_from_file(
             data_path, name, molecule, MAX_SIZES[name], params, device
         )
-        gt_rdf_var = torch.ones_like(gt_rdf)
-        gt_rdf_package = (gt_rdf, gt_rdf_var)
-        gt_rdf_local_package = (gt_rdf, gt_rdf_var)
+        gt_rdf_package = (gt_rdf,)
+
     contiguous_path = os.path.join(
         data_path, f"contiguous-{name}", molecule, MAX_SIZES[name], "val/nequip_npz.npz"
     )
     gt_data = np.load(contiguous_path)
     if name == "water":
         gt_vels = torch.FloatTensor(gt_data.f.velocities).to(device)
-    elif name == "lips":
-        gt_traj = torch.FloatTensor(gt_data.f.pos).to(device)
-        gt_vels = gt_traj[1:] - gt_traj[:-1]  # finite difference approx
     else:
         gt_traj = torch.FloatTensor(gt_data.f.R).to(device)
-        gt_vels = gt_traj[1:] - gt_traj[:-1]  # finite difference approx
+        gt_vels = gt_traj[1:] - gt_traj[:-1]  # finite difference approximation
 
     gt_vacf = DifferentiableVACF(params, device)(gt_vels)
-    if isinstance(gt_rdf, dict):
+    if name == 'water':
         for _type, _rdf in gt_rdf.items():
             np.save(os.path.join(results_dir, f"gt_{_type}_rdf.npy"), _rdf[0].cpu())
             np.save(
-                os.path.join(results_dir, f"gt_{_type}_rdf_var.npy"),
-                gt_rdf_var[_type].cpu(),
-            )
-            np.save(
                 os.path.join(results_dir, f"gt_{_type}_rdf_local.npy"),
                 gt_rdf_local[_type][0].cpu(),
-            )
-            np.save(
-                os.path.join(results_dir, f"gt_{_type}_rdf_var_local.npy"),
-                gt_rdf_var_local[_type].cpu(),
             )
     else:
         np.save(os.path.join(results_dir, "gt_rdf.npy"), gt_rdf.cpu())
     np.save(os.path.join(results_dir, "gt_adf.npy"), gt_adf.cpu())
     np.save(os.path.join(results_dir, "gt_vacf.npy"), gt_vacf.cpu())
-    if params.name == "lips" or params.name == "water":
+    if name == "water":
         np.save(os.path.join(results_dir, "gt_diffusivity.npy"), gt_diffusivity.cpu())
         np.save(os.path.join(results_dir, "gt_msd.npy"), gt_msd.cpu())
 
@@ -276,7 +258,7 @@ if __name__ == "__main__":
         5**params.max_times_reduce_lr
     )  # LR reduction factor is 0.2 each time
     losses = []
-    rdf_losses = []
+    obs_losses = []
     adf_losses = []
     diffusion_losses = []
     all_vacfs_per_replica = []
@@ -297,18 +279,11 @@ if __name__ == "__main__":
     changed_lr = False
     cycle = 0
     learning_epochs_in_cycle = 0
-    # function to add gradients
-    add_lists = lambda list1, list2, w1, w2: tuple(
-        [w1 * l1 + w2 * l2 for l1, l2 in zip(list1, list2)]
-    )
-
+    
     ######### Begin StABlE Training Loop #############
 
     for epoch in range(params.n_epochs):
-        # rdf = torch.zeros_like(gt_rdf).to(device)
-        rdf_loss = torch.Tensor([0]).to(device)
-        vacf_loss = torch.Tensor([0]).to(device)
-        diffusion_loss = torch.Tensor([0]).to(device)
+        
         best = False
         grad_cosine_similarity = 0
         ratios = 0
@@ -322,7 +297,6 @@ if __name__ == "__main__":
             # initialize Boltzmann_estimator
             boltzmann_estimator = BoltzmannEstimator(
                 gt_rdf_package,
-                gt_rdf_local_package,
                 simulator.mean_bond_lens,
                 gt_vacf,
                 gt_adf,
@@ -347,6 +321,7 @@ if __name__ == "__main__":
             )
             print(f"Initialize {simulator.n_replicas} random ICs in parallel")
 
+        
         simulator.optimizer.zero_grad()
         simulator.epoch = epoch
 
@@ -369,32 +344,33 @@ if __name__ == "__main__":
         # If instability threshold reached, estimate gradients via Boltzmann estimator
         # Otherwise, the gradients are None
         (
-            rdf_package,
+            obs_package,
             vacf_package,
             energy_force_grad_batches,
         ) = boltzmann_estimator.compute(equilibriated_simulator)
 
         # unpack results
-        rdf_grad_batches, mean_rdf, rdf_loss, mean_adf, adf_loss = rdf_package
-        _, vacfs_per_replica, vacf_loss = vacf_package
+        obs_grad_batches, mean_obs, obs_loss, mean_adf, adf_loss = obs_package
+        vacfs_per_replica, vacf_loss = vacf_package
         if not params.train:
             all_vacfs_per_replica.append(vacfs_per_replica)
 
         # Compute observable loss
-        outer_loss = params.rdf_loss_weight * rdf_loss
-        print(f"Loss: RDF={rdf_loss.item()}")
+        outer_loss = params.obs_loss_weight * obs_loss
+        print(f"Observable Loss ={outer_loss.item()}")
 
         # make lengths match for iteration
         if energy_force_grad_batches is None:
-            energy_force_grad_batches = rdf_grad_batches
+            energy_force_grad_batches = obs_grad_batches
 
         # Learning phase gradient update
-        if rdf_grad_batches is not None:
+        if obs_grad_batches is not None:
             grad_cosine_similarity = []
             ratios = []
-            for rdf_grads, energy_force_grads in zip(
-                rdf_grad_batches, energy_force_grad_batches
-            ):  # loop through minibatches
+            for obs_grads, energy_force_grads in zip(
+                obs_grad_batches, energy_force_grad_batches
+            ):  # loop through gradients - should only be a single step 
+                # since we don't allow off-policy gradients
                 simulator.optimizer.zero_grad()
 
                 # modify gradients according to loss weights
@@ -404,7 +380,7 @@ if __name__ == "__main__":
                         for ef_grad in energy_force_grads
                     ]
                 )
-                cosine_similarity, ratio = compare_gradients(rdf_grads, ef_grads)
+                cosine_similarity, ratio = compare_gradients(obs_grads, ef_grads)
                 grad_cosine_similarity.append(
                     cosine_similarity
                 )  # compute gradient similarities
@@ -412,7 +388,7 @@ if __name__ == "__main__":
 
                 # Loop through each group of parameters and set gradients
                 for param, obs_grad, ef_grad in zip(
-                    model.parameters(), rdf_grads, ef_grads
+                    model.parameters(), obs_grads, ef_grads
                 ):
                     param.grad = obs_grad + ef_grad
 
@@ -487,7 +463,7 @@ if __name__ == "__main__":
 
         # log stats
         losses.append(outer_loss.item())
-        rdf_losses.append(rdf_loss.item())
+        obs_losses.append(obs_loss.item())
         adf_losses.append(adf_loss.item())
         vacf_losses.append(vacf_loss.item())
         mean_instabilities.append(equilibriated_simulator.mean_instability)
@@ -516,7 +492,7 @@ if __name__ == "__main__":
             # reached instability point, can stop
             break
         writer.add_scalar("Loss", losses[-1], global_step=epoch + 1)
-        writer.add_scalar("RDF Loss", rdf_losses[-1], global_step=epoch + 1)
+        writer.add_scalar("Observable Loss", obs_losses[-1], global_step=epoch + 1)
         writer.add_scalar("ADF Loss", adf_losses[-1], global_step=epoch + 1)
         writer.add_scalar("VACF Loss", vacf_losses[-1], global_step=epoch + 1)
         if params.stability_criterion == "imd":

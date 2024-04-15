@@ -33,7 +33,7 @@ class WaterRDFMAE(torch.nn.Module):
         for i in range(
             stacked_radii.shape[1]
         ):  # explicit loop since vmap makes some numpy things weird
-            rdfs, _ = get_water_rdfs(
+            rdfs = get_water_rdfs(
                 stacked_radii[:, i],
                 self.ptypes[: stacked_radii.shape[-2]],
                 self.lattices,
@@ -168,7 +168,6 @@ def get_water_rdfs(data_seq, ptypes, lattices, bins, device='cpu'):
     
     data_seq = ((data_seq / lattices) % 1) * lattices #coords are wrapped
     all_rdfs = {}
-    all_rdfs_vars = {}
     n_rdfs = 3
     for idx in range(n_rdfs):
         type1, type2 = pairs[idx]    
@@ -194,10 +193,8 @@ def get_water_rdfs(data_seq, ptypes, lattices, bins, device='cpu'):
         data_rdfs = data_hists / Z_data
         data_rdfs = data_rdfs / data_rdfs.sum(1, keepdims=True) * data_rdf.sum()#normalize to match original sum
         data_rdf_mean = data_rdfs.mean(0)
-        data_rdf_var = data_rdfs.var(0)
         all_rdfs[type1 + type2] = torch.Tensor([data_rdf_mean]).to(device)
-        all_rdfs_vars[type1 + type2] = torch.Tensor([data_rdf_var]).to(device)
-    return all_rdfs, all_rdfs_vars
+    return all_rdfs
 
 
 def find_water_rdfs_diffusivity_from_file(base_path: str, size: str, params, device):

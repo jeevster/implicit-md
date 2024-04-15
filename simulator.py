@@ -358,7 +358,7 @@ class Simulator:
         self.diameter_viz = params.diameter_viz
         self.exp_name = params.exp_name
         self.training_observable = params.training_observable
-        self.rdf_loss_weight = params.rdf_loss_weight
+        self.obs_loss_weight = params.obs_loss_weight
         self.energy_force_loss_weight = params.energy_force_loss_weight
 
         # limit CPU usage
