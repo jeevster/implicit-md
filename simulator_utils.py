@@ -19,7 +19,6 @@ import json
 from torchmd.observable import DifferentiableADF
 from torch.utils.tensorboard.summary import hparams
 
-# calculate simulation metrics from stable parts of all trajectories
 def calculate_final_metrics(
     simulator,
     params,
@@ -34,6 +33,15 @@ def calculate_final_metrics(
     oxygen_atoms_mask=None,
     all_vacfs_per_replica=None,
 ):
+
+    """
+    Compute and save all final metrics during inference with a StABlE-trained model on held-out initial conditions.
+    These include energy/force losses, stability across replicas, and accuracy of various observables computed only 
+    over the stable portion of each replica trajectory. The per-replica observables are also saved. The quantities computed
+    by this function are used to produce the final figures.
+
+    This function is only run at inference time.
+    """
     np.save(
         os.path.join(results_dir, f"replicas_stable_time.npy"),
         simulator.stable_time.cpu().numpy(),
@@ -200,6 +208,12 @@ def calculate_final_metrics(
 
 
 def energy_force_gradient(simulator):
+    """
+    Computes a single gradient (averaged across the training dataset batches) of the original 
+    energy and forces (QM) training objective.
+
+    Returns a tuple of gradients with the same shape as simulator.model.parameters()
+    """
     # store original shapes of model parameters
     original_numel = [param.data.numel() for param in simulator.model.parameters()]
     original_shapes = [param.data.shape for param in simulator.model.parameters()]
@@ -294,6 +308,10 @@ def energy_force_gradient(simulator):
 
 """compute energy/force error on test set"""
 def energy_force_error(simulator):
+    """
+    Compute the energy/force errors of the simulator's NNIP model on a test set of structures
+    Returns a dictionary containing the error metrics.
+    """
     if simulator.model_type == "nequip":
         data_config = (
             f"configs/{simulator.name}/nequip_data_cfg/{simulator.molecule}.yml"
@@ -345,6 +363,9 @@ def energy_force_error(simulator):
 
 
 def save_checkpoint(simulator, best=False, name_=None):
+    """
+    Saves a checkpoint of the current state of the simulator's NNIP model
+    """
     if simulator.model_type == "nequip":
         if name_ is not None:
             name = f"{name_}.pth"
@@ -396,6 +417,10 @@ def save_checkpoint(simulator, best=False, name_=None):
 def create_frame(
     radii, velocities, cell, bonds, pbc, diameter_viz, n_atoms, dt, name, frame
 ):
+    """
+    Creates a gsd.hoomd.Frame() object from an instantaneous MD snapshot.
+    Used to produce animations of the simulations.
+    """
     # Particle positions, velocities, diameter
     radii = radii[0]
     if pbc:
@@ -441,6 +466,10 @@ def thermo_log(
     rdf_mae,
     pbc,
 ):
+    """
+    Given an instantaneous snapshot of an MD trajectory, compute instantaneous 
+    quantities like temperature, energy, momentum, stability metrics, etc. Mainly for sanity checking.
+    """
     # Log energies and instabilities
     p_dof = 3 * n_atoms
     ke = 1 / 2 * (masses * torch.square(velocities)).sum(axis=(1, 2)).unsqueeze(-1)

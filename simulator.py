@@ -32,6 +32,11 @@ from simulator_utils import create_frame, thermo_log
 
 
 class Simulator:
+    """
+    Simulator class which performs forward MD simulations with a neural network interatomic potential (NNIP).
+    This class stores all attributes about the simulations, including the current states of all the replicas,
+    and whether or not they have become unstable. 
+    """
     def __init__(self, config, params, model, model_path, model_config, gt_rdf):
         super(Simulator, self).__init__()
         print("Initializing MD simulation environment")
@@ -41,6 +46,8 @@ class Simulator:
             self.device = torch.device(torch.cuda.current_device())
         except:
             self.device = "cpu"
+
+        #Set config params
         self.name = config["name"]
         self.pbc = self.name == "water"
         self.molecule = config["molecule"] if "molecule" in config else ""
@@ -49,7 +56,6 @@ class Simulator:
         self.l_max = config["l_max"]
         self.all_unstable = False
         self.first_simulation = True
-
         self.config = config
         self.data_dir = config["src"]
         self.train = params.train
@@ -61,7 +67,6 @@ class Simulator:
         self.vacf_window = config["vacf_window"]
         self.optimizer = config["optimizer"]
         self.adjoint = config["adjoint"]
-        # set stability criterion
         self.stability_tol = config["imd_tol"] if self.pbc else config["bond_dev_tol"]
         self.max_frac_unstable_threshold = config["max_frac_unstable_threshold"]
         self.min_frac_unstable_threshold = config["min_frac_unstable_threshold"]
@@ -102,6 +107,8 @@ class Simulator:
             collate_fn=data_list_collater,
             batch_size=self.minibatch_size,
         )
+
+        #initialize system properties
 
         # get random initial condition from dataset
         init_data = self.train_dataset.__getitem__(10)
@@ -158,11 +165,14 @@ class Simulator:
 
         self.gt_traj_train = torch.FloatTensor(pos_field_train).to(self.device)
 
+        #set initial stability metric values 
         self.instability_per_replica = (
             100 * torch.ones((self.n_replicas,)).to(self.device)
             if params.stability_criterion == "imd"
             else torch.zeros((self.n_replicas,)).to(self.device)
         )
+
+        #amount of time each replica has been stable
         self.stable_time = torch.zeros((self.n_replicas,)).to(self.device)
 
         self.masses = torch.Tensor(self.atoms.get_masses().reshape(1, -1, 1)).to(
@@ -244,6 +254,8 @@ class Simulator:
             self.stability_criterion = BondLengthDeviation(
                 self.name, self.bonds, self.mean_bond_lens, self.cell, self.device
             )
+
+        #Set initial positions and velocities
         radii = torch.stack(
             [torch.Tensor(atoms.get_positions()) for atoms in self.raw_atoms]
         )
@@ -364,6 +376,11 @@ class Simulator:
                 self.trainer.model = self.model
 
     def stability_per_replica(self):
+        """
+        Check whether each replica has become unstable based on the specified threshold
+        Returns:
+            stability (torch.Tensor): Boolean indicating whether each replica is stable (Shape: (N_replicas,))
+        """
         stability = (
             (self.instability_per_replica > self.stability_tol)
             if self.params.stability_criterion == "imd"
@@ -372,25 +389,34 @@ class Simulator:
         return stability
 
     def set_starting_states(self):
+        """
+        Sets the starting states (positions, velocities, thermostat zeta parameter)
+        for the next round of MD simulation based on whether we are in a simulation or learning phase
+
+        Returns:
+            Fraction of replicas which are unstable (float between 0 and 1)
+        """
+
         # find replicas which violate the stability criterion
         reset_replicas = ~self.stability_per_replica()
         num_unstable_replicas = reset_replicas.count_nonzero().item()
         if (
             num_unstable_replicas / self.n_replicas >= self.max_frac_unstable_threshold
-        ):  # threshold of unstable replicas reached
+        ):  
             if not self.all_unstable:
+                # threshold of unstable replicas reached, transition from simulation to learning phase
                 print(
                     "Threshold of unstable replicas has been reached... Start Learning"
                 )
             self.all_unstable = True
 
-        if self.all_unstable:  # reset all replicas to the initial values
+        if self.all_unstable:  # we are in a learning phase already, so reset all replicas to the initial values
             self.radii = self.original_radii
             self.velocities = self.original_velocities
             self.zeta = self.original_zeta
 
-        else:
-            if self.first_simulation:  # random replica reset
+        else: # we are in a simulation phase
+            if self.first_simulation:  # in the first epoch of every simulation phase, randomly reset some fraction of replicas to an earlier time
                 # pick replicas to reset (only pick from stable replicas)
                 stable_replicas = (~reset_replicas).nonzero()
                 random_reset_idxs = torch.randperm(stable_replicas.shape[0])[
@@ -406,7 +432,7 @@ class Simulator:
                     self.velocities[idx] = self.checkpoint_velocities[time][idx]
                     self.zeta[idx] = self.checkpoint_zetas[time][idx]
 
-            # reset the replicas which are unstable
+            # reset the replicas which are unstable, and continue simulating the rest
             exp_reset_replicas = (
                 (reset_replicas).unsqueeze(-1).unsqueeze(-1).expand_as(self.radii)
             )
@@ -425,6 +451,7 @@ class Simulator:
                 self.original_zeta.detach().clone(),
                 self.zeta.detach().clone(),
             ).requires_grad_(True)
+
             # update stability times for each replica
             if not self.train:
                 self.stable_time = torch.where(
@@ -435,19 +462,19 @@ class Simulator:
         self.first_simulation = False
         return num_unstable_replicas / self.n_replicas
 
-    # main MD loop
     def solve(self):
+        """
+        Performs a forward Molecular Dynamics simulation with the Simulator's NNIP calculator, saving the trajectory for 
+        the subsequent Boltzmann estimator computation, and tracking and logging various metrics along the way.
+        At the end of the simulation, checks whether each replica has become unstable.
+        """
+
         self.mode = (
             "learning" if self.optimizer.param_groups[0]["lr"] > 0 else "simulation"
         )
-        self.running_dists = []
         self.running_vels = []
         self.running_accs = []
-        self.last_h_radii = []
-        self.last_h_velocities = []
         self.running_radii = []
-        self.running_noise = []
-        self.running_energy = []
         self.original_radii = self.radii.clone()
         self.original_velocities = self.velocities.clone()
         self.original_zeta = self.zeta.clone()
@@ -466,13 +493,14 @@ class Simulator:
                 )
             except:
                 warnings.warn("Unable to save simulation trajectories")
-        # Initialize forces/potential of starting configuration
+        
         with torch.no_grad():
             self.step = -1
-            _, self.forces = self.integrator.calculator.calculate_energy_force(
-                self.radii
-            )
-            # Run MD
+            # Initialize forces/potential of starting configuration
+            _, self.forces = self.integrator.calculator.calculate_energy_force(self.radii)
+
+            ######### Begin MD ###########
+
             print("Start MD trajectory", file=self.f)
             for step in tqdm(range(self.nsteps)):
                 self.step = step
@@ -537,10 +565,12 @@ class Simulator:
                 self.zeta.copy_(zeta)
                 self.forces.copy_(forces)
 
+            ######### End MD ###########
+
             # combine radii
             self.stacked_radii = torch.stack(self.running_radii[:: self.n_dump])
 
-            # compute instability metric (either bond length deviation, min intermolecular distance, or RDF MAE)
+            # compute instability metric for all replicas (either bond length deviation, min intermolecular distance, or RDF MAE)
             self.instability_per_replica = self.stability_criterion(self.stacked_radii)
 
             if isinstance(self.instability_per_replica, tuple):

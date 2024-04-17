@@ -5,6 +5,13 @@ from torch_geometric.nn import radius_graph
 
 
 class ForceCalculator:
+    """
+    Class (similar to ASE Calculator) to compute energies and forces for a 
+    given set of atomic positions using a neural network interatomic potential.
+    Has a few StABlE-specific modifications, including
+        1. Batched input (simulating multiple replicas)
+        2. Option to output individual atomic energies (needed for localized Boltzmann estimator)
+    """
     def __init__(
         self,
         model,
@@ -28,6 +35,18 @@ class ForceCalculator:
     def calculate_energy_force(
         self, radii, retain_grad=False, output_individual_energies=False
     ):
+        """
+        Calculate energies and forces of a set of atomic positions.
+        Args:
+            radii (torch.Tensor): Atom positions (Shape: (N_replicas, N_atoms, 3))
+            retain_grad (bool): Whether to store the computational graph 
+                                of the force calculation (default: False)
+            output_individual_energies (bool): whether to output individual atomic energies
+                                                in addition to global energy (default: False)
+        Returns:
+            Global potential energy, individual atomic energies (optional), forces
+        """
+
         batch_size = radii.shape[0]
         batch = torch.arange(batch_size).repeat_interleave(self.n_atoms).to(self.device)
         with torch.enable_grad():
