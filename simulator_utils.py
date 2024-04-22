@@ -306,7 +306,6 @@ def energy_force_gradient(simulator):
     return final_grads
 
 
-"""compute energy/force error on test set"""
 def energy_force_error(simulator):
     """
     Compute the energy/force errors of the simulator's NNIP model on a test set of structures
