@@ -2,11 +2,12 @@
 PRIVATE/UNRELEASED repository for the paper [Stability-Aware Training of Neural Network Interatomic Potentials with Differentiable Boltzmann Estimators](https://arxiv.org/abs/2402.13984).
 
 ## Overview of Main Files
-- ```stable_training.py```: Top-level script for running the StABlE Training algorithm. Usage: ```python stable_training.py --config-yml [PATH_TO_CONFIG] [OVERRIDE_ARGS]```
+- ```pretraining.py```: Top-level script for traditional energy/forces QM training of NNIPs. This should be run to convergence prior to StABlE Training. Example Usage: ```python pretraining.py --mode train --config-yml configs/pretraining/md17/schnet.yml --molecule aspirin```
+- ```stable_training.py```: Top-level script for running the StABlE Training algorithm. Example Usage: ```python stable_training.py --config-yml configs/stable_training/md17/train.yml```
 - ```simulator.py```: Defines the ```Simulator``` class which performs forward MD simulations with a neural network interatomic potential (NNIP).
 - ```boltzmann_estimator.py```: Defines the ```BoltzmannEstimator``` class which computes the local and global N-sample Boltzmann Estimators (derived in the paper) necessary to train NNIPs to observables.
 - ```mdsim/```: Contains main components of the MD engine, including NNIP model architectures, calculators, integrators, and observables. Largely taken from the [MDsim](https://github.com/kyonofx/MDsim) repo.
-- ```configs/```: Contains configuration files for the three systems considered in the paper: Aspirin (MD17), ac-Ala3-NHMe (MD22), and Water. Each has a ```train.yml``` and ```simulate.yaml``` for StABlE Training and simulation evaluation respectively.
+- ```configs/```: Contains configuration files for the three systems considered in the paper: Aspirin (MD17), ac-Ala3-NHMe (MD22), and Water. For StABlE Training, each system has a ```train.yml``` and ```simulate.yml``` for training and simulation evaluation respectively.
 
 ## Authors
 - Sanjeev Raja
