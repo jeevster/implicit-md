@@ -1,3 +1,5 @@
+"""Taken from https://github.com/torchmd/mdgrad/blob/master/torchmd/topology.py"""
+
 import torch
 import numpy as np
 import itertools
