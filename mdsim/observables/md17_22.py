@@ -12,6 +12,7 @@ def get_hr(traj, bins):
     """
     compute h(r) (the RDF) for MD17 and MD22 simulations.
     traj: T x N_atoms x 3
+    Adapted from https://github.com/kyonofx/MDsim/blob/main/observable.ipynb
     """
     pdist = torch.cdist(traj, traj).flatten()
     hist, _ = np.histogram(pdist[:].flatten().numpy(), bins, density=True)

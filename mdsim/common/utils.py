@@ -64,7 +64,9 @@ OFFSET_LIST = [
     [1, 1, 1],
 ]
 
-
+"""
+These function were written for StABlE Training. 
+"""
 def extract_cycle_epoch(s):
     # Regular expression to match the pattern
     pattern = r"post_cycle(\d+)(?:_epoch(\d+))?"
@@ -293,6 +295,9 @@ def atoms_to_state_dict(atoms, r_max):
     return data
 
 
+"""
+Everything below this point was taken from https://github.com/kyonofx/MDsim/blob/main/mdsim/common/utils.py
+"""
 class Complete(object):
     def __call__(self, data):
         device = data.edge_index.device

@@ -87,6 +87,10 @@ def radii_to_dists(radii, params):
     return torch.sqrt(torch.sum(r**2, axis=-1)).unsqueeze(-1)
 
 
+"""
+Below functions were taken from 
+https://github.com/kyonofx/MDsim/blob/main/observable.ipynb
+"""
 def distance_pbc(x0, x1, lattices):
     delta = torch.abs(x0 - x1)
     lattices = lattices.view(-1, 1, 3)
