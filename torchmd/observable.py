@@ -5,6 +5,7 @@ from nff.nn.layers import GaussianSmearing
 import numpy as np
 from torchmd.topology import generate_nbr_list, generate_angle_list
 
+
 def generate_vol_bins(start, end, nbins, dim):
     bins = torch.linspace(start, end, nbins + 1)
 
@@ -42,6 +43,10 @@ def compute_angle(xyz, angle_list, cell, N):
 
 
 class DifferentiableRDF(torch.nn.Module):
+    """
+    Computes a differentiable version of the radial distribution function using Gaussian Smearing.
+    """
+
     def __init__(self, params, device):
         super(DifferentiableRDF, self).__init__()
         start = 1e-6
@@ -77,6 +82,10 @@ class DifferentiableRDF(torch.nn.Module):
 
 # differentiable angular distribution function
 class DifferentiableADF(torch.nn.Module):
+    """
+    Computes a differentiable version of the angular distribution function using Gaussian Smearing.
+    """
+
     def __init__(self, n_atoms, bonds, cell, params, device):
         super(DifferentiableADF, self).__init__()
         # GPU
@@ -119,7 +128,32 @@ class DifferentiableADF(torch.nn.Module):
         return count
 
 
+class DifferentiableVACF(torch.nn.Module):
+    """
+    Compute a differentiable version of the velocity autocorrelation function.
+    """
+
+    def __init__(self, params, device):
+        super(DifferentiableVACF, self).__init__()
+        self.device = device
+        self.t_window = [i for i in range(1, params.vacf_window, 1)]
+
+    def forward(self, vel):
+        vacf = [torch.Tensor([1.0]).to(self.device)]
+        average_vel_sq = (vel * vel).mean() + 1e-6
+
+        # can be implemented in parallel
+        vacf += [
+            ((vel[t:] * vel[:-t]).mean() / average_vel_sq)[None] for t in self.t_window
+        ]
+        return torch.stack(vacf).reshape(-1)
+
+
 class DifferentiableVelHist(torch.nn.Module):
+    """
+    Computes a differentiable version of the histogram of velocities using Gaussian Smearing (not currently used in StABlE).
+    """
+
     def __init__(self, params, device):
         super(DifferentiableVelHist, self).__init__()
         start = 0
@@ -152,24 +186,11 @@ class DifferentiableVelHist(torch.nn.Module):
         return 100 * velhist
 
 
-class DifferentiableVACF(torch.nn.Module):
-    def __init__(self, params, device):
-        super(DifferentiableVACF, self).__init__()
-        self.device = device
-        self.t_window = [i for i in range(1, params.vacf_window, 1)]
-
-    def forward(self, vel):
-        vacf = [torch.Tensor([1.0]).to(self.device)]
-        average_vel_sq = (vel * vel).mean() + 1e-6
-
-        # can be implemented in parallel
-        vacf += [
-            ((vel[t:] * vel[:-t]).mean() / average_vel_sq)[None] for t in self.t_window
-        ]
-        return torch.stack(vacf).reshape(-1)
-
-
 class SelfIntermediateScattering(torch.nn.Module):
+    """
+    Compute a differentiable version of the Self-Intermediate Scattering Function (not currently used in StABlE).
+    """
+
     # Note: k_mag should be the distance in Angstroms of the first RDF peak
     def __init__(self, params, device, n_vectors=30):
         super(SelfIntermediateScattering, self).__init__()

@@ -131,8 +131,6 @@ def print_active_torch_tensors():
 
 
 """Gradient utils"""
-
-
 def compare_gradients(grad1, grad2):
     """Compute cosine similarity and ratio between two sets of gradient updates for a given model"""
     assert len(grad1) == len(grad2)
