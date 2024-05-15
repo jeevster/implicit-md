@@ -1,7 +1,10 @@
+"""
+Adapted from https://github.com/learningmatter-mit/NeuralForceField/blob/master/nff/utils/scatter.py
+"""
+
 from itertools import repeat
 from torch.autograd import grad
 import torch
-
 
 def compute_grad(
     inputs,
