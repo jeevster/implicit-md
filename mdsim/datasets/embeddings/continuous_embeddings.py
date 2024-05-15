@@ -14,6 +14,7 @@ Properties:
 
 NaN stored for unavaialable parameters.
 """
+
 CONTINUOUS_EMBEDDINGS = {
     0: [
         float("NaN"),

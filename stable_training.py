@@ -205,10 +205,9 @@ if __name__ == "__main__":
     ###########Compute ground truth observables###############
 
     print("Computing ground truth observables from datasets")
-    
 
     if name == "water":
-        #TODO: compute the ground truth imd and bond length dev here instead of hardcoding
+        # TODO: compute the ground truth imd and bond length dev here instead of hardcoding
         (
             gt_rdf,
             gt_rdf_local,
@@ -220,7 +219,7 @@ if __name__ == "__main__":
             data_path, MAX_SIZES[name], params, device
         )
         gt_rdf_package = (gt_rdf, gt_rdf_local)
-        
+
     else:
         gt_rdf, gt_adf = find_hr_adf_from_file(
             data_path, name, molecule, MAX_SIZES[name], params, device
@@ -238,7 +237,7 @@ if __name__ == "__main__":
         gt_vels = gt_traj[1:] - gt_traj[:-1]  # finite difference approximation
 
     gt_vacf = DifferentiableVACF(params, device)(gt_vels)
-    if name == 'water':
+    if name == "water":
         for _type, _rdf in gt_rdf.items():
             np.save(os.path.join(results_dir, f"gt_{_type}_rdf.npy"), _rdf[0].cpu())
             np.save(
@@ -280,11 +279,11 @@ if __name__ == "__main__":
     changed_lr = False
     cycle = 0
     learning_epochs_in_cycle = 0
-    
+
     ######### Begin StABlE Training Loop #############
 
     for epoch in range(params.n_epochs):
-        
+
         best = False
         grad_cosine_similarity = 0
         ratios = 0
@@ -322,7 +321,6 @@ if __name__ == "__main__":
             )
             print(f"Initialize {simulator.n_replicas} random ICs in parallel")
 
-        
         simulator.optimizer.zero_grad()
         simulator.epoch = epoch
 
@@ -370,7 +368,7 @@ if __name__ == "__main__":
             ratios = []
             for obs_grads, energy_force_grads in zip(
                 obs_grad_batches, energy_force_grad_batches
-            ):  # loop through gradients - should only be a single step 
+            ):  # loop through gradients - should only be a single step
                 # since we don't allow off-policy gradients
                 simulator.optimizer.zero_grad()
 

@@ -30,7 +30,7 @@ class BoltzmannEstimator:
         # Water system
         if self.params.name == "water":
             gt_rdf, gt_rdf_local = gt_rdf_package
-            #Training to match RDF
+            # Training to match RDF
             if params.training_observable == "rdf":
                 self.gt_obs = torch.cat(
                     [rdf.flatten() for rdf in gt_rdf.values()]
@@ -41,41 +41,44 @@ class BoltzmannEstimator:
                 self.obs_loss = ObservableMSELoss(self.gt_obs)
             elif params.training_observable == "imd":
                 # Training to match minimum intermolecular distance
-                self.gt_obs = torch.Tensor([1.44]).to(self.device)  # ground truth min IMD
+                self.gt_obs = torch.Tensor([1.44]).to(
+                    self.device
+                )  # ground truth min IMD
                 self.gt_obs_local = self.gt_obs
                 self.obs_loss = IMDHingeLoss(self.gt_obs)
             elif params.training_observable == "bond_length_dev":
-                self.gt_obs = mean_bond_lens[:2].to(self.device)  # ground truth bond length dev
+                self.gt_obs = mean_bond_lens[:2].to(
+                    self.device
+                )  # ground truth bond length dev
                 self.gt_obs_local = self.gt_obs
                 self.obs_loss = ObservableMSELoss(self.gt_obs)
 
-        else: #MD17 or MD22 system
+        else:  # MD17 or MD22 system
             self.gt_obs = gt_rdf_package[0]
             self.gt_obs_local = self.gt_obs
             self.obs_loss = ObservableMSELoss(self.gt_obs)
 
-        #Initialize remaining observables and losses
+        # Initialize remaining observables and losses
         self.gt_vacf = gt_vacf
         self.gt_adf = gt_adf
 
         self.adf_loss = ObservableMSELoss(self.gt_adf)
         self.vacf_loss = ObservableMSELoss(self.gt_vacf)
 
-    
     def estimator(self, g, df_dtheta, mse_gradient):
         """
-        Computes the Boltzmann gradient estimator described in Eqn. 6 of 
-        the paper for a minibatch of simulation states (either global or 
-        local states depending on the system). Note: Technically, we should scale 
-        the estimator by k_B*T, but we skip this step as it is essentially 
+        Computes the Boltzmann gradient estimator described in Eqn. 6 of
+        the paper for a minibatch of simulation states (either global or
+        local states depending on the system). Note: Technically, we should scale
+        the estimator by k_B*T, but we skip this step as it is essentially
         like scaling the learning rate.
         Args:
             g (torch.Tensor): Simulation observable estimates (Shape: (minibatch_size, d_observable))
             df_dtheta (torch.Tensor): Potential energy gradients (Shape: (minibatch_size, num_model_parameters))
-            mse_gradient (torch.Tensor): Gradient of the upstream observable loss function, 
+            mse_gradient (torch.Tensor): Gradient of the upstream observable loss function,
                                         averaged over the minibatch (Shape: (1, d_observable))
         Returns:
-            estimator (torch.Tensor): Gradient of the observable component of the StABlE loss 
+            estimator (torch.Tensor): Gradient of the observable component of the StABlE loss
                                         w.r.t model parameters (Shape: (num_model_parameters))
         """
 
@@ -89,11 +92,10 @@ class BoltzmannEstimator:
         )[0]
         return estimator.detach()
 
-
     def compute(self, simulator):
         self.simulator = simulator
 
-        #initialize observable computation functions
+        # initialize observable computation functions
         diff_rdf = DifferentiableRDF(self.params, self.device)
         diff_adf = DifferentiableADF(
             self.simulator.n_atoms,
@@ -127,7 +129,7 @@ class BoltzmannEstimator:
         radii_traj = torch.stack(self.simulator.running_radii)
 
         # take i.i.d samples for RDF loss
-        stacked_radii = radii_traj[::self.simulator.n_dump]  
+        stacked_radii = radii_traj[:: self.simulator.n_dump]
         if self.simulator.mode == "learning":
             # save replicas
             np.save(
@@ -156,7 +158,8 @@ class BoltzmannEstimator:
             self.device
         )  # zero out the unstable replica vacfs
         # split into sub-trajectories of length = vacf_window
-        velocities_traj = velocities_traj[:,
+        velocities_traj = velocities_traj[
+            :,
             : math.floor(velocities_traj.shape[1] / self.simulator.vacf_window)
             * self.simulator.vacf_window,
         ]
@@ -169,7 +172,7 @@ class BoltzmannEstimator:
         )
 
         # sample i.i.d paths
-        velocities_traj = velocities_traj[:, :: self.simulator.n_dump_vacf]  
+        velocities_traj = velocities_traj[:, :: self.simulator.n_dump_vacf]
 
         vacfs = vmap(vmap(diff_vacf))(velocities_traj)
         mean_vacf = vacfs.mean(dim=(0, 1))
@@ -195,35 +198,45 @@ class BoltzmannEstimator:
         if self.simulator.pbc:  # Water
             if self.simulator.training_observable == "imd":
                 obs = torch.cat(
-                    [self.simulator.min_imd(s.unsqueeze(0)) for s in stacked_radii])
+                    [self.simulator.min_imd(s.unsqueeze(0)) for s in stacked_radii]
+                )
             elif self.simulator.training_observable == "rdf":
                 obs = torch.cat(
-                    [self.simulator.rdf_mae(s.unsqueeze(0))[0] for s in stacked_radii])
+                    [self.simulator.rdf_mae(s.unsqueeze(0))[0] for s in stacked_radii]
+                )
             elif self.simulator.training_observable == "bond_length_dev":
                 obs = torch.cat(
-                    [self.simulator.bond_length_dev(s.unsqueeze(0))[0]
-                    for s in stacked_radii])
-                
+                    [
+                        self.simulator.bond_length_dev(s.unsqueeze(0))[0]
+                        for s in stacked_radii
+                    ]
+                )
+
             obs = obs.reshape(-1, simulator.n_replicas, self.gt_obs_local.shape[-1])
             adfs = torch.stack(
-                [diff_adf(rad)
-                for rad in stacked_radii.reshape(-1, self.simulator.n_atoms, 3)]
-                ).reshape(-1, self.simulator.n_replicas, self.gt_adf.shape[-1])
-                
-        else: #observable is always RDF
+                [
+                    diff_adf(rad)
+                    for rad in stacked_radii.reshape(-1, self.simulator.n_atoms, 3)
+                ]
+            ).reshape(-1, self.simulator.n_replicas, self.gt_adf.shape[-1])
+
+        else:  # observable is always RDF
             r2d = lambda r: radii_to_dists(r, self.simulator.params)
             dists = vmap(r2d)(stacked_radii).reshape(
-                -1, self.simulator.n_atoms, self.simulator.n_atoms - 1, 1)
-            
+                -1, self.simulator.n_atoms, self.simulator.n_atoms - 1, 1
+            )
+
             obs = torch.stack([diff_rdf(tuple(dist)) for dist in dists]).reshape(
                 -1, self.simulator.n_replicas, self.gt_obs.shape[-1]
             )  # this way of calculating uses less memory
 
             adfs = torch.stack(
-                [diff_adf(rad)
-                    for rad in stacked_radii.reshape(-1, self.simulator.n_atoms, 3)]
-                ).reshape(-1, self.simulator.n_replicas, self.gt_adf.shape[-1])
-        
+                [
+                    diff_adf(rad)
+                    for rad in stacked_radii.reshape(-1, self.simulator.n_atoms, 3)
+                ]
+            ).reshape(-1, self.simulator.n_replicas, self.gt_adf.shape[-1])
+
         np.save(
             os.path.join(
                 self.simulator.save_dir, f"obs_epoch{self.simulator.epoch}.npy"
@@ -235,7 +248,7 @@ class BoltzmannEstimator:
         mean_obs_loss = self.obs_loss(mean_obs)
         mean_adf_loss = self.adf_loss(mean_adf)
 
-        #If we aren't in the learning phase, return without computing the Boltzmann estimator
+        # If we aren't in the learning phase, return without computing the Boltzmann estimator
         if (
             self.params.obs_loss_weight == 0
             or not self.simulator.train
@@ -257,11 +270,11 @@ class BoltzmannEstimator:
         stacked_radii = stacked_radii.reshape(-1, self.simulator.n_atoms, 3)
 
         if self.simulator.name == "water":
-            #Water subsampling
+            # Water subsampling
             (
-                stacked_radii, 
-                local_stacked_radii, 
-                atomic_indices, 
+                stacked_radii,
+                local_stacked_radii,
+                atomic_indices,
                 bond_lens,
                 imds,
             ) = self.process_local_neighborhoods(stacked_radii)
@@ -310,7 +323,7 @@ class BoltzmannEstimator:
                 energy_force_output = self.simulator.calculator.calculate_energy_force(
                     radii_in,
                     retain_grad=True,
-                    output_individual_energies= self.simulator.name == "water",
+                    output_individual_energies=self.simulator.name == "water",
                 )
                 if len(energy_force_output) == 2:
                     # global energy
@@ -328,7 +341,9 @@ class BoltzmannEstimator:
                     energy = energy.reshape(-1, 1)
 
             # need to do another loop here over batches of local neighborhoods
-            num_local_blocks = math.ceil(energy.shape[0] / self.simulator.minibatch_size)
+            num_local_blocks = math.ceil(
+                energy.shape[0] / self.simulator.minibatch_size
+            )
             for i in range(num_local_blocks):
                 start_inner = self.simulator.minibatch_size * i
                 end_inner = self.simulator.minibatch_size * (i + 1)
@@ -346,7 +361,7 @@ class BoltzmannEstimator:
                 vectorized_vjp = vmap(get_vjp)
                 I_N = torch.eye(local_energy.shape[0]).unsqueeze(-1).to(self.device)
                 num_samples = local_energy.shape[0]
-                
+
                 grads_vectorized = vectorized_vjp(I_N)
                 # flatten the gradients for vectorization
                 grads_flattened = torch.stack(
@@ -379,7 +394,7 @@ class BoltzmannEstimator:
             obs_batch = [obs[start:end]]
             pe_grads_batch = pe_grads_flattened[start:end]
             grad_outputs_obs = [
-                2  * (ob.mean(0) - gt_ob).unsqueeze(0)
+                2 * (ob.mean(0) - gt_ob).unsqueeze(0)
                 for ob, gt_ob in zip(
                     obs_batch,
                     self.gt_obs_local.chunk(len(obs_batch)),
@@ -392,21 +407,19 @@ class BoltzmannEstimator:
             final_vjp = torch.stack(final_vjp).mean(0)
 
             raw_grads.append(final_vjp)
-        
+
         # compute mean across minibatches
         mean_vjps = torch.stack(raw_grads).mean(dim=0)
         # re-assemble flattened gradients into correct shape
         mean_vjps = tuple(
             [
                 g.reshape(shape)
-                for g, shape in zip(
-                    mean_vjps.split(original_numel), original_shapes
-                )
+                for g, shape in zip(mean_vjps.split(original_numel), original_shapes)
             ]
         )
         obs_gradient_estimators.append(mean_vjps)
 
-        #return final quantities
+        # return final quantities
         obs_package = (
             obs_gradient_estimators,
             mean_obs,
@@ -417,23 +430,21 @@ class BoltzmannEstimator:
 
         return obs_package, vacf_package, energy_force_package
 
-
-
     def process_local_neighborhoods(self, stacked_radii):
         """
-        Extracts local "shells" of water molecules with which to compute the 
+        Extracts local "shells" of water molecules with which to compute the
         localized Boltzmann estimator, and computes ground truth observables.
         #TODO: include details on sampling procedure
         Args:
-            stacked_radii (torch.Tensor): 
+            stacked_radii (torch.Tensor):
         Returns:
-            stacked_radii (torch.Tensor): 
-            local_stacked_radii (torch.Tensor): 
-            atomic_indices (torch.Tensor): 
-            bond_lens (torch.Tensor): 
-            imds (torch.Tensor): 
+            stacked_radii (torch.Tensor):
+            local_stacked_radii (torch.Tensor):
+            atomic_indices (torch.Tensor):
+            bond_lens (torch.Tensor):
+            imds (torch.Tensor):
         """
-        
+
         # extract all local neighborhoods of size n_molecules centered around each atom
 
         # pick centers of each local neighborhood (always an Oxygen atom)
@@ -505,9 +516,7 @@ class BoltzmannEstimator:
         full_list = []
         for bin_index in range(1, 101):
             # Filter elements belonging to the current bin
-            bin_elements = bond_lens_temp[
-                (bin_assignments == bin_index).squeeze(-1)
-            ]
+            bin_elements = bond_lens_temp[(bin_assignments == bin_index).squeeze(-1)]
 
             # Randomly sample elements from the bin, if available
             if len(bin_elements) >= samples_per_bin:
@@ -538,7 +547,7 @@ class BoltzmannEstimator:
         )
         bond_lens = full_list
 
-        #Save relevant quantities
+        # Save relevant quantities
         np.save(
             os.path.join(
                 self.simulator.save_dir,
@@ -546,7 +555,7 @@ class BoltzmannEstimator:
             ),
             local_stacked_radii.cpu(),
         )
-        
+
         np.save(
             os.path.join(
                 self.simulator.save_dir,
@@ -563,4 +572,3 @@ class BoltzmannEstimator:
         )
 
         return stacked_radii, local_stacked_radii, atomic_indices, bond_lens, imds
-

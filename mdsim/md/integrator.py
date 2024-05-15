@@ -1,4 +1,3 @@
-
 import torch
 from mdsim.common.registry import registry
 from ase import units
@@ -10,7 +9,7 @@ class NoseHoover:
     NoseHoover thermostat operating on a batch of MD trajectories in parallel.
     Adapted from https://github.com/torchmd/mdgrad/tree/master/nff/md
     """
-    
+
     def __init__(self, calculator, masses, n_replicas, n_atoms, config, device):
         self.device = device
         self.calculator = calculator
@@ -34,7 +33,7 @@ class NoseHoover:
             velocities (torch.Tensor): Atom velocities (Shape: (N_replicas, N_atoms, 3))
             forces (torch.Tensor): Atomic forces (Shape: (N_replicas, N_atoms, 3))
             zeta (torch.Tensor): Thermostat zeta parameter (Shape: (N_replicas, 1, 1))
-            retain_grad (bool): Whether to store the computational graph 
+            retain_grad (bool): Whether to store the computational graph
                                 of the force calculation (default: False)
         Returns:
             Updated radii, velocities, energy, forces, zeta
@@ -80,6 +79,7 @@ class Langevin:
     """
     Langevin thermostat operating on a batch of MD trajectories in parallel.
     """
+
     def __init__(self, calculator, masses, n_replicas, n_atoms, config, device):
         self.device = device
         self.calculator = calculator
@@ -104,7 +104,7 @@ class Langevin:
             radii (torch.Tensor): Atom positions (Shape: (N_replicas, N_atoms, 3))
             velocities (torch.Tensor): Atom velocities (Shape: (N_replicas, N_atoms, 3))
             forces (torch.Tensor): Atomic forces (Shape: (N_replicas, N_atoms, 3))
-            retain_grad (bool): Whether to store the computational graph 
+            retain_grad (bool): Whether to store the computational graph
                                 of the force calculation (default: False)
         Returns:
             Updated radii, velocities, energy, forces, and random noise used to make the update

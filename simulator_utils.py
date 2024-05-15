@@ -19,6 +19,7 @@ import json
 from torchmd.observable import DifferentiableADF
 from torch.utils.tensorboard.summary import hparams
 
+
 def calculate_final_metrics(
     simulator,
     params,
@@ -33,10 +34,9 @@ def calculate_final_metrics(
     oxygen_atoms_mask=None,
     all_vacfs_per_replica=None,
 ):
-
     """
     Compute and save all final metrics during inference with a StABlE-trained model on held-out initial conditions.
-    These include energy/force losses, stability across replicas, and accuracy of various observables computed only 
+    These include energy/force losses, stability across replicas, and accuracy of various observables computed only
     over the stable portion of each replica trajectory. The per-replica observables are also saved. The quantities computed
     by this function are used to produce the final figures.
 
@@ -209,7 +209,7 @@ def calculate_final_metrics(
 
 def energy_force_gradient(simulator):
     """
-    Computes a single gradient (averaged across the training dataset batches) of the original 
+    Computes a single gradient (averaged across the training dataset batches) of the original
     energy and forces (QM) training objective.
 
     Returns a tuple of gradients with the same shape as simulator.model.parameters()
@@ -393,12 +393,16 @@ def save_checkpoint(simulator, best=False, name_=None):
                     for key, value in simulator.trainer.normalizers.items()
                 },
                 "config": simulator.model_config,
-                "ema": simulator.trainer.ema.state_dict()
-                if simulator.trainer.ema
-                else None,
-                "amp": simulator.trainer.scaler.state_dict()
-                if simulator.trainer.scaler
-                else None,
+                "ema": (
+                    simulator.trainer.ema.state_dict()
+                    if simulator.trainer.ema
+                    else None
+                ),
+                "amp": (
+                    simulator.trainer.scaler.state_dict()
+                    if simulator.trainer.scaler
+                    else None
+                ),
             },
             checkpoint_path,
         )
@@ -425,7 +429,9 @@ def create_frame(
     if pbc:
         # wrap for visualization purposes (last subtraction is for cell alignment in Ovito)
         # assumes cubic cell
-        radii = ((radii / torch.diag(cell)) % 1) * torch.diag(cell) - torch.diag(cell) / 2 
+        radii = ((radii / torch.diag(cell)) % 1) * torch.diag(cell) - torch.diag(
+            cell
+        ) / 2
     partpos = detach_numpy(radii).tolist()
     velocities = detach_numpy(velocities[0]).tolist()
     diameter = 10 * diameter_viz * np.ones((n_atoms,))
@@ -466,7 +472,7 @@ def thermo_log(
     pbc,
 ):
     """
-    Given an instantaneous snapshot of an MD trajectory, compute instantaneous 
+    Given an instantaneous snapshot of an MD trajectory, compute instantaneous
     quantities like temperature, energy, momentum, stability metrics, etc. Mainly for sanity checking.
     """
     # Log energies and instabilities
@@ -483,11 +489,11 @@ def thermo_log(
         "Momentum Magnitude": torch.norm(
             torch.sum(masses * velocities, axis=-2)
         ).item(),
-        "Max Bond Length Deviation": bond_length_dev(radii.unsqueeze(0))[1]
-        .mean()
-        .item()
-        if pbc
-        else instability.mean().item(),
+        "Max Bond Length Deviation": (
+            bond_length_dev(radii.unsqueeze(0))[1].mean().item()
+            if pbc
+            else instability.mean().item()
+        ),
     }
     if pbc:
         results_dict["Minimum Intermolecular Distance"] = instability.mean().item()

@@ -17,6 +17,7 @@ Various decorators for registry different kind of classes with unique keys
 
 class Registry:
     r"""Class for registry object which acts as central source of truth."""
+
     mapping = {
         # Mappings to respective classes.
         "task_name_mapping": {},

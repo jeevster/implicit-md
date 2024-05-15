@@ -67,6 +67,8 @@ OFFSET_LIST = [
 """
 These function were written for StABlE Training. 
 """
+
+
 def extract_cycle_epoch(s):
     # Regular expression to match the pattern
     pattern = r"post_cycle(\d+)(?:_epoch(\d+))?"
@@ -133,6 +135,8 @@ def print_active_torch_tensors():
 
 
 """Gradient utils"""
+
+
 def compare_gradients(grad1, grad2):
     """Compute cosine similarity and ratio between two sets of gradient updates for a given model"""
     assert len(grad1) == len(grad2)
@@ -298,6 +302,8 @@ def atoms_to_state_dict(atoms, r_max):
 """
 Everything below this point was taken from https://github.com/kyonofx/MDsim/blob/main/mdsim/common/utils.py
 """
+
+
 class Complete(object):
     def __call__(self, data):
         device = data.edge_index.device
@@ -360,6 +366,7 @@ def print_cuda_usage():
 
 def conditional_grad(dec):
     "Decorator to enable/disable grad depending on whether force/energy predictions are being made"
+
     # Adapted from https://stackoverflow.com/questions/60907323/accessing-class-property-as-decorator-argument
     def decorator(func):
         @wraps(func)
@@ -993,9 +1000,9 @@ def radius_graph_pbc(data, radius, max_num_neighbors_threshold, topk_per_pair=No
 
     # Compute neighbors per image
     _max_neighbors = copy.deepcopy(num_neighbors)
-    _max_neighbors[
-        _max_neighbors > max_num_neighbors_threshold
-    ] = max_num_neighbors_threshold
+    _max_neighbors[_max_neighbors > max_num_neighbors_threshold] = (
+        max_num_neighbors_threshold
+    )
     _num_neighbors = torch.zeros(len(atom_pos) + 1, device=device).long()
     _natoms = torch.zeros(num_atoms.shape[0] + 1, device=device).long()
     _num_neighbors[1:] = torch.cumsum(_max_neighbors, dim=0)

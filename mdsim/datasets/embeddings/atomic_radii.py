@@ -3,6 +3,7 @@ Atomic radii in picometers
 
 NaN stored for unavailable parameters.
 """
+
 ATOMIC_RADII = {
     0: float("NaN"),
     1: 25.0,

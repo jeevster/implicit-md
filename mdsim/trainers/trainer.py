@@ -576,9 +576,11 @@ class Trainer(ABC):
                         "step": self.step,
                         "state_dict": self.model.state_dict(),
                         "optimizer": self.optimizer.state_dict(),
-                        "scheduler": self.scheduler.scheduler.state_dict()
-                        if self.scheduler.scheduler_type != "Null"
-                        else None,
+                        "scheduler": (
+                            self.scheduler.scheduler.state_dict()
+                            if self.scheduler.scheduler_type != "Null"
+                            else None
+                        ),
                         "normalizers": {
                             key: value.state_dict()
                             for key, value in self.normalizers.items()

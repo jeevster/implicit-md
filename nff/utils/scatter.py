@@ -6,6 +6,7 @@ from itertools import repeat
 from torch.autograd import grad
 import torch
 
+
 def compute_grad(
     inputs,
     output,

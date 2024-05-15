@@ -23,17 +23,19 @@ from mdsim.common.utils import (
     save_experiment_log,
     setup_imports,
     setup_logging,
-    compose_data_cfg
+    compose_data_cfg,
 )
 
 sizes_dict = dict(
-    double_walled_nanotube= 5032, 
-    stachyose= 27272,
-    ac_Ala3_NHMe = 85109,
-    AT_AT_CG_CG =  10153,
-    AT_AT = 20001,
+    double_walled_nanotube=5032,
+    stachyose=27272,
+    ac_Ala3_NHMe=85109,
+    AT_AT_CG_CG=10153,
+    AT_AT=20001,
     buckyball_catcher=6102,
-    DHA = 69753)
+    DHA=69753,
+)
+
 
 class Runner(submitit.helpers.Checkpointable):
     def __init__(self):
@@ -43,26 +45,24 @@ class Runner(submitit.helpers.Checkpointable):
         setup_logging()
         self.config = copy.deepcopy(config)
 
-        if config['distributed']:
+        if config["distributed"]:
             distutils.setup(config)
 
         try:
             setup_imports()
-            
+
             # compose dataset configs.
-            train_data_cfg = config['dataset']
+            train_data_cfg = config["dataset"]
             train_data_cfg = compose_data_cfg(train_data_cfg)
-            config['dataset'] = [
+            config["dataset"] = [
                 train_data_cfg,
-                {'src': os.path.join(os.path.dirname(train_data_cfg['src']), 'val')}
+                {"src": os.path.join(os.path.dirname(train_data_cfg["src"]), "val")},
             ]
-            
+
             self.config = copy.deepcopy(config)
-            
+
             # initialize trainer.
-            self.trainer = registry.get_trainer_class(
-                config.get("trainer", "energy")
-            )(
+            self.trainer = registry.get_trainer_class(config.get("trainer", "energy"))(
                 task=config["task"],
                 model=config["model"],
                 dataset=config["dataset"],
@@ -78,11 +78,16 @@ class Runner(submitit.helpers.Checkpointable):
                 amp=config.get("amp", False),
                 cpu=config.get("cpu", False),
                 slurm=config.get("slurm", {}),
-                no_energy=config.get("no_energy", False)
+                no_energy=config.get("no_energy", False),
             )
-            
+
             # save config.
-            with open(os.path.join(self.trainer.config["cmd"]["checkpoint_dir"], 'config.yml'), 'w') as yf:
+            with open(
+                os.path.join(
+                    self.trainer.config["cmd"]["checkpoint_dir"], "config.yml"
+                ),
+                "w",
+            ) as yf:
                 yaml.dump(self.config, yf, default_flow_style=False)
 
             self.task = registry.get_task_class(config["mode"])(self.config)
@@ -93,7 +98,7 @@ class Runner(submitit.helpers.Checkpointable):
             if distutils.is_master():
                 logging.info(f"Total time taken: {time.time() - start_time}")
         finally:
-            if config['distributed']:
+            if config["distributed"]:
                 distutils.cleanup()
 
     def checkpoint(self, *args, **kwargs):
@@ -109,71 +114,86 @@ class Runner(submitit.helpers.Checkpointable):
 def modify_config(molecule, original_path, l_max=None, size=None):
     # Read the original config file
     if molecule == None or molecule not in sizes_dict:
-        raise Exception('You need to specify a [correct] molecule for nequip!!')
+        raise Exception("You need to specify a [correct] molecule for nequip!!")
     n_points = sizes_dict[molecule]
-    size_factor_dict = {"100percent": 1, "50percent": .5, "10percent": .1, "5percent": 0.05, "25percent": 0.25}
+    size_factor_dict = {
+        "100percent": 1,
+        "50percent": 0.5,
+        "10percent": 0.1,
+        "5percent": 0.05,
+        "25percent": 0.25,
+    }
     factor = size_factor_dict[size]
 
-    with open(original_path, 'r') as f:
+    with open(original_path, "r") as f:
         config = yaml.safe_load(f)
 
     # Overwrite the config parameters if provided
     if l_max is not None:
-        config['l_max'] = l_max
-        run_name = config.get('run_name', '')
-        config['run_name'] = run_name.replace('-lmax-', f'lmax={l_max}_')
+        config["l_max"] = l_max
+        run_name = config.get("run_name", "")
+        config["run_name"] = run_name.replace("-lmax-", f"lmax={l_max}_")
     else:
         raise Exception("Specify l_max!!")
     if size is not None:
-        run_name = config.get('run_name', '')
-        config['run_name'] = run_name.replace('_size_', f'_{size}_')
+        run_name = config.get("run_name", "")
+        config["run_name"] = run_name.replace("_size_", f"_{size}_")
 
-        dataset_file_name = config.get('dataset_file_name', '')
-        config['dataset_file_name'] = dataset_file_name.replace('/size/', f'/{size}/')
+        dataset_file_name = config.get("dataset_file_name", "")
+        config["dataset_file_name"] = dataset_file_name.replace("/size/", f"/{size}/")
 
-        validation_dataset_file_name = config.get('validation_dataset_file_name', '')
-        config['validation_dataset_file_name'] = validation_dataset_file_name.replace('/size/', f'/{size}/')
-    
-        
-        train_size = int(n_points * .7*factor )
-        val_size = int(n_points * .1 * factor)
+        validation_dataset_file_name = config.get("validation_dataset_file_name", "")
+        config["validation_dataset_file_name"] = validation_dataset_file_name.replace(
+            "/size/", f"/{size}/"
+        )
 
-        config['n_train'] = train_size
-        config['n_val'] = val_size  
+        train_size = int(n_points * 0.7 * factor)
+        val_size = int(n_points * 0.1 * factor)
+
+        config["n_train"] = train_size
+        config["n_val"] = val_size
     else:
         raise Exception("Specify size!!")
 
     # Set the directory where you want to create the temporary file
-    temp_dir = os.path.expanduser('~/MDsim/temp_configs')  # or use '.' for the current working directory
-    _, temp_filename = tempfile.mkstemp(dir=temp_dir, prefix=f'{molecule}_l={l_max}_{size}_')
-    
-    with open(temp_filename, 'w') as f:
+    temp_dir = os.path.expanduser(
+        "~/MDsim/temp_configs"
+    )  # or use '.' for the current working directory
+    _, temp_filename = tempfile.mkstemp(
+        dir=temp_dir, prefix=f"{molecule}_l={l_max}_{size}_"
+    )
+
+    with open(temp_filename, "w") as f:
         yaml.safe_dump(config, f)
-    
-    print("Temporary file created at:", temp_filename)  # Print the temporary file location
+
+    print(
+        "Temporary file created at:", temp_filename
+    )  # Print the temporary file location
     return temp_filename
 
 
 if __name__ == "__main__":
-    setup_logging() 
+    setup_logging()
     parser = flags.get_parser()
     torch.set_num_threads(10)
 
-    parser.add_argument('--l_max', type=int, help='The seed to overwrite in the config file')
+    parser.add_argument(
+        "--l_max", type=int, help="The seed to overwrite in the config file"
+    )
     # parser.add_argument('--size', help='The size to replace "all" in run_name in the config file')
     # parser.add_argument('--molecule', help='The molecule you are training on')
     args, override_args = parser.parse_known_args()
-    
+
     if args.nequip:
         os.environ["PATH"] += os.pathsep + os.path.expanduser("~/.local/bin")
-        temp_config_path = modify_config(args.molecule, args.config_yml, args.l_max, args.size)
-        os.system(f'nequip-train {temp_config_path}')
+        temp_config_path = modify_config(
+            args.molecule, args.config_yml, args.l_max, args.size
+        )
+        os.system(f"nequip-train {temp_config_path}")
     else:
         config = build_config(args, override_args)
         if args.submit:  # Run on cluster
-            slurm_add_params = config.get(
-                "slurm", None
-            )  # additional slurm arguments
+            slurm_add_params = config.get("slurm", None)  # additional slurm arguments
             if args.sweep_yml:  # Run grid search
                 configs = create_grid(config, args.sweep_yml)
             else:
@@ -198,9 +218,7 @@ if __name__ == "__main__":
                 config["slurm"] = copy.deepcopy(executor.parameters)
                 config["slurm"]["folder"] = str(executor.folder)
             jobs = executor.map_array(Runner(), configs)
-            logging.info(
-                f"Submitted jobs: {', '.join([job.job_id for job in jobs])}"
-            )
+            logging.info(f"Submitted jobs: {', '.join([job.job_id for job in jobs])}")
             log_file = save_experiment_log(args, jobs, configs)
             logging.info(f"Experiment log saved to: {log_file}")
 

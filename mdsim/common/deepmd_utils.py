@@ -1,4 +1,5 @@
 """Test trained DeePMD model."""
+
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, List, Dict, Optional, Tuple
