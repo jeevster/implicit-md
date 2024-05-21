@@ -6,11 +6,11 @@ PRIVATE/UNRELEASED repository for the paper [Stability-Aware Training of Neural 
 
 ## Quantum Mechanical Energy/Forces Pretraining
 
-- ```pretraining.py```: Top-level script for traditional energy/forces QM training of NNIPs. This should be run to convergence prior to StABlE Training. Example Usage: ```python pretraining.py --mode train --config-yml configs/pretraining/md17/schnet.yml --molecule aspirin```
+- ```pretraining.py```: Top-level script for traditional energy/forces QM training of NNIPs. This should be run to convergence prior to StABlE Training. For example, to train a SchNet model on aspirin 1k, run ```python pretraining.py --mode train --config-yml configs/pretraining/md17/schnet.yml --molecule aspirin -size 1k```
 
 ## StABlE Training
 
-- ```stable_training.py```: Top-level script for running the StABlE Training algorithm. Example Usage: ```python stable_training.py --config-yml configs/stable_training/md17/train.yml```
+- ```stable_training.py```: Top-level script for running the StABlE Training algorithm. For example, to finetune a SchNet model pretrained on aspirin, run ```python stable_training.py --config-yml configs/stable_training/md17/train.yml```
 - ```simulator.py```: Defines the ```Simulator``` class which performs forward MD simulations with a neural network interatomic potential (NNIP).
 - ```boltzmann_estimator.py```: Defines the ```BoltzmannEstimator``` class which computes the local and global N-sample Boltzmann Estimators (derived in the paper) necessary to train NNIPs to observables.
 - ```mdsim/```: Contains main components of the MD engine, including NNIP model architectures, calculators, integrators, and observables. Largely taken from the [MDsim](https://github.com/kyonofx/MDsim) repo.
