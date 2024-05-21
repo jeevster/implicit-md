@@ -1,8 +1,8 @@
 # StABlE-Training
-PRIVATE/UNRELEASED repository for the paper [Stability-Aware Training of Neural Network Interatomic Potentials with Differentiable Boltzmann Estimators](https://arxiv.org/abs/2402.13984).
+PRIVATE/UNRELEASED repository for the paper [Stability-Aware Training of Neural Network Interatomic Potentials with Differentiable Boltzmann Estimators](https://arxiv.org/abs/2402.13984). We borrow some infrastructure code from the [MDsim](https://github.com/kyonofx/MDsim) codebase which accompanied the [Forces are Not Enough](https://arxiv.org/abs/2210.07237) paper, and to a lesser extent the [TorchMD](https://github.com/torchmd/mdgrad) and [Neural Force Field](https://github.com/learningmatter-mit/NeuralForceField) codebases. 
 
 ## Download Data
-- Run ```python download_stable_paper_data.py --download_path [DOWNLOAD_PATH]``` to download the data for the systems considered in the paper (aspirin from [MD17](http://www.sgdml.org/#datasets), ac-Ala3-NHMe from [MD22](http://www.sgdml.org/#datasets), and Water from [Forces are Not Enough](https://arxiv.org/abs/2210.07237)). If you want to download other molecules (e.g benzene from MD17) or dataset sizes, you can run the corresponding system-specific file, e.g ```python data/md17.py --molecule benzene --size 50k```. Adding the ```--contiguous``` flag preserves time ordering (required to compute dynamical observables during StABlE Training).
+- Run ```python download_stable_paper_data.py --download_path [DOWNLOAD_PATH]``` to download all required data for the systems considered in the paper (aspirin from [MD17](http://www.sgdml.org/#datasets), ac-Ala3-NHMe from [MD22](http://www.sgdml.org/#datasets), and Water from [Forces are Not Enough](https://arxiv.org/abs/2210.07237)). If you want to download other molecules (e.g benzene from MD17) or dataset sizes, you can run the corresponding system-specific file, e.g ```python data/md17.py --molecule benzene --size 50k```. Adding the ```--contiguous``` flag preserves time ordering (required to compute dynamical observables during StABlE Training).
 
 ## Quantum Mechanical Energy/Forces Pretraining
 
@@ -11,9 +11,9 @@ PRIVATE/UNRELEASED repository for the paper [Stability-Aware Training of Neural 
 ## StABlE Training
 
 - ```stable_training.py```: Top-level script for running the StABlE Training algorithm. For example, to finetune a SchNet model pretrained on aspirin, run ```python stable_training.py --config-yml configs/stable_training/md17/train.yml```
-- ```simulator.py```: Defines the ```Simulator``` class which performs forward MD simulations with a neural network interatomic potential (NNIP).
+- ```simulator.py```: Defines the ```Simulator``` class which performs MD simulations with a neural network interatomic potential (NNIP).
 - ```boltzmann_estimator.py```: Defines the ```BoltzmannEstimator``` class which computes the local and global N-sample Boltzmann Estimators (derived in the paper) necessary to train NNIPs to observables.
-- ```mdsim/```: Contains main components of the MD engine, including NNIP model architectures, calculators, integrators, and observables. Largely taken from the [MDsim](https://github.com/kyonofx/MDsim) repo.
+- ```mdsim/```: Contains main components of the MD engine, including NNIP model architectures, calculators, integrators, and observables. Largely built upon the [MDsim](https://github.com/kyonofx/MDsim) repo.
 - ```configs/```: Contains configuration files for the three systems considered in the paper: Aspirin (MD17), ac-Ala3-NHMe (MD22), and Water. For StABlE Training, each system has a ```train.yml``` and ```simulate.yml``` for training and simulation evaluation respectively.
 
 ## Authors
