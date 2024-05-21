@@ -1,8 +1,15 @@
 # StABlE-Training
 PRIVATE/UNRELEASED repository for the paper [Stability-Aware Training of Neural Network Interatomic Potentials with Differentiable Boltzmann Estimators](https://arxiv.org/abs/2402.13984).
 
-## Overview of Main Files
+## Download Data
+- Run ```python download_stable_paper_data.py --download_path [DOWNLOAD_PATH]``` to download the data for the systems considered in the paper (aspirin from [MD17](http://www.sgdml.org/#datasets), ac-Ala3-NHMe from [MD22](http://www.sgdml.org/#datasets), and Water from [Forces are Not Enough](https://arxiv.org/abs/2210.07237)). If you want to download other molecules (e.g benzene from MD17) or dataset sizes, you can run the corresponding system-specific file, e.g ```python data/md17.py --molecule benzene --size 50k```. Adding the ```--contiguous``` flag preserves time ordering (required to compute dynamical observables during StABlE Training).
+
+## Quantum Mechanical Energy/Forces Pretraining
+
 - ```pretraining.py```: Top-level script for traditional energy/forces QM training of NNIPs. This should be run to convergence prior to StABlE Training. Example Usage: ```python pretraining.py --mode train --config-yml configs/pretraining/md17/schnet.yml --molecule aspirin```
+
+## StABlE Training
+
 - ```stable_training.py```: Top-level script for running the StABlE Training algorithm. Example Usage: ```python stable_training.py --config-yml configs/stable_training/md17/train.yml```
 - ```simulator.py```: Defines the ```Simulator``` class which performs forward MD simulations with a neural network interatomic potential (NNIP).
 - ```boltzmann_estimator.py```: Defines the ```BoltzmannEstimator``` class which computes the local and global N-sample Boltzmann Estimators (derived in the paper) necessary to train NNIPs to observables.
