@@ -12,7 +12,7 @@ from tqdm import tqdm
 from urllib import request as request
 from sklearn.model_selection import train_test_split
 
-from latentsde.src.data.arrays_to_graphs import AtomsToGraphs
+from arrays_to_graphs import AtomsToGraphs
 from mdsim.common.utils import EV_TO_KCAL_MOL
 
 MD22_mols = [
@@ -90,7 +90,7 @@ def write_to_lmdb(molecule, data_path, db_path, size, contiguous=False):
         )
 
         if contiguous:
-            # extract contiguous samples so we can use the data for DDP training
+            # extract contiguous samples so we can compute dynamical observables
             train = np.linspace(0, train_size - 1, train_size, dtype=np.int32)
             val = np.linspace(
                 train_size, train_size + val_size - 1, val_size, dtype=np.int32

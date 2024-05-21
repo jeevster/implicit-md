@@ -48,7 +48,7 @@ use_sc: true                                                                    
 # all arrays are expected to have the shape of (nframe, natom, ?) except the fixed fields
 # note that if your data set uses pbc, you need to also pass an array that maps to the nequip "pbc" key
 dataset: npz                                                                       # type of data set, can be npz or ase
-dataset_file_name: postprocessed_data/md17/salicylic_acid/10k/train/nequip_npz.npz                       # path to data set file
+dataset_file_name: DATAPATH/md17/salicylic_acid/10k/train/nequip_npz.npz                       # path to data set file
 key_mapping:
   z: atomic_numbers                                                                # atomic species, integers
   E: total_energy                                                                  # total potential eneriges to train to
@@ -58,7 +58,7 @@ npz_fixed_field_keys:                                                           
   - atomic_numbers
 
 validation_dataset: npz
-validation_dataset_file_name: postprocessed_data/md17/salicylic_acid/10k/val/nequip_npz.npz                   # path to data set file
+validation_dataset_file_name: DATAPATH/md17/salicylic_acid/10k/val/nequip_npz.npz                   # path to data set file
 
 # A list of atomic types to be found in the data. The NequIP types will be named with the chemical symbols, and inputs with the correct atomic numbers will be mapped to the corresponding types.
 chemical_symbols:

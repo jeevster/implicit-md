@@ -1,7 +1,7 @@
 trainer: trainer
 
 dataset:
-  src: postprocessed_data/md17
+  src: DATAPATH/md17
   name: md17
   size: 10k
   molecule: aspirin

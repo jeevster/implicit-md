@@ -1,7 +1,7 @@
 trainer: trainer
 
 dataset:
-  src: postprocessed_data/md22
+  src: DATAPATH/md22
   name: md22
   size: all
   molecule: stachyose
