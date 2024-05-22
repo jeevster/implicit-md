@@ -112,7 +112,8 @@ class Runner(submitit.helpers.Checkpointable):
 
 
 def modify_config(molecule, original_path, l_max=None, size=None):
-    # Read the original config file
+    # Function that modifies nequip config to include command line specified l_max, size, and 
+    # amount of data.
     if molecule == None or molecule not in sizes_dict:
         raise Exception("You need to specify a [correct] molecule for nequip!!")
     n_points = sizes_dict[molecule]
@@ -147,6 +148,7 @@ def modify_config(molecule, original_path, l_max=None, size=None):
             "/size/", f"/{size}/"
         )
 
+        #nequip takes in the number of data points used, not the percentage, so we need to convert from percentages to  num points
         train_size = int(n_points * 0.7 * factor)
         val_size = int(n_points * 0.1 * factor)
 
@@ -155,7 +157,7 @@ def modify_config(molecule, original_path, l_max=None, size=None):
     else:
         raise Exception("Specify size!!")
 
-    # Set the directory where you want to create the temporary file
+    # Set the directory where you want to create the temporary file that the training run will use
     temp_dir = os.path.expanduser(
         "~/MDsim/temp_configs"
     )  # or use '.' for the current working directory
@@ -185,6 +187,10 @@ if __name__ == "__main__":
     args, override_args = parser.parse_known_args()
 
     if args.nequip:
+        # Training was done over different dataset sizes, molecules, and l-values. In order to specify all
+        #  of these parameters on the command line (making scripting of many training runs at once easier),
+        #  we overwrite the nequip config with our command line arguments, using the modify_config function below.
+        #  We can then pass this config to the nequip library, without breaking any abstraction barriers
         os.environ["PATH"] += os.pathsep + os.path.expanduser("~/.local/bin")
         temp_config_path = modify_config(
             args.molecule, args.config_yml, args.l_max, args.size
