@@ -9,8 +9,12 @@ PRIVATE/UNRELEASED repository for the paper [Stability-Aware Training of Neural 
 - ```pretraining.py```: Top-level script for traditional energy/forces QM training of NNIPs. This should be run to convergence prior to StABlE Training. For example, to train a SchNet model on aspirin 1k, run ```python pretraining.py --mode train --config-yml configs/pretraining/md17/schnet.yml --molecule aspirin -size 1k```
 
 ## StABlE Training
+```stable_training.py``` is the top-level script for running the StABlE Training algorithm.
 
-- ```stable_training.py```: Top-level script for running the StABlE Training algorithm. For example, to finetune a SchNet model pretrained on aspirin, run ```python stable_training.py --config-yml configs/stable_training/md17/train.yml```
+- Training: run the script with the ```train.yml``` config. For example, to finetune a SchNet model pretrained on aspirin, run ```python stable_training.py --config-yml configs/stable_training/md17/train.yml```.
+- Evaluation: to evaluate the final performance of the StABlE-trained model in MD simulations, run the script with the ```simulate.yml``` config. For example, ```python stable_training.py --config-yml configs/stable_training/md17/simulate.yml --eval_model [EVAL_MODEL]```.
+  - The ```--eval_model``` flag specifies which checkpoint from StABlE Training to use for evaluation. Setting it to ```"pre"``` uses the QM-pretrained checkpoint (i.e before StABlE Training). Setting to a value of ```"10k"``` or       ```"50k"``` will load the QM-pretrained checkpoint on the 10k or 50k dataset respectively. Setting it to ```"post"``` uses the final checkpoint from StABlE Training. You can also set it to a value of ```"post_cycle[i]_epoch[j]"```, in which case the checkpoint from the jth epoch from the ith cycle of StABlE Training will be used. Setting to ```"post_cycle[i]"``` will load the checkpoint of the final epoch in cycle i. 
+## Important Files
 - ```simulator.py```: Defines the ```Simulator``` class which performs MD simulations with a neural network interatomic potential (NNIP).
 - ```boltzmann_estimator.py```: Defines the ```BoltzmannEstimator``` class which computes the local and global N-sample Boltzmann Estimators (derived in the paper) necessary to train NNIPs to observables.
 - ```mdsim/```: Contains main components of the MD engine, including NNIP model architectures, calculators, integrators, and observables. Largely built upon the [MDsim](https://github.com/kyonofx/MDsim) repo.
