@@ -1,5 +1,5 @@
 includes:
-- configs/md17/base.yml
+- configs/pretraining/md17/base.yml
 
 model:
   name: gemnet_t

@@ -781,6 +781,7 @@ class Trainer(ABC):
                 self.model.train()
 
                 # Get a batch.
+                breakpoint()
                 batch = next(train_loader_iter)
 
                 # Forward, loss, backward.

@@ -619,6 +619,7 @@ def build_config(args, args_override):
         config["molecule"] = args.molecule
     if args.size is not None:
         config["size"] = args.size
+        config["dataset"]["size"] = args.size
 
     # Some other flags.
     config["mode"] = args.mode

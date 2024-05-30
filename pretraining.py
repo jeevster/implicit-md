@@ -187,15 +187,8 @@ if __name__ == "__main__":
     args, override_args = parser.parse_known_args()
 
     if args.nequip:
-        # Training was done over different dataset sizes, molecules, and l-values. In order to specify all
-        #  of these parameters on the command line (making scripting of many training runs at once easier),
-        #  we overwrite the nequip config with our command line arguments, using the modify_config function below.
-        #  We can then pass this config to the nequip library, without breaking any abstraction barriers
         os.environ["PATH"] += os.pathsep + os.path.expanduser("~/.local/bin")
-        temp_config_path = modify_config(
-            args.molecule, args.config_yml, args.l_max, args.size
-        )
-        os.system(f"nequip-train {temp_config_path}")
+        os.system(f"nequip-train {args.config_yml}")
     else:
         config = build_config(args, override_args)
         if args.submit:  # Run on cluster
