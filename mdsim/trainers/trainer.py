@@ -309,8 +309,6 @@ class Trainer(ABC):
                 self.config["optim"]["batch_size"],
                 shuffle=True,
             )
-            indices = list(self.train_sampler)
-
             self.train_loader = self.get_dataloader(
                 self.train_dataset,
                 self.train_sampler,
