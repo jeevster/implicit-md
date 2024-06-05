@@ -302,12 +302,12 @@ def atoms_to_state_dict(atoms, r_max):
 """
 Everything below this point was taken from https://github.com/kyonofx/MDsim/blob/main/mdsim/common/utils.py
 """
-def save_checkpoint(
-    state, checkpoint_dir="", checkpoint_file="checkpoint.pt"
-):
+
+
+def save_checkpoint(state, checkpoint_dir="", checkpoint_file="checkpoint.pt"):
     filename = os.path.join(checkpoint_dir, checkpoint_file)
     torch.save(state, filename)
-    
+
 
 class Complete(object):
     def __call__(self, data):
