@@ -26,6 +26,7 @@ from mdsim.common.data_parallel import (
     ParallelCollater,
 )
 from mdsim.common.registry import registry
+from mdsim.common.utils import save_checkpoint
 
 from mdsim.modules.evaluator import Evaluator
 from mdsim.modules.exponential_moving_average import (
@@ -298,8 +299,8 @@ class Trainer(ABC):
         )
 
         self.train_loader = self.val_loader = self.test_loader = None
-
         if self.config.get("dataset", None):
+
             self.train_dataset = registry.get_dataset_class(
                 self.config["task"]["dataset"]
             )(self.config["dataset"])
@@ -308,6 +309,8 @@ class Trainer(ABC):
                 self.config["optim"]["batch_size"],
                 shuffle=True,
             )
+            indices = list(self.train_sampler)
+
             self.train_loader = self.get_dataloader(
                 self.train_dataset,
                 self.train_sampler,
@@ -781,7 +784,6 @@ class Trainer(ABC):
                 self.model.train()
 
                 # Get a batch.
-                breakpoint()
                 batch = next(train_loader_iter)
 
                 # Forward, loss, backward.
