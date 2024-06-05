@@ -112,7 +112,7 @@ class Runner(submitit.helpers.Checkpointable):
 
 
 def modify_config(molecule, original_path, l_max=None, size=None):
-    # Function that modifies nequip config to include command line specified l_max, size, and 
+    # Function that modifies nequip config to include command line specified l_max, size, and
     # amount of data.
     if molecule == None or molecule not in sizes_dict:
         raise Exception("You need to specify a [correct] molecule for nequip!!")
@@ -148,7 +148,7 @@ def modify_config(molecule, original_path, l_max=None, size=None):
             "/size/", f"/{size}/"
         )
 
-        #nequip takes in the number of data points used, not the percentage, so we need to convert from percentages to  num points
+        # nequip takes in the number of data points used, not the percentage, so we need to convert from percentages to  num points
         train_size = int(n_points * 0.7 * factor)
         val_size = int(n_points * 0.1 * factor)
 

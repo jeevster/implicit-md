@@ -304,6 +304,11 @@ Everything below this point was taken from https://github.com/kyonofx/MDsim/blob
 """
 
 
+def save_checkpoint(state, checkpoint_dir="", checkpoint_file="checkpoint.pt"):
+    filename = os.path.join(checkpoint_dir, checkpoint_file)
+    torch.save(state, filename)
+
+
 class Complete(object):
     def __call__(self, data):
         device = data.edge_index.device
@@ -596,7 +601,6 @@ def load_config(path: str, previous_includes: list = []):
 
 def build_config(args, args_override):
     config, duplicates_warning, duplicates_error = load_config(args.config_yml)
-
     if len(duplicates_warning) > 0:
         logging.warning(
             f"Overwritten config parameters from included configs "
