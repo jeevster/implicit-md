@@ -9,7 +9,7 @@ temperature: 300.
 timestep: 1
 eq_steps: 0
 steps: 1000
-n_dump: 100 
+n_dump: 1000 
 n_replicas: 10
 n_epochs: 200
 

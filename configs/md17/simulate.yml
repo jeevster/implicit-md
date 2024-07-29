@@ -6,6 +6,6 @@ max_frac_unstable_threshold: 0.99 #decay this?
 temperature: 500.
 steps: 2000 # 1 picosecond per epoch
 timestep: 0.5
-n_replicas: 32 #can do more at inference?
-n_dump: 100
+n_replicas: 256 #can do more at inference?
+n_dump: 2000
 n_epochs: 300 #corresponding to 300 ps
