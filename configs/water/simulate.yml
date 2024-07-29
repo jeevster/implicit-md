@@ -10,7 +10,7 @@ timestep: 1
 eq_steps: 0
 steps: 1000
 n_dump: 1000 
-n_replicas: 10
+n_replicas: 5
 n_epochs: 200
 
 
