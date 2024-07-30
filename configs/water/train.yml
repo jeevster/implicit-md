@@ -17,7 +17,7 @@ diameter_viz: 0.08
 gaussian_width: 0.01
 exp_name: "TEST_npt"
 integrator: Berendsen
-integrator_config: {"ttime": 20., "gamma": 0.1, "taut": 500, "taup": 1000, "compressibility_au": 72.84, "pressure_au": 0.000000632268, "fix_com": True} # corresponds to 1 atm (compressibility calculated at 20C and 1 bar from https://www.linkedin.com/pulse/water-bulk-modulus-compressibility-nikhilesh-mukherjee/ )
+integrator_config: {"ttime": 20., "gamma": 0.1, "taut": 20, "taup": 10000, "compressibility_au": 72.84, "pressure_au": 0.000000632268, "fix_com": True} # corresponds to 1 atm (compressibility calculated at 20C and 1 bar from https://www.linkedin.com/pulse/water-bulk-modulus-compressibility-nikhilesh-mukherjee/ )
 timestep: 1
 temperature: 300.
 train: True

@@ -580,15 +580,14 @@ class ImplicitMDSimulator():
         tautscl = self.dt / self.taut
         p_dof = 3*self.n_atoms
         ke = 1/2 * (self.masses*torch.square(velocities)).sum(axis = (1,2)).unsqueeze(-1)
-        old_temperature = (2*ke/p_dof).mean() / units.kB
+        old_temperature = (2*ke/p_dof) / units.kB
 
-        scl_temperature = torch.sqrt(1.0 + ((self.temp/units.kB) / old_temperature - 1.0) * tautscl)
+        temp = torch.tensor(self.temp).to(self.device)
+        scl_temperature = torch.sqrt(1.0 + ((temp/units.kB) / old_temperature - 1.0) * tautscl).unsqueeze(-1)
         
         # Limit the velocity scaling to reasonable values
-        if scl_temperature > 1.1:
-            scl_temperature = 1.1
-        if scl_temperature < 0.9:
-            scl_temperature = 0.9
+        scl_temperature = torch.clamp(scl_temperature, 0.9, 1.1)
+        
         p = self.masses * velocities
         p = scl_temperature * p
         velocities = p / self.masses
