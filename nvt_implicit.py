@@ -671,6 +671,7 @@ class ImplicitMDSimulator():
             #     #half-step outside loop to ensure symplecticity
             #     self.velocities = self.velocities + self.dt/2*(forces/self.masses - self.gamma*self.velocities) + self.noise_f/torch.sqrt(torch.tensor(2.0).to(self.device))*torch.randn_like(self.velocities)
             zeta = self.zeta
+            cell = self.cell
             #Run MD
             print("Start MD trajectory", file=self.f)
             for step in tqdm(range(self.nsteps)):
@@ -680,8 +681,10 @@ class ImplicitMDSimulator():
                     radii, velocities, forces, zeta = self.forward_nosehoover(self.radii, self.velocities, forces, zeta, retain_grad = False)
                 elif self.integrator == 'Langevin':
                     radii, velocities, forces, noise = self.forward_langevin(self.radii, self.velocities, forces, retain_grad = False)
+                elif self.integrator == 'Berendsen':
+                    radii, velocities, forces, cell = self.forward_berendsen(self.radii, self.velocities, forces, cell, retain_grad = False)
                 else:
-                    raise RuntimeError("Must choose either NoseHoover or Langevin as integrator")
+                    raise RuntimeError("Must choose either NoseHoover, Langevin, or Berendsen as integrator")
                 
                 #save trajectory for gradient calculation
                 if step >= self.eq_steps:# and step % self.n_dump == 0:
