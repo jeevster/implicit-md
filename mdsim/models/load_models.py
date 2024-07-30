@@ -2,7 +2,7 @@ import torch
 import os
 import yaml
 from mdsim.models.schnet import SchNetWrap
-from mdsim.models.dimenet_plus_plus import DimeNetPlusPlusWrap
+# from mdsim.models.dimenet_plus_plus import DimeNetPlusPlusWrap
 from mdsim.models.forcenet import ForceNet
 from mdsim.models.gemnet.gemnet import GemNetT
 from mdsim.common.registry import registry
