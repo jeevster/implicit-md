@@ -218,7 +218,7 @@ class ImplicitMDSimulator():
         self.taup = self.integrator_config["taup"] * units.fs
         self.taut = self.integrator_config["taut"] * units.fs
         self.compressibility_au = self.integrator_config["compressibility_au"]
-        self.pressure_au = self.integrator_config["pressure_au"]
+        self.pressure_au = torch.tensor([self.integrator_config["pressure_au"]]).to(self.device)
         self.fix_com = self.integrator_config["fix_com"]
 
 
@@ -576,38 +576,38 @@ class ImplicitMDSimulator():
     def forward_berendsen(self, radii, velocities, forces, cell, retain_grad = False):
 
         # scale velocities based on current temperature
+        
         tautscl = self.dt / self.taut
         p_dof = 3*self.n_atoms
         ke = 1/2 * (self.masses*torch.square(velocities)).sum(axis = (1,2)).unsqueeze(-1)
         old_temperature = (2*ke/p_dof).mean() / units.kB
 
-        scl_temperature = np.sqrt(1.0 + (self.temp / old_temperature - 1.0) * tautscl)
+        scl_temperature = torch.sqrt(1.0 + ((self.temp/units.kB) / old_temperature - 1.0) * tautscl)
         
         # Limit the velocity scaling to reasonable values
         if scl_temperature > 1.1:
             scl_temperature = 1.1
         if scl_temperature < 0.9:
             scl_temperature = 0.9
-
         p = self.masses * velocities
         p = scl_temperature * p
         velocities = p / self.masses
 
         # scale positions and cell
         taupscl = self.dt / self.taup
-        volume = None #TODO
+        volume = vmap(torch.diag)(cell).prod(dim = 1) # assumes cubic cell
         # calculate stress
         stress = get_stress(radii, velocities, forces, self.masses, volume)
         # stress = self.atoms.get_stress(voigt=False, include_ideal_gas=True) # TODO: replace
-        old_pressure = -stress.trace() / 3
-        scl_pressure = (1.0 - taupscl * self.compressibility_au / 3.0 *
-                        (self.pressure_au - old_pressure))
+        
+        old_pressure = -vmap(torch.diag)(stress).mean(dim = 1)
+        scl_pressure = (1.0 - taupscl * self.compressibility_au / 3.0 * (self.pressure_au - old_pressure))
 
         # TODO: make sure we are doing this correctly - updating cell with atom position scaling
         new_cell = cell
-        new_cell = scl_pressure * new_cell
-        M = np.linalg.solve(cell.complete(), new_cell.complete())
-        radii = np.dot(radii, M)
+        new_cell = scl_pressure.unsqueeze(-1).unsqueeze(-1) * new_cell
+        M = torch.linalg.solve(cell, new_cell)
+        radii = torch.bmm(radii, M)
         cell = new_cell
         # self.atoms.set_cell(cell, scale_atoms=True)
 
@@ -671,7 +671,7 @@ class ImplicitMDSimulator():
             #     #half-step outside loop to ensure symplecticity
             #     self.velocities = self.velocities + self.dt/2*(forces/self.masses - self.gamma*self.velocities) + self.noise_f/torch.sqrt(torch.tensor(2.0).to(self.device))*torch.randn_like(self.velocities)
             zeta = self.zeta
-            cell = self.cell
+            cell = self.cell.unsqueeze(0).repeat(self.n_replicas, 1, 1)
             #Run MD
             print("Start MD trajectory", file=self.f)
             for step in tqdm(range(self.nsteps)):

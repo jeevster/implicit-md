@@ -24,19 +24,17 @@ def get_stress(positions, velocities, forces, masses, volume):
     torch.Tensor: Stress tensor of shape [B, 3, 3].
     """
     B, N, _ = positions.shape
-    
-    # Kinetic contribution to stress tensor
-    kinetic_contrib = (masses * velocities.unsqueeze(-1) * velocities.unsqueeze(-2)).sum(dim=1) / volume
-    
-    # Position difference tensor of shape [B, N, N, 3]
-    position_diffs = positions.unsqueeze(2) - positions.unsqueeze(1)
-    
-    # Force contribution: shape [B, N, N, 3]
-    force_contribs = (position_diffs.unsqueeze(-1) * forces.unsqueeze(1).unsqueeze(-2)).sum(dim=1)
-    
-    # Sum the upper triangular elements excluding the diagonal (to avoid double counting)
-    upper_tri_mask = torch.triu(torch.ones(N, N), diagonal=1).unsqueeze(0).unsqueeze(-1).unsqueeze(-1).to(positions.device)
-    stress_tensor = (force_contribs * upper_tri_mask).sum(dim=1) / volume + kinetic_contrib
+    V = volume.unsqueeze(-1).unsqueeze(-1)
+
+    # Potential (Virial) Contribution
+    outer_product = positions.unsqueeze(-1) * forces.unsqueeze(-2)
+    stress_tensor_potential = outer_product.sum(dim=1) / V
+
+    # Kinetic Contribution
+    kinetic_contrib = (masses.unsqueeze(-1) * velocities.unsqueeze(-1) * velocities.unsqueeze(-2)).sum(dim=1) / V
+
+    # Total Stress Tensor
+    stress_tensor = stress_tensor_potential + kinetic_contrib
     
     return stress_tensor
 
