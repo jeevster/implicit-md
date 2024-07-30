@@ -9,6 +9,37 @@ from ase.md.langevin import Langevin
 import torch
 from nff.utils.scatter import compute_grad
 
+def get_stress(positions, velocities, forces, masses, volume):
+    """
+    Compute the stress tensor for a batch of systems. Useful for NPT simulation
+    
+    Parameters:
+    positions (torch.Tensor): Tensor of shape [B, N, 3] representing positions of atoms.
+    velocities (torch.Tensor): Tensor of shape [B, N, 3] representing velocities of atoms.
+    forces (torch.Tensor): Tensor of shape [B, N, 3] representing forces on atoms.
+    masses (torch.Tensor): Tensor of shape [1, N, 1] representing masses of atoms.
+    volume (float): Volume of the system.
+    
+    Returns:
+    torch.Tensor: Stress tensor of shape [B, 3, 3].
+    """
+    B, N, _ = positions.shape
+    
+    # Kinetic contribution to stress tensor
+    kinetic_contrib = (masses * velocities.unsqueeze(-1) * velocities.unsqueeze(-2)).sum(dim=1) / volume
+    
+    # Position difference tensor of shape [B, N, N, 3]
+    position_diffs = positions.unsqueeze(2) - positions.unsqueeze(1)
+    
+    # Force contribution: shape [B, N, N, 3]
+    force_contribs = (position_diffs.unsqueeze(-1) * forces.unsqueeze(1).unsqueeze(-2)).sum(dim=1)
+    
+    # Sum the upper triangular elements excluding the diagonal (to avoid double counting)
+    upper_tri_mask = torch.triu(torch.ones(N, N), diagonal=1).unsqueeze(0).unsqueeze(-1).unsqueeze(-1).to(positions.device)
+    stress_tensor = (force_contribs * upper_tri_mask).sum(dim=1) / volume + kinetic_contrib
+    
+    return stress_tensor
+
 
 class NoseHoover(MolecularDynamics):
     def __init__(self,

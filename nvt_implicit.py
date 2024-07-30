@@ -41,6 +41,7 @@ from nequip.utils.torch_geometric import Batch, Dataset
 from nequip.utils import atomic_write, load_file
 from ase.neighborlist import natural_cutoffs, NeighborList
 from mdsim.md.ase_utils import OCPCalculator
+from mdsim.md.integrator import get_stress
 from mdsim.common.registry import registry
 from mdsim.common.utils import extract_cycle_epoch, save_checkpoint, cleanup_atoms_batch, setup_imports, setup_logging, compute_bond_lengths, data_to_atoms, atoms_to_batch, atoms_to_state_dict, convert_atomic_numbers_to_types, process_gradient, compare_gradients, initialize_velocities, dump_params_to_yml
 from mdsim.common.custom_radius_graph import detach_numpy
@@ -195,10 +196,11 @@ class ImplicitMDSimulator():
         self.integrator_config =  config['integrator_config']
         self.dt = config["timestep"] * units.fs
         self.temp = config["temperature"]
+        
         print(f"Simulation Temperature: {self.temp}")
         
         # adjust units.
-        if self.integrator in ['NoseHoover', 'NoseHooverChain', 'Langevin']:
+        if self.integrator in ['NoseHoover', 'NoseHooverChain', 'Langevin', 'Berendsen']:
             self.temp *= units.kB
         self.targeEkin = 0.5 * (3.0 * self.n_atoms) * self.temp
         
@@ -211,6 +213,14 @@ class ImplicitMDSimulator():
         #Langevin thermostat stuff
         self.gamma = self.integrator_config["gamma"] / (1000*units.fs)
         self.noise_f = (2.0 * self.gamma/self.masses * self.temp * self.dt).sqrt().to(self.device)
+
+        # Berendsen thermostat stuff (NPT)
+        self.taup = self.integrator_config["taup"] * units.fs
+        self.taut = self.integrator_config["taut"] * units.fs
+        self.compressibility_au = self.integrator_config["compressibility_au"]
+        self.pressure_au = self.integrator_config["pressure_au"]
+        self.fix_com = self.integrator_config["fix_com"]
+
 
         self.nsteps = params.steps
         self.eq_steps = params.eq_steps
@@ -561,6 +571,72 @@ class ImplicitMDSimulator():
             except:
                 pass
         return radii, velocities, forces, noise
+
+    
+    def forward_berendsen(self, radii, velocities, forces, cell, retain_grad = False):
+
+        # scale velocities based on current temperature
+        tautscl = self.dt / self.taut
+        p_dof = 3*self.n_atoms
+        ke = 1/2 * (self.masses*torch.square(velocities)).sum(axis = (1,2)).unsqueeze(-1)
+        old_temperature = (2*ke/p_dof).mean() / units.kB
+
+        scl_temperature = np.sqrt(1.0 + (self.temp / old_temperature - 1.0) * tautscl)
+        
+        # Limit the velocity scaling to reasonable values
+        if scl_temperature > 1.1:
+            scl_temperature = 1.1
+        if scl_temperature < 0.9:
+            scl_temperature = 0.9
+
+        p = self.masses * velocities
+        p = scl_temperature * p
+        velocities = p / self.masses
+
+        # scale positions and cell
+        taupscl = self.dt / self.taup
+        volume = None #TODO
+        # calculate stress
+        stress = get_stress(radii, velocities, forces, self.masses, volume)
+        # stress = self.atoms.get_stress(voigt=False, include_ideal_gas=True) # TODO: replace
+        old_pressure = -stress.trace() / 3
+        scl_pressure = (1.0 - taupscl * self.compressibility_au / 3.0 *
+                        (self.pressure_au - old_pressure))
+
+        # TODO: make sure we are doing this correctly - updating cell with atom position scaling
+        new_cell = cell
+        new_cell = scl_pressure * new_cell
+        M = np.linalg.solve(cell.complete(), new_cell.complete())
+        radii = np.dot(radii, M)
+        cell = new_cell
+        # self.atoms.set_cell(cell, scale_atoms=True)
+
+        # one step velocity verlet
+
+        p = self.masses * velocities
+        p += 0.5 * self.dt * forces
+
+        if self.fix_com:
+            # calculate the center of mass
+            # momentum and subtract it
+            psum = p.sum(axis=1, keepdims=True) / p.shape[1]
+            p = p - psum
+
+        radii = radii + self.dt * p / self.masses
+
+        # We need to store the momenta on the atoms before calculating
+        # the forces, as in a parallel Asap calculation atoms may
+        # migrate during force calculations, and the momenta need to
+        # migrate along with the atoms.  For the same reason, we
+        # cannot use self.masses in the line above.
+
+        velocities = p / self.masses
+        _, forces = self.force_calc(radii, retain_grad)
+        accel = forces / self.masses
+        
+        velocities = velocities + 0.5 * self.dt * accel
+
+        return radii, velocities, forces, cell
 
     #main MD loop
     def solve(self):
