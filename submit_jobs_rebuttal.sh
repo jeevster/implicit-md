@@ -58,3 +58,5 @@ lr=0.003
 # Longer Langevin sims for water (pre and post)
 sbatch run_implicit_simulate.sh $system $model $lr 1 0 $ef_weight 'pre_langevinlong' 300 'Langevin' 1000
 sbatch run_implicit_simulate.sh $system $model $lr 1 0 $ef_weight 'post_cycle1_langevinlong' 300 'Langevin' 1000
+
+
