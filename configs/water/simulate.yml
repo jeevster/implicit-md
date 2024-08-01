@@ -5,10 +5,10 @@ dr: 0.012 #coarser histogram because of local environments
 stability_criterion: rdf
 imd_tol: 3.0
 max_frac_unstable_threshold: 0.95
-eval_model: 10k
+eval_model: pre_nopbcfix
 results_dir: 'results_water_localneighborhoods'
 exp_name: "TEST_pbcfix"
-model: dimenetplusplus
+model: gemnet_t
 temperature: 300.
 timestep: 1
 eq_steps: 0
