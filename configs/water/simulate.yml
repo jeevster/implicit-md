@@ -3,16 +3,19 @@ includes:
 train: False
 dr: 0.012 #coarser histogram because of local environments
 stability_criterion: rdf
-eval_model: pre
 imd_tol: 3.0
 max_frac_unstable_threshold: 0.95
+eval_model: 90k
+results_dir: 'results_water_localneighborhoods'
+exp_name: "TEST_pbcfix"
+model: forcenet
 temperature: 300.
 timestep: 1
 eq_steps: 0
 steps: 1000
 n_dump: 100 
-n_replicas: 8
-n_epochs: 200
+n_replicas: 5
+n_epochs: 500
 
 
 
