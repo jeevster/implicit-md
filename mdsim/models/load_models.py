@@ -37,7 +37,10 @@ def load_pretrained_model(model_type, path = None, ckpt_epoch = -1, cycle = None
         checkpoint = {k: v.to(device) for k,v in torch.load(ckpt_and_config_path, map_location = torch.device("cpu"))['state_dict'].items()}
     #checkpoint =  torch.load(ckpt_path, map_location = device)["state_dict"]
     try:
+        # removing "module." from the keys (comes from training model with nn.DataParallel)
         new_dict = {k[7:]: v for k, v in checkpoint.items()}
+        if 'atomic_mass' in new_dict:
+            del new_dict['atomic_mass']
         model.load_state_dict(new_dict)
     except:
         model.load_state_dict(checkpoint)
