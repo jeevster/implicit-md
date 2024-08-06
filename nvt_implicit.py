@@ -283,9 +283,6 @@ class ImplicitMDSimulator():
         self.radii = (radii + torch.normal(torch.zeros_like(radii), self.ic_stddev)).to(self.device)
         self.velocities = torch.Tensor(initialize_velocities(self.n_atoms, self.masses, self.temp, self.n_replicas)).to(self.device)
 
-        cell = self.cell.unsqueeze(0).repeat(self.n_replicas, 1, 1)
-        self.npt_integrator = NPT(self.radii, self.velocities, self.masses, cell, self.force_calc, self.dt, self.temp, self.pressure_au, self.ttime * units.fs, self.pfactor)
-
         #assign velocities to atoms
         for i in range(len(self.raw_atoms)):
             self.raw_atoms[i].set_velocities(self.velocities[i].cpu().numpy())
@@ -315,6 +312,22 @@ class ImplicitMDSimulator():
             self.atoms_batch['atom_types'] = self.final_atom_types
             del self.atoms_batch['ptr']
             del self.atoms_batch['atomic_numbers']
+
+        # NPT Integrator
+        cell = self.cell.unsqueeze(0).repeat(self.n_replicas, 1, 1)
+        self.npt_integrator = NPT(self.atoms_batch, 
+                                  self.radii, 
+                                  self.velocities, 
+                                  self.masses, 
+                                  cell, 
+                                  self.pbc, 
+                                  self.atomic_numbers, 
+                                  self.force_calc, 
+                                  self.dt, 
+                                  self.temp, 
+                                  self.pressure_au, 
+                                  self.ttime * units.fs, 
+                                  self.pfactor)
             
         self.diameter_viz = params.diameter_viz
         self.exp_name = params.exp_name
