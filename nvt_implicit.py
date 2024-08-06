@@ -65,6 +65,7 @@ from mdsim.common.utils import (
 )
 from mdsim.common.flags import flags
 from boltzmann_estimator import BoltzmannEstimator
+from npt_temp import NPT
 
 MAX_SIZES = {'md17': '10k', 'md22': '100percent', 'water': '10k', 'lips': '20k'}
 
@@ -200,7 +201,7 @@ class ImplicitMDSimulator():
         print(f"Simulation Temperature: {self.temp}")
         
         # adjust units.
-        if self.integrator in ['NoseHoover', 'NoseHooverChain', 'Langevin', 'Berendsen']:
+        if self.integrator in ['NoseHoover', 'NoseHooverChain', 'Langevin', 'Berendsen', 'NPT']:
             self.temp *= units.kB
         self.targeEkin = 0.5 * (3.0 * self.n_atoms) * self.temp
         
@@ -220,6 +221,9 @@ class ImplicitMDSimulator():
         self.compressibility_au = self.integrator_config["compressibility_au"]
         self.pressure_au = torch.tensor([self.integrator_config["pressure_au"]]).to(self.device)
         self.fix_com = self.integrator_config["fix_com"]
+
+        # NPT Stuff
+        self.pfactor = 1 # TODO: temp
 
 
         self.nsteps = params.steps
@@ -278,6 +282,10 @@ class ImplicitMDSimulator():
         radii = torch.stack([torch.Tensor(atoms.get_positions()) for atoms in self.raw_atoms])
         self.radii = (radii + torch.normal(torch.zeros_like(radii), self.ic_stddev)).to(self.device)
         self.velocities = torch.Tensor(initialize_velocities(self.n_atoms, self.masses, self.temp, self.n_replicas)).to(self.device)
+
+        cell = self.cell.unsqueeze(0).repeat(self.n_replicas, 1, 1)
+        self.npt_integrator = NPT(self.radii, self.velocities, self.masses, cell, self.force_calc, self.dt, self.temp, self.pressure_au, self.ttime * units.fs, self.pfactor)
+
         #assign velocities to atoms
         for i in range(len(self.raw_atoms)):
             self.raw_atoms[i].set_velocities(self.velocities[i].cpu().numpy())
@@ -510,6 +518,7 @@ class ImplicitMDSimulator():
                 self.atoms_batch['atomic_numbers'] = self.atomic_numbers.repeat(batch_size)
                 if output_individual_energies:
                     if self.model_type == 'gemnet_t':
+                        
                         energy, all_energies, forces = self.model(self.atoms_batch, output_individual_energies = True)
                     else:
                         raise RuntimeError(f"Outputting individual energies is only supported for gemnet_t, not {self.model_type}")
@@ -577,6 +586,9 @@ class ImplicitMDSimulator():
 
     
     def forward_berendsen(self, radii, velocities, forces, cell, retain_grad = False):
+        """
+        Berendsen thermostat for NPT simulation. Adapted from https://wiki.fysik.dtu.dk/ase/_modules/ase/md/nptberendsen.html#NPTBerendsen.
+        """
 
         # scale velocities based on current temperature
         
@@ -685,6 +697,8 @@ class ImplicitMDSimulator():
                     radii, velocities, forces, noise = self.forward_langevin(self.radii, self.velocities, forces, retain_grad = False)
                 elif self.integrator == 'Berendsen':
                     radii, velocities, forces, cell = self.forward_berendsen(self.radii, self.velocities, forces, cell, retain_grad = False)
+                elif self.integrator == 'NPT':
+                    radii, velocities, forces, cell = self.npt_integrator.step(retain_grad = False)
                 else:
                     raise RuntimeError("Must choose either NoseHoover, Langevin, or Berendsen as integrator")
                 

@@ -3,9 +3,10 @@ includes:
 train: False
 dr: 0.012 #coarser histogram because of local environments
 stability_criterion: rdf
-imd_tol: 3.0
+imd_tol: 1000.0
 max_frac_unstable_threshold: 0.95
-eval_model: pre_nopbcfix
+integrator: NPT
+eval_model: pre_test
 results_dir: 'results_water_localneighborhoods'
 exp_name: "TEST_pbcfix"
 model: gemnet_t
@@ -13,9 +14,9 @@ temperature: 300.
 timestep: 1
 eq_steps: 0
 steps: 1000
-n_dump: 100 
+n_dump: 100 # to save memory
 n_replicas: 5
-n_epochs: 500
+n_epochs: 100
 
 
 
