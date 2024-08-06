@@ -14,7 +14,7 @@ model: gemnet_t
 temperature: 300.
 timestep: 1
 eq_steps: 0
-steps: 100
+steps: 1000
 n_dump: 1 # to save memory
 n_replicas: 1
 n_epochs: 1

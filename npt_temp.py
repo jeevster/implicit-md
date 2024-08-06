@@ -296,7 +296,7 @@ class NPT:
         # Convert from 3x3 matrix to six-vector
         stress_tensor = self._makesixvector(stress_tensor)
         
-        return stress_tensor
+        return - stress_tensor # Negative sign to match the ASE sign convention
 
     def initialize(self):
         """Initialize the dynamics.
