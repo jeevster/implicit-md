@@ -215,16 +215,17 @@ class ImplicitMDSimulator():
         self.gamma = self.integrator_config["gamma"] / (1000*units.fs)
         self.noise_f = (2.0 * self.gamma/self.masses * self.temp * self.dt).sqrt().to(self.device)
 
-        # Berendsen thermostat stuff (NPT)
+        # Berendsen thermostat stuff
         self.taup = self.integrator_config["taup"] * units.fs
         self.taut = self.integrator_config["taut"] * units.fs
         self.compressibility_au = self.integrator_config["compressibility_au"]
         self.pressure_au = torch.tensor([self.integrator_config["pressure_au"]]).to(self.device)
         self.fix_com = self.integrator_config["fix_com"]
 
-        # NPT Stuff
-        self.pfactor = 1 # TODO: temp
-
+        # NPT thermostat Stuff
+        self.ptime = self.integrator_config["ptime"] * units.fs
+        bulk_modulus = 0.6 / 50 # in eV/A^3
+        self.pfactor = self.ptime **2 * bulk_modulus
 
         self.nsteps = params.steps
         self.eq_steps = params.eq_steps
@@ -712,6 +713,8 @@ class ImplicitMDSimulator():
                     radii, velocities, forces, cell = self.forward_berendsen(self.radii, self.velocities, forces, cell, retain_grad = False)
                 elif self.integrator == 'NPT':
                     radii, velocities, forces, cell = self.npt_integrator.step(retain_grad = False)
+                    step  = self.step if self.train else (self.epoch+1) * self.step #don't overwrite previous epochs at inference time
+                    self.t.append(self.create_frame(frame = step/self.n_dump))
                 else:
                     raise RuntimeError("Must choose either NoseHoover, Langevin, or Berendsen as integrator")
                 
@@ -732,13 +735,13 @@ class ImplicitMDSimulator():
             self.forces = forces
             self.stacked_radii = torch.stack(self.running_radii[::self.n_dump])
             #compute instability metric (either bond length deviation, min intermolecular distance, or RDF MAE)
-            self.instability_per_replica = self.stability_criterion(self.stacked_radii)
-            if isinstance(self.instability_per_replica, tuple):
-                self.instability_per_replica = self.instability_per_replica[-1]
-            self.mean_instability = self.instability_per_replica.mean()
-            if self.pbc:
-                self.mean_bond_length_dev = self.bond_length_dev(self.stacked_radii)[1].mean()
-                self.mean_rdf_mae = self.rdf_mae(self.stacked_radii)[-1].mean()
+            # self.instability_per_replica = self.stability_criterion(self.stacked_radii)
+            # if isinstance(self.instability_per_replica, tuple):
+            #     self.instability_per_replica = self.instability_per_replica[-1]
+            # self.mean_instability = self.instability_per_replica.mean()
+            # if self.pbc:
+            #     self.mean_bond_length_dev = self.bond_length_dev(self.stacked_radii)[1].mean()
+            #     self.mean_rdf_mae = self.rdf_mae(self.stacked_radii)[-1].mean()
             self.stacked_vels = torch.cat(self.running_vels)
         
         if self.train:
@@ -943,9 +946,13 @@ if __name__ == "__main__":
     #load ground truth rdf and VACF
     print("Computing ground truth observables from datasets")
     if name == 'water':
-        gt_rdf_package, gt_rdf_local_package, gt_diffusivity, gt_msd, gt_adf, oxygen_atoms_mask = find_water_rdfs_diffusivity_from_file(data_path, MAX_SIZES[name], params, device)
-        gt_rdf, gt_rdf_var = gt_rdf_package
-        gt_rdf_local, gt_rdf_var_local = gt_rdf_local_package
+        # gt_rdf_package, gt_rdf_local_package, gt_diffusivity, gt_msd, gt_adf, oxygen_atoms_mask = find_water_rdfs_diffusivity_from_file(data_path, MAX_SIZES[name], params, device)
+        # gt_rdf, gt_rdf_var = gt_rdf_package
+        # gt_rdf_local, gt_rdf_var_local = gt_rdf_local_package
+        temp = torch.tensor([1]).to(device)
+        gt_rdf, gt_rdf_var, gt_rdf_local, gt_rdf_var_local, gt_diffusivity, gt_msd, gt_adf = temp, temp, temp, temp, temp, temp, temp
+        gt_rdf_package = (gt_rdf, gt_rdf_var)
+        gt_rdf_local_package = (gt_rdf_local, gt_rdf_var_local)
     elif name == 'lips':
         gt_rdf, gt_diffusivity = find_lips_rdfs_diffusivity_from_file(data_path, MAX_SIZES[name], params, device)
         gt_rdf_var = torch.ones_like(gt_rdf)
