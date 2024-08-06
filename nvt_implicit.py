@@ -224,7 +224,7 @@ class ImplicitMDSimulator():
 
         # NPT thermostat Stuff
         self.ptime = self.integrator_config["ptime"] * units.fs
-        bulk_modulus = 0.6 / 50 # in eV/A^3
+        bulk_modulus = 2 * units.GPa # bulk modulus of water
         self.pfactor = self.ptime **2 * bulk_modulus
 
         self.nsteps = params.steps

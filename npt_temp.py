@@ -391,8 +391,6 @@ class NPT:
         #         "(was %.6g %.6g %.6g)" % tuple(cm))
         self.velocities = self.velocities - cm.unsqueeze(1) / self.masses / self._getnatoms()
     
-
-    
     def get_init_data(self):
         "Return the data needed to initialize a new NPT dynamics."
         return {'dt': self.dt,
