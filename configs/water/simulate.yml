@@ -3,21 +3,21 @@ includes:
 train: False
 dr: 0.012 #coarser histogram because of local environments
 stability_criterion: rdf
-imd_tol: 1000.0
+imd_tol: 3.0
 max_frac_unstable_threshold: 0.95
 integrator: NPT
 integrator_config: {"ttime": 20., "ptime": 75., "gamma": 0.1, "taut": 20, "taup": 1000, "compressibility_au": 72.84, "pressure_au": 0.000000632268, "fix_com": True} # corresponds to 1 atm (compressibility calculated at 20C and 1 bar from https://www.linkedin.com/pulse/water-bulk-modulus-compressibility-nikhilesh-mukherjee/ )
-eval_model: pre_test
+eval_model: pre_pbcfix_NPT
 results_dir: 'results_water_localneighborhoods'
 exp_name: "TEST_pbcfix"
 model: gemnet_t
 temperature: 300.
 timestep: 1
 eq_steps: 0
-steps: 100
-n_dump: 1 # to save memory
+steps: 1000
+n_dump: 100 # to save memory
 n_replicas: 1
-n_epochs: 1
+n_epochs: 100
 
 
 

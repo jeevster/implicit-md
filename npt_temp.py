@@ -263,7 +263,7 @@ class NPT:
         self._calculate_q_future(force)
         self.velocities = torch.bmm(self.q_future - self.q_past, self.h / (2 * dt))
 
-        return self.radii, self.velocities, self.get_forces(), self._getbox()
+        return self.radii, self.velocities, force, self._getbox()
         
 
     def get_stress(self):
