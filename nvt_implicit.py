@@ -509,10 +509,9 @@ class ImplicitMDSimulator():
                 radii.requires_grad = True
             #assign radii and batch
             if self.pbc:
-                # wrap
-                diag_fn = torch.diag
-                c = self.cell#.unsqueeze(0).repeat(self.n_replicas, 1, 1) if cell is None else cell
-                radii = ((radii / diag_fn(c)) % 1) * diag_fn(c)  - diag_fn(c)/2
+                # wrap (changing the cell doesn't work)
+                diag = torch.diag(self.cell)
+                radii = ((radii / diag) % 1) * diag  - diag/2
             self.atoms_batch['pos'] = radii.reshape(-1, 3)
             self.atoms_batch['batch'] = batch
             #make these match the number of replicas (different from n_replicas when doing bottom-up stuff)

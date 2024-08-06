@@ -339,7 +339,7 @@ class NPT:
         return energy.squeeze()
     
     def get_forces(self, retain_grad = False):
-        _, force = self.energy_force_func(self.radii, self.cell, retain_grad = retain_grad)
+        _, force = self.energy_force_func(self.radii, retain_grad = retain_grad)
         return force
     
     def get_kinetic_energy(self):
