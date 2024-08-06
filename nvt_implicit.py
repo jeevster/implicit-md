@@ -713,8 +713,11 @@ class ImplicitMDSimulator():
                     radii, velocities, forces, cell = self.forward_berendsen(self.radii, self.velocities, forces, cell, retain_grad = False)
                 elif self.integrator == 'NPT':
                     radii, velocities, forces, cell = self.npt_integrator.step(retain_grad = False)
+                    # gibbs free energy grows a lot
+                    print(self.npt_integrator.get_gibbs_free_energy().mean().item())
                     step  = self.step if self.train else (self.epoch+1) * self.step #don't overwrite previous epochs at inference time
                     self.t.append(self.create_frame(frame = step/self.n_dump))
+                    
                 else:
                     raise RuntimeError("Must choose either NoseHoover, Langevin, or Berendsen as integrator")
                 

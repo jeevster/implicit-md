@@ -335,7 +335,7 @@ class NPT:
 
     def get_potential_energy(self):
         energy, _ = self.energy_force_func(self.radii)
-        return energy
+        return energy.squeeze()
     
     def get_forces(self, retain_grad = False):
         _, force = self.energy_force_func(self.radii, retain_grad = retain_grad)
@@ -358,14 +358,15 @@ class NPT:
         n = self._getnatoms()
         # tretaTeta = sum(diagonal(matrixmultiply(transpose(self.eta),
         #                                        self.eta)))
-        contractedeta = torch.sum((self.eta * self.eta).ravel())
+    
+        contractedeta = torch.sum(self.eta * self.eta, dim = (1,2))
         gibbs = (self.get_potential_energy() +
-                 self.get_kinetic_energy()
+                 self.get_kinetic_energy().squeeze()
                  - torch.sum(self.externalstress[0:3]) * linalg.det(self.h) / 3.0)
         if self.ttime is not None:
             gibbs += (1.5 * n * self.temperature *
-                      (self.ttime * self.zeta)**2 +
-                      3 * self.temperature * (n - 1) * self.zeta_integrated)
+                      (self.ttime * self.zeta.squeeze())**2 +
+                      3 * self.temperature * (n - 1) * self.zeta_integrated.squeeze())
         else:
             assert self.zeta == 0.0
         if self.pfactor_given is not None:
