@@ -230,6 +230,7 @@ class NPT:
             deltaeta = torch.zeros(6, dtype=torch.float32).to(self.device)
         else:
             stress = self.get_stress()
+            # print("Stress:", stress)
             deltaeta = -2 * dt * ((self.pfact * linalg.det(self.h)).unsqueeze(-1) *
                                   (stress - self.externalstress))
 
@@ -278,7 +279,7 @@ class NPT:
         volume (float): Volume of the system.
         
         Returns:
-        torch.Tensor: Stress tensor of shape [B, 3, 3].
+        torch.Tensor: Stress tensor of shape [B, 6].
         """
         B, N, _ = self.radii.shape
         V = self._getvolume().unsqueeze(-1).unsqueeze(-1)
@@ -338,7 +339,7 @@ class NPT:
         return energy.squeeze()
     
     def get_forces(self, retain_grad = False):
-        _, force = self.energy_force_func(self.radii, retain_grad = retain_grad)
+        _, force = self.energy_force_func(self.radii, self.cell, retain_grad = retain_grad)
         return force
     
     def get_kinetic_energy(self):

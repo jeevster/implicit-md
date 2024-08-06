@@ -501,7 +501,7 @@ class ImplicitMDSimulator():
         return num_unstable_replicas / self.n_replicas
 
 
-    def force_calc(self, radii, retain_grad = False, output_individual_energies = False):
+    def force_calc(self, radii, cell = None, retain_grad = False, output_individual_energies = False):
         batch_size = radii.shape[0]
         batch = torch.arange(batch_size).repeat_interleave(self.n_atoms).to(self.device)
         with torch.enable_grad():
@@ -510,7 +510,9 @@ class ImplicitMDSimulator():
             #assign radii and batch
             if self.pbc:
                 # wrap
-                radii = ((radii / torch.diag(self.cell)) % 1) * torch.diag(self.cell)  - torch.diag(self.cell)/2
+                diag_fn = torch.diag
+                c = self.cell#.unsqueeze(0).repeat(self.n_replicas, 1, 1) if cell is None else cell
+                radii = ((radii / diag_fn(c)) % 1) * diag_fn(c)  - diag_fn(c)/2
             self.atoms_batch['pos'] = radii.reshape(-1, 3)
             self.atoms_batch['batch'] = batch
             #make these match the number of replicas (different from n_replicas when doing bottom-up stuff)
@@ -716,7 +718,7 @@ class ImplicitMDSimulator():
                     # gibbs free energy grows a lot
                     print(self.npt_integrator.get_gibbs_free_energy().mean().item())
                     step  = self.step if self.train else (self.epoch+1) * self.step #don't overwrite previous epochs at inference time
-                    self.t.append(self.create_frame(frame = step/self.n_dump))
+                    self.t.append(self.create_frame(frame = step/self.n_dump, cell = cell[0]))
                     
                 else:
                     raise RuntimeError("Must choose either NoseHoover, Langevin, or Berendsen as integrator")
@@ -788,17 +790,18 @@ class ImplicitMDSimulator():
         shutil.copyfile(checkpoint_path, os.path.join(self.save_dir, 'ckpt.pth' if self.model_type == 'nequip' else 'ckpt.pt'))
         self.curr_model_path = checkpoint_path
 
-    def create_frame(self, frame):
+    def create_frame(self, frame, cell = None):
         # Particle positions, velocities, diameter
         radii = self.radii[0]
         if self.pbc:
+            c = self.cell if cell is None else cell
             #wrap for visualization purposes
             if self.name == 'lips': #account for non-cubic cell
-                frac_radii = cart2frac(radii, self.cell)
+                frac_radii = cart2frac(radii, c)
                 frac_radii = frac_radii % 1.0 #wrap
-                radii = frac2cart(frac_radii, self.cell)
+                radii = frac2cart(frac_radii, c)
             else:
-                radii = ((radii / torch.diag(self.cell)) % 1) * torch.diag(self.cell)  - torch.diag(self.cell)/2 #wrap coords (last subtraction is for cell alignment in Ovito)
+                radii = ((radii / torch.diag(c)) % 1) * torch.diag(c)  - torch.diag(c)/2 #wrap coords (last subtraction is for cell alignment in Ovito)
         partpos = detach_numpy(radii).tolist()
         velocities = detach_numpy(self.velocities[0]).tolist()
         diameter = 10*self.diameter_viz*np.ones((self.n_atoms,))
@@ -811,7 +814,7 @@ class ImplicitMDSimulator():
         s.particles.velocity = velocities
         s.particles.diameter = diameter
         
-        cell = torch.Tensor(self.atoms.cell)
+        cell = torch.Tensor(c).cpu()
         s.configuration.box=[cell[0][0], cell[1][1], cell[2][2], 0, 0, 0]
         s.configuration.step = self.dt
 
