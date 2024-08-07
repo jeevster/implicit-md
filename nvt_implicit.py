@@ -886,7 +886,7 @@ if __name__ == "__main__":
         pretrained_model_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{size}_{lmax_string}{model_type}") 
     
     elif 'k' in config["eval_model"] or 'percent' in config["eval_model"]:#load energies/forces model trained on a different dataset size
-        new_size = config["eval_model"]
+        new_size = config["eval_model"].split("k")[0] + "k"
         pretrained_model_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{new_size}_{lmax_string}{model_type}")
 
     elif 'lmax' in config["eval_model"]:#load energies/forces model trained with a different lmax

@@ -21,7 +21,7 @@ from nequip.data import AtomicData, AtomicDataDict
 from mdsim.common.utils import setup_imports, setup_logging, compute_bond_lengths, data_to_atoms, atoms_to_batch, atoms_to_state_dict, convert_atomic_numbers_to_types, process_gradient, compare_gradients, initialize_velocities, dump_params_to_yml
 from mdsim.observables.common import radii_to_dists, distance_pbc, ObservableMAELoss, ObservableMSELoss, IMDHingeLoss
 from mdsim.observables.water import WaterRDFMAE, find_water_rdfs_diffusivity_from_file, n_closest_molecules
-from adjoints import get_adjoints, get_model_grads
+# from adjoints import get_adjoints, get_model_grads
 
 
 class BoltzmannEstimator():
