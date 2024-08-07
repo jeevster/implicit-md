@@ -309,7 +309,7 @@ class NPT:
 
         This is called automatically the first time ``run()`` is called.
         """
-        print("Initializing the NPT dynamics.")
+        print("Initializing NPT dynamics.")
 
         dt = self.dt
         self.h = self._getbox()

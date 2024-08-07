@@ -316,19 +316,20 @@ class ImplicitMDSimulator():
 
         # NPT Integrator
         cell = self.cell.unsqueeze(0).repeat(self.n_replicas, 1, 1)
-        self.npt_integrator = NPT(self.atoms_batch, 
-                                  self.radii, 
-                                  self.velocities, 
-                                  self.masses, 
-                                  cell, 
-                                  self.pbc, 
-                                  self.atomic_numbers, 
-                                  self.force_calc, 
-                                  self.dt, 
-                                  self.temp, 
-                                  self.pressure_au, 
-                                  self.ttime * units.fs, 
-                                  self.pfactor)
+        if self.integrator == 'NPT':
+            self.npt_integrator = NPT(self.atoms_batch, 
+                                    self.radii, 
+                                    self.velocities, 
+                                    self.masses, 
+                                    cell, 
+                                    self.pbc, 
+                                    self.atomic_numbers, 
+                                    self.force_calc, 
+                                    self.dt, 
+                                    self.temp, 
+                                    self.pressure_au, 
+                                    self.ttime * units.fs, 
+                                    self.pfactor)
             
         self.diameter_viz = params.diameter_viz
         self.exp_name = params.exp_name
@@ -507,11 +508,13 @@ class ImplicitMDSimulator():
         with torch.enable_grad():
             if not radii.requires_grad:
                 radii.requires_grad = True
-            #assign radii and batch
+            
             if self.pbc:
                 # wrap (changing the cell doesn't work)
                 diag = torch.diag(self.cell)
                 radii = ((radii / diag) % 1) * diag  - diag/2
+            
+            #assign radii and batch
             self.atoms_batch['pos'] = radii.reshape(-1, 3)
             self.atoms_batch['batch'] = batch
             #make these match the number of replicas (different from n_replicas when doing bottom-up stuff)
@@ -736,14 +739,14 @@ class ImplicitMDSimulator():
             self.zeta = zeta
             self.forces = forces
             self.stacked_radii = torch.stack(self.running_radii[::self.n_dump])
-            #compute instability metric (either bond length deviation, min intermolecular distance, or RDF MAE)
-            # self.instability_per_replica = self.stability_criterion(self.stacked_radii)
-            # if isinstance(self.instability_per_replica, tuple):
-            #     self.instability_per_replica = self.instability_per_replica[-1]
-            # self.mean_instability = self.instability_per_replica.mean()
-            # if self.pbc:
-            #     self.mean_bond_length_dev = self.bond_length_dev(self.stacked_radii)[1].mean()
-            #     self.mean_rdf_mae = self.rdf_mae(self.stacked_radii)[-1].mean()
+            # compute instability metric (either bond length deviation, min intermolecular distance, or RDF MAE)
+            self.instability_per_replica = self.stability_criterion(self.stacked_radii)
+            if isinstance(self.instability_per_replica, tuple):
+                self.instability_per_replica = self.instability_per_replica[-1]
+            self.mean_instability = self.instability_per_replica.mean()
+            if self.pbc:
+                self.mean_bond_length_dev = self.bond_length_dev(self.stacked_radii)[1].mean()
+                self.mean_rdf_mae = self.rdf_mae(self.stacked_radii)[-1].mean()
             self.stacked_vels = torch.cat(self.running_vels)
         
         if self.train:
@@ -949,13 +952,13 @@ if __name__ == "__main__":
     #load ground truth rdf and VACF
     print("Computing ground truth observables from datasets")
     if name == 'water':
-        # gt_rdf_package, gt_rdf_local_package, gt_diffusivity, gt_msd, gt_adf, oxygen_atoms_mask = find_water_rdfs_diffusivity_from_file(data_path, MAX_SIZES[name], params, device)
-        # gt_rdf, gt_rdf_var = gt_rdf_package
-        # gt_rdf_local, gt_rdf_var_local = gt_rdf_local_package
-        temp = torch.tensor([1]).to(device)
-        gt_rdf, gt_rdf_var, gt_rdf_local, gt_rdf_var_local, gt_diffusivity, gt_msd, gt_adf = temp, temp, temp, temp, temp, temp, temp
-        gt_rdf_package = (gt_rdf, gt_rdf_var)
-        gt_rdf_local_package = (gt_rdf_local, gt_rdf_var_local)
+        gt_rdf_package, gt_rdf_local_package, gt_diffusivity, gt_msd, gt_adf, oxygen_atoms_mask = find_water_rdfs_diffusivity_from_file(data_path, MAX_SIZES[name], params, device)
+        gt_rdf, gt_rdf_var = gt_rdf_package
+        gt_rdf_local, gt_rdf_var_local = gt_rdf_local_package
+        # temp = torch.tensor([1]).to(device)
+        # gt_rdf, gt_rdf_var, gt_rdf_local, gt_rdf_var_local, gt_diffusivity, gt_msd, gt_adf = temp, temp, temp, temp, temp, temp, temp
+        # gt_rdf_package = (gt_rdf, gt_rdf_var)
+        # gt_rdf_local_package = (gt_rdf_local, gt_rdf_var_local)
     elif name == 'lips':
         gt_rdf, gt_diffusivity = find_lips_rdfs_diffusivity_from_file(data_path, MAX_SIZES[name], params, device)
         gt_rdf_var = torch.ones_like(gt_rdf)
