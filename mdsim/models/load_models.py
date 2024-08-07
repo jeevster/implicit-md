@@ -39,9 +39,12 @@ def load_pretrained_model(model_type, path = None, ckpt_epoch = -1, cycle = None
     try:
         # removing "module." from the keys (comes from training model with nn.DataParallel)
         new_dict = {k[7:]: v for k, v in checkpoint.items()}
-        if 'atomic_mass' in new_dict:
-            del new_dict['atomic_mass']
-        model.load_state_dict(new_dict)
+        try:
+            model.load_state_dict(new_dict)
+        except:
+            if 'atomic_mass' in new_dict:
+                del new_dict['atomic_mass']
+            model.load_state_dict(new_dict)
     except:
         model.load_state_dict(checkpoint)
 

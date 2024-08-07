@@ -7,7 +7,7 @@ imd_tol: 3.0
 max_frac_unstable_threshold: 0.95
 integrator: Langevin
 integrator_config: {"ttime": 20., "ptime": 1000., "gamma": 0.1, "taut": 20, "taup": 1000, "compressibility_au": 72.84, "pressure_au": 0.000000632268, "fix_com": True} # corresponds to 1 atm (compressibility calculated at 20C and 1 bar from https://www.linkedin.com/pulse/water-bulk-modulus-compressibility-nikhilesh-mukherjee/ )
-eval_model: 1k_pbcfix_Langevin
+eval_model: pre_pbcfix_Langevin
 results_dir: 'results_water_localneighborhoods'
 exp_name: "TEST_pbcfix"
 model: gemnet_t
