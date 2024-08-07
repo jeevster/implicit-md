@@ -1208,8 +1208,13 @@ if __name__ == "__main__":
         writer.add_scalar('Gradient Cosine Similarity (Observable vs Energy-Force)', grad_cosine_similarity, global_step=epoch+1)
         writer.add_scalar('Gradient Ratios (Observable vs Energy-Force)', ratios, global_step=epoch+1)
 
+
         #add hyperparams and final metrics at inference time (do it every 5 epochs in case we time-out before the end)
         if not params.train:
+            # save trajectory every epoch
+            full_traj = torch.stack(simulator.all_radii)
+            np.save(os.path.join(results_dir, 'full_traj.npy'), full_traj)
+            
             if epoch % 5 == 0 and epoch > 175: #to save time
                 if name == "md17" or name == "md22":
                     hparams_logging = calculate_final_metrics(simulator, params, device, results_dir, energy_maes, force_maes, gt_rdf, gt_adf, gt_vacf, all_vacfs_per_replica = all_vacfs_per_replica)
