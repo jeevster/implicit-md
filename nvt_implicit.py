@@ -65,6 +65,7 @@ from mdsim.common.utils import (
 )
 from mdsim.common.flags import flags
 from boltzmann_estimator import BoltzmannEstimator
+from npt_temp import NPT
 
 MAX_SIZES = {'md17': '10k', 'md22': '100percent', 'water': '10k', 'lips': '20k'}
 
@@ -200,7 +201,7 @@ class ImplicitMDSimulator():
         print(f"Simulation Temperature: {self.temp}")
         
         # adjust units.
-        if self.integrator in ['NoseHoover', 'NoseHooverChain', 'Langevin', 'Berendsen']:
+        if self.integrator in ['NoseHoover', 'NoseHooverChain', 'Langevin', 'Berendsen', 'NPT']:
             self.temp *= units.kB
         self.targeEkin = 0.5 * (3.0 * self.n_atoms) * self.temp
         
@@ -214,13 +215,17 @@ class ImplicitMDSimulator():
         self.gamma = self.integrator_config["gamma"] / (1000*units.fs)
         self.noise_f = (2.0 * self.gamma/self.masses * self.temp * self.dt).sqrt().to(self.device)
 
-        # Berendsen thermostat stuff (NPT)
+        # Berendsen thermostat stuff
         self.taup = self.integrator_config["taup"] * units.fs
         self.taut = self.integrator_config["taut"] * units.fs
         self.compressibility_au = self.integrator_config["compressibility_au"]
         self.pressure_au = torch.tensor([self.integrator_config["pressure_au"]]).to(self.device)
         self.fix_com = self.integrator_config["fix_com"]
 
+        # NPT thermostat Stuff
+        self.ptime = self.integrator_config["ptime"] * units.fs
+        bulk_modulus = 2 * units.GPa # bulk modulus of water
+        self.pfactor = self.ptime **2 * bulk_modulus
 
         self.nsteps = params.steps
         self.eq_steps = params.eq_steps
@@ -278,6 +283,7 @@ class ImplicitMDSimulator():
         radii = torch.stack([torch.Tensor(atoms.get_positions()) for atoms in self.raw_atoms])
         self.radii = (radii + torch.normal(torch.zeros_like(radii), self.ic_stddev)).to(self.device)
         self.velocities = torch.Tensor(initialize_velocities(self.n_atoms, self.masses, self.temp, self.n_replicas)).to(self.device)
+
         #assign velocities to atoms
         for i in range(len(self.raw_atoms)):
             self.raw_atoms[i].set_velocities(self.velocities[i].cpu().numpy())
@@ -307,6 +313,23 @@ class ImplicitMDSimulator():
             self.atoms_batch['atom_types'] = self.final_atom_types
             del self.atoms_batch['ptr']
             del self.atoms_batch['atomic_numbers']
+
+        # NPT Integrator
+        cell = self.cell.unsqueeze(0).repeat(self.n_replicas, 1, 1)
+        if self.integrator == 'NPT':
+            self.npt_integrator = NPT(self.atoms_batch, 
+                                    self.radii, 
+                                    self.velocities, 
+                                    self.masses, 
+                                    cell, 
+                                    self.pbc, 
+                                    self.atomic_numbers, 
+                                    self.force_calc, 
+                                    self.dt, 
+                                    self.temp, 
+                                    self.pressure_au, 
+                                    self.ttime * units.fs, 
+                                    self.pfactor)
             
         self.diameter_viz = params.diameter_viz
         self.exp_name = params.exp_name
@@ -479,16 +502,19 @@ class ImplicitMDSimulator():
         return num_unstable_replicas / self.n_replicas
 
 
-    def force_calc(self, radii, retain_grad = False, output_individual_energies = False):
+    def force_calc(self, radii, cell = None, retain_grad = False, output_individual_energies = False):
         batch_size = radii.shape[0]
         batch = torch.arange(batch_size).repeat_interleave(self.n_atoms).to(self.device)
         with torch.enable_grad():
             if not radii.requires_grad:
                 radii.requires_grad = True
-            #assign radii and batch
+            
             if self.pbc:
-                # wrap
-                radii = ((radii / torch.diag(self.cell)) % 1) * torch.diag(self.cell)  - torch.diag(self.cell)/2
+                # wrap (changing the cell doesn't work)
+                diag = torch.diag(self.cell)
+                radii = ((radii / diag) % 1) * diag  - diag/2
+            
+            #assign radii and batch
             self.atoms_batch['pos'] = radii.reshape(-1, 3)
             self.atoms_batch['batch'] = batch
             #make these match the number of replicas (different from n_replicas when doing bottom-up stuff)
@@ -510,6 +536,7 @@ class ImplicitMDSimulator():
                 self.atoms_batch['atomic_numbers'] = self.atomic_numbers.repeat(batch_size)
                 if output_individual_energies:
                     if self.model_type == 'gemnet_t':
+                        
                         energy, all_energies, forces = self.model(self.atoms_batch, output_individual_energies = True)
                     else:
                         raise RuntimeError(f"Outputting individual energies is only supported for gemnet_t, not {self.model_type}")
@@ -577,6 +604,9 @@ class ImplicitMDSimulator():
 
     
     def forward_berendsen(self, radii, velocities, forces, cell, retain_grad = False):
+        """
+        Berendsen thermostat for NPT simulation. Adapted from https://wiki.fysik.dtu.dk/ase/_modules/ase/md/nptberendsen.html#NPTBerendsen.
+        """
 
         # scale velocities based on current temperature
         
@@ -685,6 +715,11 @@ class ImplicitMDSimulator():
                     radii, velocities, forces, noise = self.forward_langevin(self.radii, self.velocities, forces, retain_grad = False)
                 elif self.integrator == 'Berendsen':
                     radii, velocities, forces, cell = self.forward_berendsen(self.radii, self.velocities, forces, cell, retain_grad = False)
+                elif self.integrator == 'NPT':
+                    radii, velocities, forces, cell = self.npt_integrator.step(retain_grad = False)
+                    step  = self.step if self.train else (self.epoch+1) * self.step #don't overwrite previous epochs at inference time
+                    self.t.append(self.create_frame(frame = step/self.n_dump, cell = cell[0]))
+                    
                 else:
                     raise RuntimeError("Must choose either NoseHoover, Langevin, or Berendsen as integrator")
                 
@@ -704,7 +739,7 @@ class ImplicitMDSimulator():
             self.zeta = zeta
             self.forces = forces
             self.stacked_radii = torch.stack(self.running_radii[::self.n_dump])
-            #compute instability metric (either bond length deviation, min intermolecular distance, or RDF MAE)
+            # compute instability metric (either bond length deviation, min intermolecular distance, or RDF MAE)
             self.instability_per_replica = self.stability_criterion(self.stacked_radii)
             if isinstance(self.instability_per_replica, tuple):
                 self.instability_per_replica = self.instability_per_replica[-1]
@@ -755,17 +790,18 @@ class ImplicitMDSimulator():
         shutil.copyfile(checkpoint_path, os.path.join(self.save_dir, 'ckpt.pth' if self.model_type == 'nequip' else 'ckpt.pt'))
         self.curr_model_path = checkpoint_path
 
-    def create_frame(self, frame):
+    def create_frame(self, frame, cell = None):
         # Particle positions, velocities, diameter
         radii = self.radii[0]
         if self.pbc:
+            c = self.cell if cell is None else cell
             #wrap for visualization purposes
             if self.name == 'lips': #account for non-cubic cell
-                frac_radii = cart2frac(radii, self.cell)
+                frac_radii = cart2frac(radii, c)
                 frac_radii = frac_radii % 1.0 #wrap
-                radii = frac2cart(frac_radii, self.cell)
+                radii = frac2cart(frac_radii, c)
             else:
-                radii = ((radii / torch.diag(self.cell)) % 1) * torch.diag(self.cell)  - torch.diag(self.cell)/2 #wrap coords (last subtraction is for cell alignment in Ovito)
+                radii = ((radii / torch.diag(c)) % 1) * torch.diag(c)  - torch.diag(c)/2 #wrap coords (last subtraction is for cell alignment in Ovito)
         partpos = detach_numpy(radii).tolist()
         velocities = detach_numpy(self.velocities[0]).tolist()
         diameter = 10*self.diameter_viz*np.ones((self.n_atoms,))
@@ -778,7 +814,7 @@ class ImplicitMDSimulator():
         s.particles.velocity = velocities
         s.particles.diameter = diameter
         
-        cell = torch.Tensor(self.atoms.cell)
+        cell = torch.Tensor(c).cpu()
         s.configuration.box=[cell[0][0], cell[1][1], cell[2][2], 0, 0, 0]
         s.configuration.step = self.dt
 
@@ -850,7 +886,7 @@ if __name__ == "__main__":
         pretrained_model_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{size}_{lmax_string}{model_type}") 
     
     elif 'k' in config["eval_model"] or 'percent' in config["eval_model"]:#load energies/forces model trained on a different dataset size
-        new_size = config["eval_model"]
+        new_size = config["eval_model"].split("k")[0] + "k"
         pretrained_model_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{new_size}_{lmax_string}{model_type}")
 
     elif 'lmax' in config["eval_model"]:#load energies/forces model trained with a different lmax
@@ -919,6 +955,10 @@ if __name__ == "__main__":
         gt_rdf_package, gt_rdf_local_package, gt_diffusivity, gt_msd, gt_adf, oxygen_atoms_mask = find_water_rdfs_diffusivity_from_file(data_path, MAX_SIZES[name], params, device)
         gt_rdf, gt_rdf_var = gt_rdf_package
         gt_rdf_local, gt_rdf_var_local = gt_rdf_local_package
+        # temp = torch.tensor([1]).to(device)
+        # gt_rdf, gt_rdf_var, gt_rdf_local, gt_rdf_var_local, gt_diffusivity, gt_msd, gt_adf = temp, temp, temp, temp, temp, temp, temp
+        # gt_rdf_package = (gt_rdf, gt_rdf_var)
+        # gt_rdf_local_package = (gt_rdf_local, gt_rdf_var_local)
     elif name == 'lips':
         gt_rdf, gt_diffusivity = find_lips_rdfs_diffusivity_from_file(data_path, MAX_SIZES[name], params, device)
         gt_rdf_var = torch.ones_like(gt_rdf)
@@ -1168,8 +1208,13 @@ if __name__ == "__main__":
         writer.add_scalar('Gradient Cosine Similarity (Observable vs Energy-Force)', grad_cosine_similarity, global_step=epoch+1)
         writer.add_scalar('Gradient Ratios (Observable vs Energy-Force)', ratios, global_step=epoch+1)
 
+
         #add hyperparams and final metrics at inference time (do it every 5 epochs in case we time-out before the end)
         if not params.train:
+            # save trajectory every epoch
+            full_traj = torch.stack(simulator.all_radii)
+            np.save(os.path.join(results_dir, 'full_traj.npy'), full_traj)
+            
             if epoch % 5 == 0 and epoch > 175: #to save time
                 if name == "md17" or name == "md22":
                     hparams_logging = calculate_final_metrics(simulator, params, device, results_dir, energy_maes, force_maes, gt_rdf, gt_adf, gt_vacf, all_vacfs_per_replica = all_vacfs_per_replica)
