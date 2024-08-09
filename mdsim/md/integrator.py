@@ -8,8 +8,9 @@ from ase.md.verlet import VelocityVerlet
 from ase.md.langevin import Langevin
 import torch
 from nff.utils.scatter import compute_grad
+from functorch import vmap
 
-def get_stress(positions, velocities, forces, masses, volume):
+def get_stress(positions, velocities, forces, masses, cell):
     """
     Compute the stress tensor for a batch of systems. Useful for NPT simulation
     
@@ -18,17 +19,20 @@ def get_stress(positions, velocities, forces, masses, volume):
     velocities (torch.Tensor): Tensor of shape [B, N, 3] representing velocities of atoms.
     forces (torch.Tensor): Tensor of shape [B, N, 3] representing forces on atoms.
     masses (torch.Tensor): Tensor of shape [1, N, 1] representing masses of atoms.
-    volume (float): Volume of the system.
+    cell (torch.Tensor) : Tensor of shape [B, 3, 3] representing the cell matrix.
     
     Returns:
     torch.Tensor: Stress tensor of shape [B, 3, 3].
     """
     B, N, _ = positions.shape
-    V = volume.unsqueeze(-1).unsqueeze(-1)
+    V = torch.linalg.det(cell).unsqueeze(-1).unsqueeze(-1)
 
     # Potential (Virial) Contribution
-    outer_product = positions.unsqueeze(-1) * forces.unsqueeze(-2)
-    stress_tensor_potential = outer_product.sum(dim=1) / V
+    # wrap positions before virial calculation
+    diag = vmap(torch.diag)(cell).unsqueeze(1)
+    wrapped_positions = ((positions / diag) % 1) * diag  - diag/2
+    outer_product = wrapped_positions.unsqueeze(-1) * forces.unsqueeze(-2)
+    stress_tensor_potential = outer_product.sum(dim=1) / (3*V)
 
     # Kinetic Contribution
     kinetic_contrib = (masses.unsqueeze(-1) * velocities.unsqueeze(-1) * velocities.unsqueeze(-2)).sum(dim=1) / V

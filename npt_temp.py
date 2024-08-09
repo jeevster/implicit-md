@@ -74,7 +74,7 @@ class NPT:
         self.pfactor_given = pfactor
         self._calculateconstants()
         self.timeelapsed = 0.0
-        self.frac_traceless = 1.0
+        self.frac_traceless = 0.0  # volume may change but shape may not
 
         self.initialize()
 
@@ -240,7 +240,7 @@ class NPT:
         if self.pfactor_given is None:
             deltaeta = torch.zeros(6, dtype=torch.float32).to(self.device)
         else:
-            stress = self.get_stress()
+            stress = -self.get_stress()  # match sign convention in ASE
             deltaeta = (
                 -2
                 * dt
@@ -302,10 +302,13 @@ class NPT:
         # Potential (Virial) Contribution
         # 1 atm: 6e-6 au
         # Mean pressure of NVT simulation: 2e-4 (300 atm)
-        
 
-        outer_product = self.radii.unsqueeze(-1) * self.get_forces().unsqueeze(-2)
-        stress_tensor_potential = outer_product.sum(dim=1) / (3*V)
+        # wrap positions before virial calculation
+        diag = vmap(torch.diag)(self.cell).unsqueeze(1)
+        wrapped_radii = ((self.radii / diag) % 1) * diag - diag / 2
+
+        outer_product = wrapped_radii.unsqueeze(-1) * self.get_forces().unsqueeze(-2)
+        stress_tensor_potential = outer_product.sum(dim=1) / (3 * V)
 
         # Kinetic Contribution
         kinetic_contrib = (
@@ -320,7 +323,7 @@ class NPT:
         # Convert from 3x3 matrix to six-vector
         stress_tensor = self._makesixvector(stress_tensor)
 
-        return - stress_tensor  # Negative sign to match the ASE sign convention
+        return stress_tensor
 
     def initialize(self):
         """Initialize the dynamics.
@@ -362,7 +365,9 @@ class NPT:
         return energy.squeeze()
 
     def get_forces(self, retain_grad=False):
-        _, force = self.energy_force_func(self.radii, self.cell, retain_grad=retain_grad)
+        _, force = self.energy_force_func(
+            self.radii, self.cell, retain_grad=retain_grad
+        )
         return force
 
     def get_kinetic_energy(self):
@@ -382,16 +387,8 @@ class NPT:
         return stress[:, :3].mean(axis=1)
 
     def log(self):
-        print(
-            "Pressure: ",
-            round(self.get_pressure().mean().item(), 3),
-            "Volume: ",
-            round(self._getvolume().mean().item(), 2),
-            "Temperature: ",
-            round(self.get_temperature().mean().item() / units.kB, 2),
-            "Gibbs Free Energy: ",
-            round(self.get_gibbs_free_energy().mean().item(), 2),
-        )
+        log_str = f"Pressure: {round(self.get_pressure().mean().item(), 3)}, Volume: {round(self._getvolume().mean().item(), 2)}, Temperature: {round(self.get_temperature().mean().item() / units.kB, 2)}, Gibbs Free Energy: {round(self.get_gibbs_free_energy().mean().item(), 2)}"
+        return log_str
 
     def get_gibbs_free_energy(self):
         """Return the Gibb's free energy, which is supposed to be conserved.
@@ -483,9 +480,9 @@ class NPT:
         """return two matrices, one proportional to the identity
         the other traceless, which sum to the given matrix
         """
-        tracePart = ((mat[:, 0, 0] + mat[:, 1, 1] + mat[:, 2, 2]) / 3.0).unsqueeze(-1).unsqueeze(-1) * torch.eye(
-            3
-        ).unsqueeze(0).to(self.device)
+        tracePart = ((mat[:, 0, 0] + mat[:, 1, 1] + mat[:, 2, 2]) / 3.0).unsqueeze(
+            -1
+        ).unsqueeze(-1) * torch.eye(3).unsqueeze(0).to(self.device)
         return tracePart, mat - tracePart
 
     # A number of convenient helper methods
@@ -532,7 +529,7 @@ class NPT:
             deltaeta = torch.zeros(6, dtype=torch.float32).to(self.device)
         else:
             deltaeta = (-self.dt * self.pfact * linalg.det(self.h)).unsqueeze(-1) * (
-                self.get_stress() - self.externalstress
+                -self.get_stress() - self.externalstress
             )
         if self.frac_traceless == 1:
             self.eta_past = self.eta - self.mask * self._makeuppertriangular(deltaeta)

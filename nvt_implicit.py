@@ -565,7 +565,7 @@ class ImplicitMDSimulator():
         # make half a step in velocity
         velocities = velocities + 0.5 * self.dt * (accel - zeta * velocities)
         # make a full step in accelerations
-        energy, forces = self.force_calc(radii, retain_grad)
+        energy, forces = self.force_calc(radii, retain_grad = retain_grad)
         accel = forces / self.masses
         # make a half step in self.zeta
         zeta = zeta + 0.5 * self.dt * (1/self.Q) * (KE_0 - self.targeEkin)
@@ -579,7 +579,7 @@ class ImplicitMDSimulator():
             (1 + 0.5 * self.dt * zeta)
         # dump frames
         if self.step%self.n_dump == 0:
-            print(self.step, self.thermo_log(energy, forces), file=self.f)
+            print(self.step, self.thermo_log(energy, forces, self.cell), file=self.f)
             step  = self.step if self.train else (self.epoch+1) * self.step #don't overwrite previous epochs at inference time
             try:   
                 self.t.append(self.create_frame(frame = step/self.n_dump))
@@ -591,13 +591,13 @@ class ImplicitMDSimulator():
         #full step in position
         radii = radii.detach() + self.dt*velocities
         #calculate force at new position
-        energy, forces = self.force_calc(radii, retain_grad)
+        energy, forces = self.force_calc(radii, retain_grad = retain_grad)
         noise = torch.randn_like(velocities)
         #full step in velocities
         velocities = velocities + self.dt*(forces/self.masses - self.gamma * velocities) + self.noise_f * noise
         # # dump frames
         if self.step%self.n_dump == 0:
-            print(self.step, self.thermo_log(energy, forces), file=self.f)
+            print(self.step, self.thermo_log(energy, forces, self.cell), file=self.f)
             step  = self.step if self.train else (self.epoch+1) * self.step #don't overwrite previous epochs at inference time
             try:    
                 self.t.append(self.create_frame(frame = self.step/self.n_dump))
@@ -633,9 +633,8 @@ class ImplicitMDSimulator():
         volume = vmap(torch.diag)(cell).prod(dim = 1) # assumes cubic cell
         # calculate stress
         stress = get_stress(radii, velocities, forces, self.masses, volume)
-        # stress = self.atoms.get_stress(voigt=False, include_ideal_gas=True) # TODO: replace
         
-        old_pressure = -vmap(torch.diag)(stress).mean(dim = 1)
+        old_pressure = -vmap(torch.diag)(stress).mean(dim = 1) # TODO: verify negative sign
         scl_pressure = (1.0 - taupscl * self.compressibility_au / 3.0 * (self.pressure_au - old_pressure))
 
         # TODO: make sure we are doing this correctly - updating cell with atom position scaling
@@ -666,7 +665,7 @@ class ImplicitMDSimulator():
         # cannot use self.masses in the line above.
 
         velocities = p / self.masses
-        _, forces = self.force_calc(radii, retain_grad)
+        _, forces = self.force_calc(radii, retain_grad = retain_grad)
         accel = forces / self.masses
         
         velocities = velocities + 0.5 * self.dt * accel
@@ -721,9 +720,11 @@ class ImplicitMDSimulator():
                     radii, velocities, forces, cell = self.forward_berendsen(self.radii, self.velocities, forces, cell, retain_grad = False)
                 elif self.integrator == 'NPT':
                     radii, velocities, forces, cell = self.npt_integrator.step(retain_grad = False)
-                    self.npt_integrator.log()
-                    step  = self.step if self.train else (self.epoch+1) * self.step #don't overwrite previous epochs at inference time
-                    self.t.append(self.create_frame(frame = step/self.n_dump, cell = cell[0]))
+                    if step % self.n_dump == 0:
+                        print(self.npt_integrator.log(), file=self.f)
+                        print(self.npt_integrator.log())
+                        step  = self.step if self.train else (self.epoch+1) * self.step #don't overwrite previous epochs at inference time
+                        self.t.append(self.create_frame(frame = step/self.n_dump, cell = cell[0]))
                     
                 else:
                     raise RuntimeError("Must choose either NoseHoover, Langevin, or Berendsen as integrator")
@@ -828,30 +829,19 @@ class ImplicitMDSimulator():
             s.bonds.group = detach_numpy(self.bonds)
         return s
     
-    def thermo_log(self, pe, forces):
+    def thermo_log(self, pe, forces, cell = None):
         #Log energies and instabilities
         p_dof = 3*self.n_atoms
         ke = 1/2 * (self.masses*torch.square(self.velocities)).sum(axis = (1,2)).unsqueeze(-1)
         temp = (2*ke/p_dof).mean() / units.kB
 
         # pressure calculation
-        B, N, _ = self.radii.shape
-        V = torch.linalg.det(self.cell.unsqueeze(0).repeat(self.n_replicas, 1, 1)).unsqueeze(-1).unsqueeze(-1)
-
-        # Potential (Virial) Contribution
-        outer_product = self.radii.unsqueeze(-1) * forces.unsqueeze(-2)
-        stress_tensor_potential = outer_product.sum(dim=1) / V
-
-        # Kinetic Contribution
-        kinetic_contrib = (
-            self.masses.unsqueeze(-1)
-            * self.velocities.unsqueeze(-1)
-            * self.velocities.unsqueeze(-2)
-        ).sum(dim=1) / V
-
-        # Total Stress Tensor
-        stress_tensor = stress_tensor_potential + kinetic_contrib
-        pressure = - vmap(torch.diag)(stress_tensor).mean(dim = 1)
+        if cell is None:
+            cell = self.cell
+        if len(cell.shape) == 2:
+            cell = cell.unsqueeze(0).repeat(self.n_replicas, 1, 1)
+        stress_tensor = get_stress(self.radii, self.velocities, forces, self.masses, cell)
+        pressure = vmap(torch.diag)(stress_tensor).mean(dim = 1)
     
         instability = self.stability_criterion(self.radii.unsqueeze(0))
         if isinstance(instability, tuple):
