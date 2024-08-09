@@ -720,9 +720,9 @@ class ImplicitMDSimulator():
                     radii, velocities, forces, cell = self.forward_berendsen(self.radii, self.velocities, forces, cell, retain_grad = False)
                 elif self.integrator == 'NPT':
                     radii, velocities, forces, cell = self.npt_integrator.step(retain_grad = False)
+                    
                     if step % self.n_dump == 0:
                         print(self.npt_integrator.log(), file=self.f)
-                        print(self.npt_integrator.log())
                         step  = self.step if self.train else (self.epoch+1) * self.step #don't overwrite previous epochs at inference time
                         self.t.append(self.create_frame(frame = step/self.n_dump, cell = cell[0]))
                     
