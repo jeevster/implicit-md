@@ -242,7 +242,7 @@ class NPT:
         if self.pfactor_given is None:
             deltaeta = torch.zeros(6, dtype=torch.float32).to(self.device)
         else:
-            stress = -self.get_stress()  # match sign convention in ASE
+            stress = -self.get_stress(self.forces)  # match sign convention in ASE
             deltaeta = (
                 -2
                 * dt
@@ -277,13 +277,13 @@ class NPT:
         self.zeta_past = self.zeta
         self.zeta = zeta_future
         self.zeta_integrated += dt * self.zeta
-        force = self.get_forces(retain_grad)
-        self._calculate_q_future(force)
+        self.forces = self.get_forces(retain_grad)
+        self._calculate_q_future(self.forces)
         self.velocities = torch.bmm(self.q_future - self.q_past, self.h / (2 * dt))
 
-        return self.radii, self.velocities, force, self._getbox()
+        return self.radii, self.velocities, self.forces, self._getbox()
 
-    def get_stress(self):
+    def get_stress(self, forces = None):
 
         """
         Compute the stress tensor for a batch of systems. Useful for NPT simulation
@@ -309,7 +309,9 @@ class NPT:
         diag = vmap(torch.diag)(self.cell).unsqueeze(1)
         wrapped_radii = ((self.radii / diag) % 1) * diag - diag / 2
 
-        outer_product = wrapped_radii.unsqueeze(-1) * self.get_forces().unsqueeze(-2)
+        if forces is None:
+            forces = self.get_forces()
+        outer_product = wrapped_radii.unsqueeze(-1) * forces.unsqueeze(-2)
         stress_tensor_potential = outer_product.sum(dim=1) / (3 * V)
 
         # Kinetic Contribution
@@ -360,7 +362,9 @@ class NPT:
         deltazeta = dt * self.tfact * (self.get_kinetic_energy() - self.desiredEkin)
         self.zeta_past = self.zeta - deltazeta
         self._calculate_q_past_and_future()
+        self.forces = self.get_forces()
         self.initialized = 1
+
 
     def get_potential_energy(self):
         energy, _ = self.energy_force_func(self.radii)
@@ -383,13 +387,13 @@ class NPT:
         ekin = self.get_kinetic_energy().squeeze()
         return ekin / (1.5 * (n - 1))
 
-    def get_pressure(self):
+    def get_pressure(self, forces = None):
         """Get the pressure of the system."""
-        stress = self.get_stress()
+        stress = self.get_stress(forces)
         return stress[:, :3].mean(axis=1)
 
     def log(self):
-        log_str = f"Pressure: {round(self.get_pressure().mean().item(), 3)}, Volume: {round(self._getvolume().mean().item(), 2)}, Temperature: {round(self.get_temperature().mean().item() / units.kB, 2)}, Gibbs Free Energy: {round(self.get_gibbs_free_energy().mean().item(), 2)}"
+        log_str = f"Pressure: {round(self.get_pressure(self.forces).mean().item(), 3)}, Volume: {round(self._getvolume().mean().item(), 2)}, Temperature: {round(self.get_temperature().mean().item() / units.kB, 2)}, Gibbs Free Energy: {round(self.get_gibbs_free_energy().mean().item(), 2)}"
         return log_str
 
     def get_gibbs_free_energy(self):
