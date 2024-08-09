@@ -330,6 +330,7 @@ class ImplicitMDSimulator():
                                     self.pressure_au, 
                                     self.ttime * units.fs, 
                                     self.pfactor)
+            self.original_npt_state = self.npt_integrator.get_state()
             
         self.diameter_viz = params.diameter_viz
         self.exp_name = params.exp_name
@@ -475,6 +476,8 @@ class ImplicitMDSimulator():
             self.radii = self.original_radii
             self.velocities = self.original_velocities
             self.zeta = self.original_zeta
+            if self.integrator == 'NPT':
+                self.npt_integrator.set_state(self.original_npt_state)
 
         else:
             if self.first_simulation: #random replica reset
@@ -495,6 +498,9 @@ class ImplicitMDSimulator():
             self.radii = torch.where(exp_reset_replicas, self.original_radii.detach().clone(), self.radii.detach().clone()).requires_grad_(True)
             self.velocities = torch.where(exp_reset_replicas, self.original_velocities.detach().clone(), self.velocities.detach().clone()).requires_grad_(True)
             self.zeta = torch.where(reset_replicas.unsqueeze(-1).unsqueeze(-1), self.original_zeta.detach().clone(), self.zeta.detach().clone()).requires_grad_(True)
+            if self.integrator == 'NPT':
+                self.npt_integrator.set_state(self.original_npt_state, reset_replicas)
+
             #update stability times for each replica
             if not self.train:
                 self.stable_time = torch.where(reset_replicas, self.stable_time, self.stable_time + self.ps_per_epoch)
@@ -686,6 +692,8 @@ class ImplicitMDSimulator():
         self.original_radii = self.radii.clone()
         self.original_velocities = self.velocities.clone()
         self.original_zeta = self.zeta.clone()
+        if self.integrator == 'NPT':
+            self.original_npt_state = self.npt_integrator.get_state()
         #log checkpoint states for resetting
         if not self.all_unstable:
             self.checkpoint_radii.append(self.original_radii)

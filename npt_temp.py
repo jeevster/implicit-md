@@ -73,7 +73,9 @@ class NPT:
         self.ttime = ttime
         self.pfactor_given = pfactor
         self._calculateconstants()
-        self.timeelapsed = 0.0
+        self.timeelapsed = torch.zeros((self._getnreplicas(), 1, 1), dtype=torch.float32).to(
+            self.device
+        )
         self.frac_traceless = 0.0  # volume may change but shape may not
 
         self.initialize()
@@ -222,7 +224,7 @@ class NPT:
     def step(self, retain_grad=False):
         """Perform a single time step.
 
-        Assumes that the forces and stresses are up to date, and that
+        Assumes that the forces anfd stresses are up to date, and that
         the positions and momenta have not been changed since last
         timestep.
         """
@@ -455,18 +457,58 @@ class NPT:
             "frac_traceless": self.frac_traceless,
         }
 
-    def get_data(self):
+    def get_state(self):
         "Return data needed to restore the state."
         return {
+            "radii": self.radii,
+            "velocities": self.velocities,
             "eta": self.eta,
             "eta_past": self.eta_past,
             "zeta": self.zeta,
             "zeta_past": self.zeta_past,
             "zeta_integrated": self.zeta_integrated,
+            "q": self.q,
+            "q_past": self.q_past,
+            "q_future": self.q_future,
             "h": self.h,
             "h_past": self.h_past,
             "timeelapsed": self.timeelapsed,
+            "cell": self.cell
+
         }
+    
+    def set_state(self, state, reset_replicas = None):
+        if reset_replicas is None:
+            self.radii = state["radii"]
+            self.velocities = state["velocities"]
+            self.eta = state["eta"]
+            self.eta_past = state["eta_past"]
+            self.zeta = state["zeta"]
+            self.zeta_past = state["zeta_past"]
+            self.zeta_integrated = state["zeta_integrated"]
+            self.q = state["q"]
+            self.q_past = state["q_past"]
+            self.q_future = state["q_future"]
+            self.h = state["h"]
+            self.h_past = state["h_past"]
+            self.timeelapsed = state["timeelapsed"]
+            self.cell = state["cell"]
+        else:
+            reset_replicas = (reset_replicas).unsqueeze(-1).unsqueeze(-1)
+            self.radii = torch.where(reset_replicas, state["radii"], self.radii)
+            self.velocities = torch.where(reset_replicas, state["velocities"], self.velocities)
+            self.eta = torch.where(reset_replicas, state["eta"], self.eta)
+            self.eta_past = torch.where(reset_replicas, state["eta_past"], self.eta_past)
+            self.zeta = torch.where(reset_replicas, state["zeta"], self.zeta)
+            self.zeta_past = torch.where(reset_replicas, state["zeta_past"], self.zeta_past)
+            self.zeta_integrated = torch.where(reset_replicas, state["zeta_integrated"], self.zeta_integrated)
+            self.q = torch.where(reset_replicas, state["q"], self.q)
+            self.q_past = torch.where(reset_replicas, state["q_past"], self.q_past)
+            self.q_future = torch.where(reset_replicas, state["q_future"], self.q_future)
+            self.h = torch.where(reset_replicas, state["h"], self.h)
+            self.h_past = torch.where(reset_replicas, state["h_past"], self.h_past)
+            self.timeelapsed = torch.where(reset_replicas, state["timeelapsed"], self.timeelapsed)
+            self.cell = torch.where(reset_replicas, state["cell"], self.cell)
 
     def _getbox(self):
         "Get the computational box."
