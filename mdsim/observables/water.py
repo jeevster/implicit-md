@@ -187,7 +187,7 @@ def find_water_rdfs_diffusivity_from_file(base_path: str, size: str, params, dev
     oxygen_atoms_mask = atom_types==8
     lattices = torch.tensor(gt_data.f.lengths[0]).float()
     gt_traj = torch.tensor(gt_data.f.unwrapped_coords)
-    gt_data_continuous = np.load(os.path.join(base_path, 'contiguous-water', '90k', 'train/nequip_npz.npz'))
+    gt_data_continuous = np.load(os.path.join(base_path, 'contiguous-water', '10k', 'test/nequip_npz.npz'))
     gt_traj_continuous = torch.tensor(gt_data_continuous.f.unwrapped_coords)
     gt_diffusivity, gt_msd = get_smoothed_diffusivity(gt_traj_continuous[0::100, atom_types==8]) # track diffusivity of oxygen atoms, unit is A^2/ps
     gt_diffusivity = gt_diffusivity[:100].to(device)

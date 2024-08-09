@@ -510,8 +510,11 @@ class ImplicitMDSimulator():
                 radii.requires_grad = True
             
             if self.pbc:
-                # wrap (changing the cell doesn't work)
-                diag = torch.diag(self.cell)
+                # wrap
+                if cell is not None:
+                    diag = vmap(torch.diag)(cell).unsqueeze(1)
+                else:
+                    diag = torch.diag(self.cell)
                 radii = ((radii / diag) % 1) * diag  - diag/2
             
             #assign radii and batch
@@ -576,7 +579,7 @@ class ImplicitMDSimulator():
             (1 + 0.5 * self.dt * zeta)
         # dump frames
         if self.step%self.n_dump == 0:
-            print(self.step, self.thermo_log(energy), file=self.f)
+            print(self.step, self.thermo_log(energy, forces), file=self.f)
             step  = self.step if self.train else (self.epoch+1) * self.step #don't overwrite previous epochs at inference time
             try:   
                 self.t.append(self.create_frame(frame = step/self.n_dump))
@@ -594,7 +597,7 @@ class ImplicitMDSimulator():
         velocities = velocities + self.dt*(forces/self.masses - self.gamma * velocities) + self.noise_f * noise
         # # dump frames
         if self.step%self.n_dump == 0:
-            print(self.step, self.thermo_log(energy), file=self.f)
+            print(self.step, self.thermo_log(energy, forces), file=self.f)
             step  = self.step if self.train else (self.epoch+1) * self.step #don't overwrite previous epochs at inference time
             try:    
                 self.t.append(self.create_frame(frame = self.step/self.n_dump))
@@ -711,12 +714,14 @@ class ImplicitMDSimulator():
                 #MD Step
                 if self.integrator == 'NoseHoover':
                     radii, velocities, forces, zeta = self.forward_nosehoover(self.radii, self.velocities, forces, zeta, retain_grad = False)
+            
                 elif self.integrator == 'Langevin':
                     radii, velocities, forces, noise = self.forward_langevin(self.radii, self.velocities, forces, retain_grad = False)
                 elif self.integrator == 'Berendsen':
                     radii, velocities, forces, cell = self.forward_berendsen(self.radii, self.velocities, forces, cell, retain_grad = False)
                 elif self.integrator == 'NPT':
                     radii, velocities, forces, cell = self.npt_integrator.step(retain_grad = False)
+                    self.npt_integrator.log()
                     step  = self.step if self.train else (self.epoch+1) * self.step #don't overwrite previous epochs at inference time
                     self.t.append(self.create_frame(frame = step/self.n_dump, cell = cell[0]))
                     
@@ -823,15 +828,36 @@ class ImplicitMDSimulator():
             s.bonds.group = detach_numpy(self.bonds)
         return s
     
-    def thermo_log(self, pe):
+    def thermo_log(self, pe, forces):
         #Log energies and instabilities
         p_dof = 3*self.n_atoms
         ke = 1/2 * (self.masses*torch.square(self.velocities)).sum(axis = (1,2)).unsqueeze(-1)
         temp = (2*ke/p_dof).mean() / units.kB
+
+        # pressure calculation
+        B, N, _ = self.radii.shape
+        V = torch.linalg.det(self.cell.unsqueeze(0).repeat(self.n_replicas, 1, 1)).unsqueeze(-1).unsqueeze(-1)
+
+        # Potential (Virial) Contribution
+        outer_product = self.radii.unsqueeze(-1) * forces.unsqueeze(-2)
+        stress_tensor_potential = outer_product.sum(dim=1) / V
+
+        # Kinetic Contribution
+        kinetic_contrib = (
+            self.masses.unsqueeze(-1)
+            * self.velocities.unsqueeze(-1)
+            * self.velocities.unsqueeze(-2)
+        ).sum(dim=1) / V
+
+        # Total Stress Tensor
+        stress_tensor = stress_tensor_potential + kinetic_contrib
+        pressure = - vmap(torch.diag)(stress_tensor).mean(dim = 1)
+    
         instability = self.stability_criterion(self.radii.unsqueeze(0))
         if isinstance(instability, tuple):
             instability = instability[-1]
         results_dict = {"Temperature": temp.item(),
+                        "Pressure": pressure.mean().item(),
                         "Potential Energy": pe.mean().item(),
                         "Total Energy": (ke+pe).mean().item(),
                         "Momentum Magnitude": torch.norm(torch.sum(self.masses*self.velocities, axis =-2)).item(),
@@ -1167,11 +1193,11 @@ if __name__ == "__main__":
         lrs.append(simulator.optimizer.param_groups[0]['lr'])
         #energy/force error
         if epoch == 0 or (simulator.optimizer.param_groups[0]['lr'] > 0 and params.train): #don't compute it unless we are in the learning phase
-            #energy_rmse, force_rmse, energy_mae, force_mae = simulator.energy_force_error()
-            energy_rmse = 0
-            force_rmse = 0
-            energy_mae = 0
-            force_mae = 0
+            energy_rmse, force_rmse, energy_mae, force_mae = simulator.energy_force_error()
+            # energy_rmse = 0
+            # force_rmse = 0
+            # energy_mae = 0
+            # force_mae = 0
             energy_rmses.append(energy_rmse)
             force_rmses.append(force_rmse)
             energy_maes.append(energy_mae)

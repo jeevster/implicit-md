@@ -9,6 +9,7 @@ from ase.md.md import MolecularDynamics
 
 import torch
 from torch import Tensor
+
 linalg = torch.linalg
 
 from functorch import vmap
@@ -20,7 +21,7 @@ from functorch import vmap
 class NPT:
 
     classname = "NPT"  # Used by the trajectory.
-    _npt_version = 2   # Version number, used for Asap compatibility.
+    _npt_version = 2  # Version number, used for Asap compatibility.
 
     def __init__(
         self,
@@ -29,7 +30,7 @@ class NPT:
         velocities,
         masses,
         cell,
-        pbc, 
+        pbc,
         atomic_numbers,
         energy_force_func,
         timestep: float,
@@ -41,7 +42,7 @@ class NPT:
         temperature_K: Optional[float] = None,
         mask: Optional[Union[Tuple[int], Tensor]] = None,
     ):
-        
+
         self.dt = timestep
         self.atoms_batch = atoms_batch
         self.pbc = pbc
@@ -55,19 +56,25 @@ class NPT:
         if externalstress is None and pfactor is not None:
             raise TypeError("Missing 'externalstress' argument.")
         self.zero_center_of_mass_momentum(verbose=1)
-        self.set_temperature(temperature = temperature)
+        self.set_temperature(temperature=temperature)
         if externalstress is not None:
             self.set_stress(externalstress)
         self.set_mask(mask)
-        self.eta = torch.zeros((self._getnreplicas(), 3, 3), dtype=torch.float32).to(self.device)
-        self.zeta = torch.zeros((self._getnreplicas(), 1, 1), dtype=torch.float32).to(self.device)
-        self.zeta_integrated = torch.zeros((self._getnreplicas(), 1, 1), dtype=torch.float32).to(self.device)
+        self.eta = torch.zeros((self._getnreplicas(), 3, 3), dtype=torch.float32).to(
+            self.device
+        )
+        self.zeta = torch.zeros((self._getnreplicas(), 1, 1), dtype=torch.float32).to(
+            self.device
+        )
+        self.zeta_integrated = torch.zeros(
+            (self._getnreplicas(), 1, 1), dtype=torch.float32
+        ).to(self.device)
         self.initialized = 0
         self.ttime = ttime
         self.pfactor_given = pfactor
         self._calculateconstants()
         self.timeelapsed = 0.0
-        self.frac_traceless = 1
+        self.frac_traceless = 1.0
 
         self.initialize()
 
@@ -95,21 +102,30 @@ class NPT:
         the object.
         """
 
-        if isinstance(stress, (int, float)) or (isinstance(stress, Tensor) and stress.numel() == 1):
-            stress = torch.tensor([-stress, -stress, -stress, 0.0, 0.0, 0.0]).to(self.device)
+        if isinstance(stress, (int, float)) or (
+            isinstance(stress, Tensor) and stress.numel() == 1
+        ):
+            stress = torch.tensor([-stress, -stress, -stress, 0.0, 0.0, 0.0]).to(
+                self.device
+            )
         else:
             stress = torch.tensor(stress).to(self.device)
             if stress.shape == (3, 3):
                 if not self._issymmetric(stress):
-                    raise ValueError(
-                        "The external stress must be a symmetric tensor.")
-                stress = torch.tensor((stress[0, 0], stress[1, 1],
-                                   stress[2, 2], stress[1, 2],
-                                   stress[0, 2], stress[0, 1])).to(self.device)
+                    raise ValueError("The external stress must be a symmetric tensor.")
+                stress = torch.tensor(
+                    (
+                        stress[0, 0],
+                        stress[1, 1],
+                        stress[2, 2],
+                        stress[1, 2],
+                        stress[0, 2],
+                        stress[0, 1],
+                    )
+                ).to(self.device)
             elif stress.shape != (6,):
                 raise ValueError("The external stress has the wrong shape.")
         self.externalstress = stress
-
 
     def set_mask(self, mask):
         """Set the mask indicating dynamic elements of the computational box.
@@ -129,8 +145,9 @@ class NPT:
         if not hasattr(mask, "shape"):
             mask = torch.tensor(mask).to(self.device)
         if mask.shape != (3,) and mask.shape != (3, 3):
-            raise RuntimeError('The mask has the wrong shape ' +
-                               '(must be a 3-vector or 3x3 matrix)')
+            raise RuntimeError(
+                "The mask has the wrong shape " + "(must be a 3-vector or 3x3 matrix)"
+            )
         else:
             mask = torch.ne(mask, 0)  # Make sure it is 0/1
 
@@ -138,7 +155,6 @@ class NPT:
             self.mask = torch.outer(mask, mask)
         else:
             self.mask = mask
-
 
     def set_fraction_traceless(self, fracTraceless):
         """set what fraction of the traceless part of the force
@@ -148,7 +164,6 @@ class NPT:
         """
         self.frac_traceless = fracTraceless
 
-
     def get_strain_rate(self):
         """Get the strain rate as an upper-triangular 3x3 matrix.
 
@@ -156,7 +171,6 @@ class NPT:
 
         """
         return torch.tensor(self.eta, copy=1).to(self.device)
-
 
     def set_strain_rate(self, rate):
         """Set the strain rate.  Must be an upper triangular 3x3 matrix.
@@ -172,11 +186,9 @@ class NPT:
             # Recalculate h_past and eta_past so they match the current value.
             self._initialize_eta_h()
 
-
     def get_time(self):
         "Get the elapsed time."
         return self.timeelapsed
-
 
     def run(self, steps):
         """Perform a number of time steps."""
@@ -185,13 +197,13 @@ class NPT:
         else:
             if self.have_the_atoms_been_changed():
                 raise NotImplementedError(
-                    "You have modified the atoms since the last timestep.")
+                    "You have modified the atoms since the last timestep."
+                )
 
         for _ in range(steps):
             self.step(retain_grad=False)
             self.nsteps += 1
             self.call_observers()
-
 
     def have_the_atoms_been_changed(self):
         "Checks if the user has modified the positions or momenta of the atoms"
@@ -203,12 +215,11 @@ class NPT:
         expected_r = torch.bmm(self.q + 0.5, h)
         err = max(abs((expected_r - self.radii).ravel()))
         if err > limit:
-            self._warning("The atomic positions have been modified: " +
-                          str(err))
+            self._warning("The atomic positions have been modified: " + str(err))
             return 1
         return 0
 
-    def step(self, retain_grad = False):
+    def step(self, retain_grad=False):
         """Perform a single time step.
 
         Assumes that the forces and stresses are up to date, and that
@@ -230,21 +241,26 @@ class NPT:
             deltaeta = torch.zeros(6, dtype=torch.float32).to(self.device)
         else:
             stress = self.get_stress()
-            # print("Stress:", stress)
-            deltaeta = -2 * dt * ((self.pfact * linalg.det(self.h)).unsqueeze(-1) *
-                                  (stress - self.externalstress))
+            deltaeta = (
+                -2
+                * dt
+                * (
+                    (self.pfact * linalg.det(self.h)).unsqueeze(-1)
+                    * (stress - self.externalstress)
+                )
+            )
 
         if self.frac_traceless == 1:
-            eta_future = self.eta_past + self.mask * \
-                self._makeuppertriangular(deltaeta)
+            eta_future = self.eta_past + self.mask * self._makeuppertriangular(deltaeta)
         else:
             trace_part, traceless_part = self._separatetrace(
-                self._makeuppertriangular(deltaeta))
-            eta_future = (self.eta_past + trace_part +
-                          self.frac_traceless * traceless_part)
+                self._makeuppertriangular(deltaeta)
+            )
+            eta_future = (
+                self.eta_past + trace_part + self.frac_traceless * traceless_part
+            )
 
-        deltazeta = 2 * dt * self.tfact * (self.get_kinetic_energy() -
-                                           self.desiredEkin)
+        deltazeta = 2 * dt * self.tfact * (self.get_kinetic_energy() - self.desiredEkin)
         zeta_future = self.zeta_past + deltazeta
         # Advance time
         self.timeelapsed += dt
@@ -264,20 +280,19 @@ class NPT:
         self.velocities = torch.bmm(self.q_future - self.q_past, self.h / (2 * dt))
 
         return self.radii, self.velocities, force, self._getbox()
-        
 
     def get_stress(self):
-        
+
         """
         Compute the stress tensor for a batch of systems. Useful for NPT simulation
-        
+
         Parameters:
         positions (torch.Tensor): Tensor of shape [B, N, 3] representing positions of atoms.
         velocities (torch.Tensor): Tensor of shape [B, N, 3] representing velocities of atoms.
         forces (torch.Tensor): Tensor of shape [B, N, 3] representing forces on atoms.
         masses (torch.Tensor): Tensor of shape [1, N, 1] representing masses of atoms.
         volume (float): Volume of the system.
-        
+
         Returns:
         torch.Tensor: Stress tensor of shape [B, 6].
         """
@@ -285,19 +300,27 @@ class NPT:
         V = self._getvolume().unsqueeze(-1).unsqueeze(-1)
 
         # Potential (Virial) Contribution
+        # 1 atm: 6e-6 au
+        # Mean pressure of NVT simulation: 2e-4 (300 atm)
+        
+
         outer_product = self.radii.unsqueeze(-1) * self.get_forces().unsqueeze(-2)
-        stress_tensor_potential = outer_product.sum(dim=1) / V
+        stress_tensor_potential = outer_product.sum(dim=1) / (3*V)
 
         # Kinetic Contribution
-        kinetic_contrib = (self.masses.unsqueeze(-1) * self.velocities.unsqueeze(-1) * self.velocities.unsqueeze(-2)).sum(dim=1) / V
+        kinetic_contrib = (
+            self.masses.unsqueeze(-1)
+            * self.velocities.unsqueeze(-1)
+            * self.velocities.unsqueeze(-2)
+        ).sum(dim=1) / V
 
         # Total Stress Tensor
         stress_tensor = stress_tensor_potential + kinetic_contrib
 
         # Convert from 3x3 matrix to six-vector
         stress_tensor = self._makesixvector(stress_tensor)
-        
-        return - stress_tensor # Negative sign to match the ASE sign convention
+
+        return - stress_tensor  # Negative sign to match the ASE sign convention
 
     def initialize(self):
         """Initialize the dynamics.
@@ -321,15 +344,15 @@ class NPT:
             print("Max:", max((self.h[1, 0], self.h[2, 0], self.h[2, 1])))
             raise NotImplementedError(
                 "Can (so far) only operate on lists of atoms where the "
-                "computational box is an upper triangular matrix.")
+                "computational box is an upper triangular matrix."
+            )
         self.inv_h = linalg.inv(self.h)
         # The contents of the q arrays should migrate in parallel simulations.
         # self._make_special_q_arrays()
         self.q = torch.bmm(self.radii, self.inv_h) - 0.5
         # zeta and eta were set in __init__
         self._initialize_eta_h()
-        deltazeta = dt * self.tfact * (self.get_kinetic_energy() -
-                                       self.desiredEkin)
+        deltazeta = dt * self.tfact * (self.get_kinetic_energy() - self.desiredEkin)
         self.zeta_past = self.zeta - deltazeta
         self._calculate_q_past_and_future()
         self.initialized = 1
@@ -337,14 +360,38 @@ class NPT:
     def get_potential_energy(self):
         energy, _ = self.energy_force_func(self.radii)
         return energy.squeeze()
-    
-    def get_forces(self, retain_grad = False):
-        _, force = self.energy_force_func(self.radii, retain_grad = retain_grad)
-        return force
-    
-    def get_kinetic_energy(self):
-        return 0.5 * (self.masses*torch.square(self.velocities)).sum(axis = (1,2), keepdims=True)
 
+    def get_forces(self, retain_grad=False):
+        _, force = self.energy_force_func(self.radii, self.cell, retain_grad=retain_grad)
+        return force
+
+    def get_kinetic_energy(self):
+        return 0.5 * (self.masses * torch.square(self.velocities)).sum(
+            axis=(1, 2), keepdims=True
+        )
+
+    def get_temperature(self):
+        """Get the temperature of the system."""
+        n = self._getnatoms()
+        ekin = self.get_kinetic_energy().squeeze()
+        return ekin / (1.5 * (n - 1))
+
+    def get_pressure(self):
+        """Get the pressure of the system."""
+        stress = self.get_stress()
+        return stress[:, :3].mean(axis=1)
+
+    def log(self):
+        print(
+            "Pressure: ",
+            round(self.get_pressure().mean().item(), 3),
+            "Volume: ",
+            round(self._getvolume().mean().item(), 2),
+            "Temperature: ",
+            round(self.get_temperature().mean().item() / units.kB, 2),
+            "Gibbs Free Energy: ",
+            round(self.get_gibbs_free_energy().mean().item(), 2),
+        )
 
     def get_gibbs_free_energy(self):
         """Return the Gibb's free energy, which is supposed to be conserved.
@@ -359,15 +406,18 @@ class NPT:
         n = self._getnatoms()
         # tretaTeta = sum(diagonal(matrixmultiply(transpose(self.eta),
         #                                        self.eta)))
-    
-        contractedeta = torch.sum(self.eta * self.eta, dim = (1,2))
-        gibbs = (self.get_potential_energy() +
-                 self.get_kinetic_energy().squeeze()
-                 - torch.sum(self.externalstress[0:3]) * linalg.det(self.h) / 3.0)
+
+        contractedeta = torch.sum(self.eta * self.eta, dim=(1, 2))
+        gibbs = (
+            self.get_potential_energy()
+            + self.get_kinetic_energy().squeeze()
+            - torch.sum(self.externalstress[0:3]) * linalg.det(self.h) / 3.0
+        )
         if self.ttime is not None:
-            gibbs += (1.5 * n * self.temperature *
-                      (self.ttime * self.zeta.squeeze())**2 +
-                      3 * self.temperature * (n - 1) * self.zeta_integrated.squeeze())
+            gibbs += (
+                1.5 * n * self.temperature * (self.ttime * self.zeta.squeeze()) ** 2
+                + 3 * self.temperature * (n - 1) * self.zeta_integrated.squeeze()
+            )
         else:
             assert self.zeta == 0.0
         if self.pfactor_given is not None:
@@ -375,7 +425,6 @@ class NPT:
         else:
             assert contractedeta == 0.0
         return gibbs
-
 
     def get_center_of_mass_momentum(self):
         "Get the center of mass momentum."
@@ -390,31 +439,37 @@ class NPT:
         #         self.classname +
         #         ": Setting the center-of-mass momentum to zero "
         #         "(was %.6g %.6g %.6g)" % tuple(cm))
-        self.velocities = self.velocities - cm.unsqueeze(1) / self.masses / self._getnatoms()
-    
+        self.velocities = (
+            self.velocities - cm.unsqueeze(1) / self.masses / self._getnatoms()
+        )
+
     def get_init_data(self):
         "Return the data needed to initialize a new NPT dynamics."
-        return {'dt': self.dt,
-                'temperature': self.temperature,
-                'desiredEkin': self.desiredEkin,
-                'externalstress': self.externalstress,
-                'mask': self.mask,
-                'ttime': self.ttime,
-                'tfact': self.tfact,
-                'pfactor_given': self.pfactor_given,
-                'pfact': self.pfact,
-                'frac_traceless': self.frac_traceless}
+        return {
+            "dt": self.dt,
+            "temperature": self.temperature,
+            "desiredEkin": self.desiredEkin,
+            "externalstress": self.externalstress,
+            "mask": self.mask,
+            "ttime": self.ttime,
+            "tfact": self.tfact,
+            "pfactor_given": self.pfactor_given,
+            "pfact": self.pfact,
+            "frac_traceless": self.frac_traceless,
+        }
 
     def get_data(self):
         "Return data needed to restore the state."
-        return {'eta': self.eta,
-                'eta_past': self.eta_past,
-                'zeta': self.zeta,
-                'zeta_past': self.zeta_past,
-                'zeta_integrated': self.zeta_integrated,
-                'h': self.h,
-                'h_past': self.h_past,
-                'timeelapsed': self.timeelapsed}
+        return {
+            "eta": self.eta,
+            "eta_past": self.eta_past,
+            "zeta": self.zeta,
+            "zeta_past": self.zeta_past,
+            "zeta_integrated": self.zeta_integrated,
+            "h": self.h,
+            "h_past": self.h_past,
+            "timeelapsed": self.timeelapsed,
+        }
 
     def _getbox(self):
         "Get the computational box."
@@ -428,7 +483,9 @@ class NPT:
         """return two matrices, one proportional to the identity
         the other traceless, which sum to the given matrix
         """
-        tracePart = ((mat[:, 0, 0] + mat[:, 1, 1] + mat[:, 2, 2]) / 3.) * torch.eye(3).unsqueeze(0).to(self.device)
+        tracePart = ((mat[:, 0, 0] + mat[:, 1, 1] + mat[:, 2, 2]) / 3.0).unsqueeze(-1).unsqueeze(-1) * torch.eye(
+            3
+        ).unsqueeze(0).to(self.device)
         return tracePart, mat - tracePart
 
     # A number of convenient helper methods
@@ -441,20 +498,20 @@ class NPT:
         "Calculate future q.  Needed in Timestep and Initialization."
         dt = self.dt
         id3 = torch.eye(3).unsqueeze(0).to(self.device)
-        alpha = (dt * dt) * torch.bmm(force / self._getmasses(),
-                                   self.inv_h)
-        beta = dt * torch.bmm(self.h, torch.bmm(self.eta + 0.5 * self.zeta * id3, self.inv_h))
+        alpha = (dt * dt) * torch.bmm(force / self._getmasses(), self.inv_h)
+        beta = dt * torch.bmm(
+            self.h, torch.bmm(self.eta + 0.5 * self.zeta * id3, self.inv_h)
+        )
         inv_b = linalg.inv(beta + id3)
-        self.q_future = torch.bmm(2 * self.q +
-                               torch.bmm(self.q_past, beta - id3) + alpha,
-                               inv_b)
+        self.q_future = torch.bmm(
+            2 * self.q + torch.bmm(self.q_past, beta - id3) + alpha, inv_b
+        )
 
     def _calculate_q_past_and_future(self):
         def ekin(p, m=self._getmasses()):
-            p2 = torch.sum(p * p, (1,2), keepdim=True)
-            return 0.5 * torch.sum(p2 / m, (1,2)) / self._getnatoms()
+            p2 = torch.sum(p * p, (1, 2), keepdim=True)
+            return 0.5 * torch.sum(p2 / m, (1, 2)) / self._getnatoms()
 
-        
         p0 = self._getmasses() * self.velocities
         m = self._getmasses()
         p = p0.clone().to(self.device)
@@ -474,18 +531,22 @@ class NPT:
         if self.pfactor_given is None:
             deltaeta = torch.zeros(6, dtype=torch.float32).to(self.device)
         else:
-            deltaeta = ((-self.dt * self.pfact * linalg.det(self.h)).unsqueeze(-1) * (self.get_stress() - self.externalstress))
+            deltaeta = (-self.dt * self.pfact * linalg.det(self.h)).unsqueeze(-1) * (
+                self.get_stress() - self.externalstress
+            )
         if self.frac_traceless == 1:
             self.eta_past = self.eta - self.mask * self._makeuppertriangular(deltaeta)
         else:
             trace_part, traceless_part = self._separatetrace(
-                self._makeuppertriangular(deltaeta))
-            self.eta_past = (self.eta - trace_part -
-                             self.frac_traceless * traceless_part)
+                self._makeuppertriangular(deltaeta)
+            )
+            self.eta_past = self.eta - trace_part - self.frac_traceless * traceless_part
 
     def _makeuppertriangular(self, sixvector):
         "Make an upper triangular matrix from a batch of 6-vectors."
-        cell = torch.zeros((sixvector.shape[0], 3, 3), dtype=torch.float32).to(self.device)
+        cell = torch.zeros((sixvector.shape[0], 3, 3), dtype=torch.float32).to(
+            self.device
+        )
         cell[:, 0, 0] = sixvector[:, 0]
         cell[:, 1, 1] = sixvector[:, 1]
         cell[:, 2, 2] = sixvector[:, 2]
@@ -493,18 +554,26 @@ class NPT:
         cell[:, 0, 2] = sixvector[:, 4]
         cell[:, 0, 1] = sixvector[:, 5]
         return cell
-    
+
     def _makesixvector(self, mat):
         "Make a 6-vector from a batch of upper triangular matrices."
-        return torch.stack([mat[:, 0, 0], mat[:, 1, 1], mat[:, 2, 2],
-                        mat[:, 1, 2], mat[:, 0, 2], mat[:, 0, 1]]).T.to(self.device)
+        return torch.stack(
+            [
+                mat[:, 0, 0],
+                mat[:, 1, 1],
+                mat[:, 2, 2],
+                mat[:, 1, 2],
+                mat[:, 0, 2],
+                mat[:, 0, 1],
+            ]
+        ).T.to(self.device)
 
     @staticmethod
     def _isuppertriangular(m) -> bool:
         "Check that a matrix is on upper triangular form."
-        first = torch.allclose(m[:, 1, 0], torch.zeros_like(m[:, 1, 0]), atol = 1e-6)
-        second = torch.allclose(m[:, 2, 0], torch.zeros_like(m[:, 2, 0]), atol = 1e-6)
-        third = torch.allclose(m[:, 2, 1], torch.zeros_like(m[:, 2, 1]), atol = 1e-6)
+        first = torch.allclose(m[:, 1, 0], torch.zeros_like(m[:, 1, 0]), atol=1e-6)
+        second = torch.allclose(m[:, 2, 0], torch.zeros_like(m[:, 2, 0]), atol=1e-6)
+        third = torch.allclose(m[:, 2, 1], torch.zeros_like(m[:, 2, 1]), atol=1e-6)
         return first and second and third
 
     def _calculateconstants(self):
@@ -515,8 +584,7 @@ class NPT:
         if not hasattr(self, "ttime"):
             self.tfact = 0.0
         else:
-            self.tfact = 2.0 / (3 * n * self.temperature *
-                                self.ttime * self.ttime)
+            self.tfact = 2.0 / (3 * n * self.temperature * self.ttime * self.ttime)
         if not hasattr(self, "pfactor_given"):
             self.pfact = 0.0
         else:
@@ -533,7 +601,7 @@ class NPT:
     def _getnreplicas(self):
         """Get the number of replicas."""
         return self.radii.shape[0]
-  
+
     def _getnatoms(self):
         """Get the number of atoms.
 
