@@ -606,7 +606,7 @@ class ImplicitMDSimulator():
             print(self.step, self.thermo_log(energy, forces, self.cell), file=self.f)
             step  = self.step if self.train else (self.epoch+1) * self.step #don't overwrite previous epochs at inference time
             try:    
-                self.t.append(self.create_frame(frame = self.step/self.n_dump))
+                self.t.append(self.create_frame(frame = step/self.n_dump))
             except:
                 pass
         return radii, velocities, forces, noise
@@ -636,13 +636,11 @@ class ImplicitMDSimulator():
 
         # scale positions and cell
         taupscl = self.dt / self.taup
-        volume = vmap(torch.diag)(cell).prod(dim = 1) # assumes cubic cell
         # calculate stress
-        stress = get_stress(radii, velocities, forces, self.masses, volume)
+        stress = get_stress(radii, velocities, forces, self.masses, cell)
         
-        old_pressure = -vmap(torch.diag)(stress).mean(dim = 1) # TODO: verify negative sign
+        old_pressure = vmap(torch.diag)(stress).mean(dim = 1)
         scl_pressure = (1.0 - taupscl * self.compressibility_au / 3.0 * (self.pressure_au - old_pressure))
-
         # TODO: make sure we are doing this correctly - updating cell with atom position scaling
         new_cell = cell
         new_cell = scl_pressure.unsqueeze(-1).unsqueeze(-1) * new_cell
@@ -671,10 +669,20 @@ class ImplicitMDSimulator():
         # cannot use self.masses in the line above.
 
         velocities = p / self.masses
-        _, forces = self.force_calc(radii, retain_grad = retain_grad)
+        energy, forces = self.force_calc(radii, retain_grad = retain_grad)
         accel = forces / self.masses
         
         velocities = velocities + 0.5 * self.dt * accel
+
+        # # dump frames
+        if self.step%self.n_dump == 0:
+            # print(self.step, self.thermo_log(energy, forces, cell))
+            print(self.step, self.thermo_log(energy, forces, cell), file=self.f)
+            step = self.step if self.train else (self.epoch+1) * self.step #don't overwrite previous epochs at inference time
+            try:    
+                self.t.append(self.create_frame(frame = step/self.n_dump))
+            except:
+                pass
 
         return radii, velocities, forces, cell
 
@@ -849,6 +857,7 @@ class ImplicitMDSimulator():
         if len(cell.shape) == 2:
             cell = cell.unsqueeze(0).repeat(self.n_replicas, 1, 1)
         stress_tensor = get_stress(self.radii, self.velocities, forces, self.masses, cell)
+        volume = torch.linalg.det(cell)
         pressure = vmap(torch.diag)(stress_tensor).mean(dim = 1)
     
         instability = self.stability_criterion(self.radii.unsqueeze(0))
@@ -856,6 +865,7 @@ class ImplicitMDSimulator():
             instability = instability[-1]
         results_dict = {"Temperature": temp.item(),
                         "Pressure": pressure.mean().item(),
+                        "Volume": volume.mean().item(),
                         "Potential Energy": pe.mean().item(),
                         "Total Energy": (ke+pe).mean().item(),
                         "Momentum Magnitude": torch.norm(torch.sum(self.masses*self.velocities, axis =-2)).item(),
