@@ -1239,13 +1239,13 @@ if __name__ == "__main__":
             full_traj = torch.stack(simulator.all_radii)
             np.save(os.path.join(results_dir, 'full_traj.npy'), full_traj)
             
-            if epoch % 5 == 0 and epoch > 175: #to save time
-                if name == "md17" or name == "md22":
-                    hparams_logging = calculate_final_metrics(simulator, params, device, results_dir, energy_maes, force_maes, gt_rdf, gt_adf, gt_vacf, all_vacfs_per_replica = all_vacfs_per_replica)
-                elif name == "water":
-                    hparams_logging = calculate_final_metrics(simulator, params, device, results_dir, energy_maes, force_maes, gt_rdf, gt_adf, gt_diffusivity = gt_diffusivity, oxygen_atoms_mask = oxygen_atoms_mask)
-                for i in hparams_logging:
-                    writer.file_writer.add_summary(i)
+            # if epoch % 5 == 0 and epoch > 175: #to save time
+            #     if name == "md17" or name == "md22":
+            #         hparams_logging = calculate_final_metrics(simulator, params, device, results_dir, energy_maes, force_maes, gt_rdf, gt_adf, gt_vacf, all_vacfs_per_replica = all_vacfs_per_replica)
+            #     elif name == "water":
+            #         hparams_logging = calculate_final_metrics(simulator, params, device, results_dir, energy_maes, force_maes, gt_rdf, gt_adf, gt_diffusivity = gt_diffusivity, oxygen_atoms_mask = oxygen_atoms_mask)
+            #     for i in hparams_logging:
+            #         writer.file_writer.add_summary(i)
     
     #save metrics at end too
     if not params.train:
