@@ -526,8 +526,15 @@ class ImplicitMDSimulator():
             #assign radii and batch
             self.atoms_batch['pos'] = radii.reshape(-1, 3)
             self.atoms_batch['batch'] = batch
-            #make these match the number of replicas (different from n_replicas when doing bottom-up stuff)
-            self.atoms_batch['cell'] = self.atoms_batch['cell'][0].unsqueeze(0).repeat(batch_size, 1, 1)
+        
+            if cell is not None:
+                # update cell for NPT
+                self.atoms_batch['cell'] = cell
+            
+            #make cell and pbc match the number of replicas (different from n_replicas when doing bottom-up stuff)
+            else:
+                self.atoms_batch['cell'] = self.atoms_batch['cell'][0].unsqueeze(0).repeat(batch_size, 1, 1)
+
             self.atoms_batch['pbc'] = self.atoms_batch['pbc'][0].unsqueeze(0).repeat(batch_size, 1)
             all_energies = None
             if self.model_type == "nequip":

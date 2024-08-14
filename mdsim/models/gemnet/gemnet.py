@@ -426,6 +426,7 @@ class GemNetT(torch.nn.Module):
     def generate_interaction_graph(self, data):
         num_atoms = data.atomic_numbers.size(0)
 
+        import pdb; pdb.set_trace()
         if self.use_pbc:
             if self.otf_graph:
                 edge_index, cell_offsets, _, neighbors = radius_graph_pbc(
