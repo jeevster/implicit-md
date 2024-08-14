@@ -392,6 +392,7 @@ class BoltzmannEstimator():
                     if self.simulator.name == 'water':
                         atomic_indices_in = atomic_indices[start:end]
                     radii_in.requires_grad = True
+                    # TODO: need to input cells for NPT training
                     energy_force_output = self.simulator.force_calc(radii_in, retain_grad = True, output_individual_energies = self.simulator.name == 'water')
                     if len(energy_force_output) == 2:
                         #global energy

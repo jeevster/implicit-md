@@ -552,7 +552,6 @@ class ImplicitMDSimulator():
                 self.atoms_batch['atomic_numbers'] = self.atomic_numbers.repeat(batch_size)
                 if output_individual_energies:
                     if self.model_type == 'gemnet_t':
-                        
                         energy, all_energies, forces = self.model(self.atoms_batch, output_individual_energies = True)
                     else:
                         raise RuntimeError(f"Outputting individual energies is only supported for gemnet_t, not {self.model_type}")
@@ -745,6 +744,7 @@ class ImplicitMDSimulator():
                     radii, velocities, forces, cell = self.npt_integrator.step(retain_grad = False)
                      
                     if step % self.n_dump == 0:
+                        print(self.npt_integrator.log())
                         print(self.npt_integrator.log(), file=self.f)
                         step  = self.step if self.train else (self.epoch+1) * self.step #don't overwrite previous epochs at inference time
                         self.t.append(self.create_frame(frame = step/self.n_dump, cell = cell[0]))
@@ -1257,7 +1257,7 @@ if __name__ == "__main__":
             full_traj = torch.stack(simulator.all_radii)
             np.save(os.path.join(results_dir, 'full_traj.npy'), full_traj)
             
-            if epoch % 5 == 0 and epoch > 0.75 * params.n_epochs: #to save time
+            if epoch % 5 == 0:# and epoch > 0.75 * params.n_epochs: #to save time
                 if name == "md17" or name == "md22":
                     hparams_logging = calculate_final_metrics(simulator, params, device, results_dir, energy_maes, force_maes, gt_rdf, gt_adf, gt_vacf, all_vacfs_per_replica = all_vacfs_per_replica)
                 elif name == "water":

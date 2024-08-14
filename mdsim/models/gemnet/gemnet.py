@@ -417,6 +417,7 @@ class GemNetT(torch.nn.Module):
 
         empty_image = neighbors == 0
         if torch.any(empty_image):
+            import pdb; pdb.set_trace()
             raise ValueError(
                 f"An image has no neighbors: id={data.id[empty_image]}, "
                 f"sid={data.sid[empty_image]}, fid={data.fid[empty_image]}"
@@ -426,7 +427,6 @@ class GemNetT(torch.nn.Module):
     def generate_interaction_graph(self, data):
         num_atoms = data.atomic_numbers.size(0)
 
-        import pdb; pdb.set_trace()
         if self.use_pbc:
             if self.otf_graph:
                 edge_index, cell_offsets, _, neighbors = radius_graph_pbc(
@@ -478,6 +478,7 @@ class GemNetT(torch.nn.Module):
             select_cutoff = None
         else:
             select_cutoff = self.cutoff
+        
         (edge_index, cell_offsets, neighbors, D_st, V_st,) = self.select_edges(
             data=data,
             edge_index=edge_index,

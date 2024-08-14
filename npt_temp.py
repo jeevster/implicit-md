@@ -277,7 +277,10 @@ class NPT:
         self.zeta_past = self.zeta
         self.zeta = zeta_future
         self.zeta_integrated += dt * self.zeta
-        self.forces = self.get_forces(retain_grad)
+        try:
+            self.forces = self.get_forces(retain_grad)
+        except:
+            import pdb; pdb.set_trace()
         self._calculate_q_future(self.forces)
         self.velocities = torch.bmm(self.q_future - self.q_past, self.h / (2 * dt))
 
