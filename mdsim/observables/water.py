@@ -34,12 +34,11 @@ class WaterRDFMAE(torch.nn.Module):
         self.lattices = torch.tensor(gt_data.f.lengths[0]).float()
 
 
-    def forward(self, stacked_radii, lattices = None):
+    def forward(self, stacked_radii, lattices):
         #Expected shape of stacked_radii is [Timesteps, N_replicas, N_atoms, 3]
         # Expected shape of lattices is N_replicas x 3 x 3
         max_maes = []
         rdf_list = []
-        # TODO: use lattices if provided
         for i in range(stacked_radii.shape[1]): #explicit loop since vmap makes some numpy things weird
             rdfs, _ = get_water_rdfs(stacked_radii[:, i], self.ptypes[:stacked_radii.shape[-2]], torch.diag(lattices[i]).cpu(), self.bins, self.device)
             #compute MAEs of all element-conditioned RDFs
@@ -133,6 +132,8 @@ def distance_pbc_select(x, lattices, indices0, indices1):
 def get_water_rdfs(data_seq, ptypes, lattices, bins, device='cpu'):
     """
     get atom-type conditioned water RDF curves.
+    data_seq: torch.Tensor, shape [Timesteps, N_atoms, 3]
+    lattices: torch.Tensor, either shape [3] (shared lattice) or [N_timesteps, 3] (per-timestep lattices - must be same length as data_seq, used for NPT simulations)
     """
     data_seq = data_seq.to(device).float()
     lattices = lattices.to(device).float()
@@ -141,6 +142,9 @@ def get_water_rdfs(data_seq, ptypes, lattices, bins, device='cpu'):
         'O': ptypes == 8
     }
     pairs = [('O', 'O'), ('H', 'H'), ('H', 'O')]
+    if len(lattices.shape) != 1:
+        assert len(lattices.shape) == 2 and lattices.shape[0] == data_seq.shape[0]
+        lattices = lattices.unsqueeze(1) # now shape is [N_Timesteps, 1, 3]
     
     data_seq = ((data_seq / lattices) % 1) * lattices #coords are wrapped
     all_rdfs = {}

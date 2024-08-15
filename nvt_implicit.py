@@ -298,6 +298,7 @@ class ImplicitMDSimulator():
         self.original_velocities = self.velocities.clone()
         self.original_zeta = self.zeta.clone()
         self.all_radii = []
+        self.all_cell = []
         
         #create batch of atoms to be operated on
         self.r_max_key = "r_max" if self.model_type == "nequip" else "cutoff"
@@ -774,6 +775,7 @@ class ImplicitMDSimulator():
                 
                     if step % self.n_dump == 0 and not self.train:
                         self.all_radii.append(radii.detach().cpu()) #save whole trajectory without resetting at inference time
+                        self.all_cell.append(vmap(torch.diag)(cell).detach().cpu())
                 self.radii.copy_(radii)
                 self.velocities.copy_(velocities)
                     
@@ -1276,7 +1278,9 @@ if __name__ == "__main__":
         if not params.train:
             # save trajectory every epoch
             full_traj = torch.stack(simulator.all_radii)
+            full_cell = torch.stack(simulator.all_cell)
             np.save(os.path.join(results_dir, 'full_traj.npy'), full_traj)
+            np.save(os.path.join(results_dir, 'full_cell.npy'), full_cell)
             
             if epoch % 5 == 0:# and epoch > 0.75 * params.n_epochs: #to save time
                 if name == "md17" or name == "md22":
