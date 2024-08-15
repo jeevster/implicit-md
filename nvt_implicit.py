@@ -283,7 +283,6 @@ class ImplicitMDSimulator():
         radii = torch.stack([torch.Tensor(atoms.get_positions()) for atoms in self.raw_atoms])
         self.radii = (radii + torch.normal(torch.zeros_like(radii), self.ic_stddev)).to(self.device)
         self.velocities = torch.Tensor(initialize_velocities(self.n_atoms, self.masses, self.temp, self.n_replicas)).to(self.device)
-
         #assign velocities to atoms
         for i in range(len(self.raw_atoms)):
             self.raw_atoms[i].set_velocities(self.velocities[i].cpu().numpy())

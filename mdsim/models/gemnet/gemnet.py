@@ -417,7 +417,6 @@ class GemNetT(torch.nn.Module):
 
         empty_image = neighbors == 0
         if torch.any(empty_image):
-            import pdb; pdb.set_trace()
             raise ValueError(
                 f"An image has no neighbors: id={data.id[empty_image]}, "
                 f"sid={data.sid[empty_image]}, fid={data.fid[empty_image]}"
