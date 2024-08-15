@@ -56,7 +56,6 @@ class BondLengthDeviation(torch.nn.Module):
                 bonds = self.bonds[:int(n_atoms_local*2 / 3)]
             else:
                 bonds = self.bonds
-            stacked_radii = ((stacked_radii / torch.diag(self.cell)) % 1) * torch.diag(self.cell) #wrap coords
             bond_lens = distance_pbc(stacked_radii[:, :, bonds[:, 0]], stacked_radii[:,:, bonds[:, 1]], torch.diag(self.cell)).to(self.device)
         max_bond_dev_per_replica = (bond_lens - self.mean_bond_lens[:bonds.shape[0]]).abs().max(dim=-1)[0].max(dim=0)[0].detach()
         return bond_lens, max_bond_dev_per_replica
