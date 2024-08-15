@@ -69,6 +69,7 @@ def calculate_final_metrics(simulator, params, device, results_dir, energy_maes,
     elif params.name == "water":
         #TODO: compute rdfs per-replica like we did for MD17/MD22
         final_rdfs = [get_water_rdfs(traj, simulator.rdf_mae.ptypes, cell, simulator.rdf_mae.bins, device)[0] for traj, cell in zip(stable_trajs, stable_cells)]
+        
         final_rdfs_by_key = {k: torch.stack([final_rdf[k] for final_rdf in final_rdfs]) for k in gt_rdf.keys()}
         final_rdf_maes = {k: xlim* torch.abs(gt_rdf[k] - final_rdfs_by_key[k]).mean(-1).squeeze(-1) for k in gt_rdf.keys()}
         #Recording frequency is 1 ps for diffusion coefficient

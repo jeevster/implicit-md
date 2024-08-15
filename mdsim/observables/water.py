@@ -142,9 +142,12 @@ def get_water_rdfs(data_seq, ptypes, lattices, bins, device='cpu'):
         'O': ptypes == 8
     }
     pairs = [('O', 'O'), ('H', 'H'), ('H', 'O')]
+        
     if len(lattices.shape) != 1:
         assert len(lattices.shape) == 2 and lattices.shape[0] == data_seq.shape[0]
         lattices = lattices.unsqueeze(1) # now shape is [N_Timesteps, 1, 3]
+    else:
+        lattices = lattices.unsqueeze(0).unsqueeze(0).repeat(data_seq.shape[0], 1, 1) # now shape is [N_Timesteps, 1, 3]
     
     data_seq = ((data_seq / lattices) % 1) * lattices #coords are wrapped
     all_rdfs = {}
@@ -154,29 +157,22 @@ def get_water_rdfs(data_seq, ptypes, lattices, bins, device='cpu'):
         type1, type2 = pairs[idx]    
         indices0 = type2indices[type1].to(device)
         indices1 = type2indices[type2].to(device)
-        #Original Method
-        data_pdist = distance_pbc_select(data_seq, lattices, indices0, indices1)
-        data_pdist = data_pdist.flatten().cpu().numpy()
-        data_shape = data_pdist.shape[0]
-        data_pdist = data_pdist[data_pdist != 0]
-        data_hist, _ = np.histogram(data_pdist, bins)
-        rho_data = data_shape / torch.prod(lattices).cpu().numpy()
-        Z_data = rho_data * 4 / 3 * np.pi * (bins[1:] ** 3 - bins[:-1] ** 3)
-        data_rdf = data_hist / Z_data
 
-        #New Method
+
+        #New Method (separate RDF for each timestep so we can compute variance - and also for NPT simulations)
         data_pdist = distance_pbc_select(data_seq, lattices, indices0, indices1)
         data_pdist = data_pdist.cpu().numpy()
-        data_shape = data_pdist.shape[0]
+        data_shape = data_pdist.shape[1]
         data_hists = np.stack([np.histogram(dist, bins)[0] for dist in data_pdist])
-        rho_data = data_shape / torch.prod(lattices).cpu().numpy()
+        rho_data = data_shape / torch.prod(lattices, dim = -1)
+        rho_data = rho_data.cpu().numpy()
         Z_data = rho_data * 4 / 3 * np.pi * (bins[1:] ** 3 - bins[:-1] ** 3)
         data_rdfs = data_hists / Z_data
-        data_rdfs = data_rdfs / data_rdfs.sum(1, keepdims=True) * data_rdf.sum()#normalize to match original sum
         data_rdf_mean = data_rdfs.mean(0)
         data_rdf_var = data_rdfs.var(0)
         all_rdfs[type1 + type2] = torch.Tensor([data_rdf_mean]).to(device)
         all_rdfs_vars[type1 + type2] = torch.Tensor([data_rdf_var]).to(device)
+
     return all_rdfs, all_rdfs_vars
 
 
