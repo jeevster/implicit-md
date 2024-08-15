@@ -36,11 +36,12 @@ class WaterRDFMAE(torch.nn.Module):
 
     def forward(self, stacked_radii, lattices = None):
         #Expected shape of stacked_radii is [Timesteps, N_replicas, N_atoms, 3]
+        # Expected shape of lattices is N_replicas x 3 x 3
         max_maes = []
         rdf_list = []
         # TODO: use lattices if provided
         for i in range(stacked_radii.shape[1]): #explicit loop since vmap makes some numpy things weird
-            rdfs, _ = get_water_rdfs(stacked_radii[:, i], self.ptypes[:stacked_radii.shape[-2]], self.lattices, self.bins, self.device)
+            rdfs, _ = get_water_rdfs(stacked_radii[:, i], self.ptypes[:stacked_radii.shape[-2]], torch.diag(lattices[i]).cpu(), self.bins, self.device)
             #compute MAEs of all element-conditioned RDFs
             max_maes.append(torch.max(torch.cat([self.xlim*torch.abs(rdf-gt_rdf).mean().unsqueeze(-1) for rdf, gt_rdf in zip(rdfs.values(), self.gt_rdfs.values())])))
             rdf_list.append(torch.cat([rdf.flatten() for rdf in rdfs.values()]))
@@ -195,7 +196,7 @@ def find_water_rdfs_diffusivity_from_file(base_path: str, size: str, params, dev
     gt_msd = gt_msd[:100].to(device)
     #recording frequency of underlying data is 10 fs. 
     #Want to match frequency of our data collection which is params.n_dump*params.integrator_config["dt"]
-    keep_freq = math.ceil(params.n_dump*params.timestep / 10)
+    keep_freq = math.ceil(params.n_dump*params.timestep / 10) # TODO: this shouldn't need to change based on n_dump since we are only computing static properties below this point
     gt_rdfs = get_water_rdfs(gt_traj[::keep_freq], atom_types, lattices, bins, device)
     #local rdfs
     gt_local_neighborhoods = torch.cat([n_closest_molecules(gt_traj[::keep_freq], i, n_closest, torch.diag(lattices))[0] for i in range(64)])

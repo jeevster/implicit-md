@@ -6,6 +6,9 @@ import numpy as np
 
 from ase import Atoms, units
 from ase.md.md import MolecularDynamics
+from ase.calculators.tip3p import TIP3P
+from ase.constraints import FixBondLengths
+
 
 import torch
 from torch import Tensor
@@ -25,7 +28,7 @@ class NPT:
 
     def __init__(
         self,
-        atoms_batch,
+        atoms,
         radii,
         velocities,
         masses,
@@ -44,13 +47,15 @@ class NPT:
     ):
 
         self.dt = timestep
-        self.atoms_batch = atoms_batch
+        self.atoms = atoms
         self.pbc = pbc
         self.atomic_numbers = atomic_numbers
         self.radii = radii
         self.velocities = velocities
         self.masses = masses
-        self.cell = cell
+        diag = vmap(torch.diag)
+        self.cell = diag(diag(cell)) # remove off diagonal elements of cell
+    
         self.energy_force_func = energy_force_func
         self.device = self.radii.device
         if externalstress is None and pfactor is not None:
@@ -78,7 +83,19 @@ class NPT:
         )
         self.frac_traceless = 0.0  # volume may change but shape may not
 
+        self.calculator = TIP3P(rc = 5.0)
+        for atoms in self.atoms:
+            # zero out off-diagonal elements of cell
+            atoms.set_cell(np.diag(atoms.get_cell().diagonal()))
+            atoms.set_calculator(self.calculator)
+            atoms.constraints = FixBondLengths([(3 * i + j, 3 * i + (j + 1) % 3)
+                                    for i in range(int(len(atoms) / 3))
+                                    for j in [0, 1, 2]])
+
         self.initialize()
+        
+        
+
 
     def set_temperature(self, temperature=None, *, temperature_K=None):
         """Set the temperature.
@@ -288,6 +305,11 @@ class NPT:
         self._calculate_q_future(self.forces)
         self.velocities = torch.bmm(self.q_future - self.q_past, self.h / (2 * dt))
 
+        for atoms, pos, cell, vel in zip(self.atoms, self.radii, self.cell, self.velocities):
+            atoms.set_positions(pos.cpu().numpy())
+            atoms.set_cell(cell.cpu().numpy())
+            atoms.set_velocities(vel.cpu().numpy())
+
         return self.radii, self.velocities, self.forces, self._getbox()
 
     def get_stress(self, forces = None):
@@ -378,10 +400,14 @@ class NPT:
         return energy.squeeze()
 
     def get_forces(self, retain_grad=False):
-        _, force = self.energy_force_func(
-            self.radii, self.cell, retain_grad=retain_grad
-        )
-        return force
+        # _, force = self.energy_force_func(
+        #     self.radii, self.cell, retain_grad=retain_grad
+        # )
+
+
+        forces = torch.tensor(np.stack([atoms.get_forces() for atoms in self.atoms])).to(torch.float32).to(self.device)
+
+        return forces
 
     def get_kinetic_energy(self):
         return 0.5 * (self.masses * torch.square(self.velocities)).sum(

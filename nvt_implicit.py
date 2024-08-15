@@ -317,7 +317,7 @@ class ImplicitMDSimulator():
         # NPT Integrator
         cell = self.cell.unsqueeze(0).repeat(self.n_replicas, 1, 1)
         if self.integrator == 'NPT':
-            self.npt_integrator = NPT(self.atoms_batch, 
+            self.npt_integrator = NPT(self.raw_atoms, 
                                     self.radii, 
                                     self.velocities, 
                                     self.masses, 
@@ -777,18 +777,23 @@ class ImplicitMDSimulator():
                 self.radii.copy_(radii)
                 self.velocities.copy_(velocities)
                     
-            self.zeta = zeta
-            self.forces = forces
-            self.running_cell = cell
+                self.zeta = zeta
+                self.forces = forces
+                # update running cell
+                if self.integrator == 'NPT' or self.integrator == 'Berendsen':
+                    self.running_cell = cell
             self.stacked_radii = torch.stack(self.running_radii[::self.n_dump])
             # compute instability metric (either bond length deviation, min intermolecular distance, or RDF MAE)
-            self.instability_per_replica = self.stability_criterion(self.stacked_radii)
+            if isinstance(self.stability_criterion, WaterRDFMAE) or isinstance(self.stability_criterion, LiPSRDFMAE):
+                self.instability_per_replica = self.stability_criterion(self.stacked_radii, self.running_cell)
+            else:
+                self.instability_per_replica = self.stability_criterion(self.stacked_radii)
             if isinstance(self.instability_per_replica, tuple):
                 self.instability_per_replica = self.instability_per_replica[-1]
             self.mean_instability = self.instability_per_replica.mean()
             if self.pbc:
                 self.mean_bond_length_dev = self.bond_length_dev(self.stacked_radii)[1].mean()
-                self.mean_rdf_mae = self.rdf_mae(self.stacked_radii)[-1].mean()
+                self.mean_rdf_mae = self.rdf_mae(self.stacked_radii, self.running_cell)[-1].mean()
             self.stacked_vels = torch.cat(self.running_vels)
 
         
@@ -880,8 +885,11 @@ class ImplicitMDSimulator():
         stress_tensor = get_stress(self.radii, self.velocities, forces, self.masses, cell)
         volume = torch.linalg.det(cell)
         pressure = vmap(torch.diag)(stress_tensor).mean(dim = 1)
-    
-        instability = self.stability_criterion(self.radii.unsqueeze(0))
+
+        if isinstance(self.stability_criterion, WaterRDFMAE) or isinstance(self.stability_criterion, LiPSRDFMAE):
+            instability = self.stability_criterion(self.radii.unsqueeze(0), self.running_cell)
+        else:
+            instability = self.stability_criterion(self.radii.unsqueeze(0))
         if isinstance(instability, tuple):
             instability = instability[-1]
         results_dict = {"Temperature": temp.item(),
@@ -894,7 +902,7 @@ class ImplicitMDSimulator():
                                                       if self.pbc else instability.mean().item()}
         if self.pbc:
             results_dict['Minimum Intermolecular Distance'] = instability.mean().item()
-            results_dict['RDF MAE'] = self.rdf_mae(self.radii.unsqueeze(0))[-1].mean().item()
+            results_dict['RDF MAE'] = self.rdf_mae(self.radii.unsqueeze(0), self.running_cell)[-1].mean().item()
         return results_dict
 
 if __name__ == "__main__":
