@@ -249,6 +249,7 @@ class ImplicitMDSimulator():
 
         self.raw_atoms = [data_to_atoms(dataset.__getitem__(i)) for i in samples]
         self.cell = torch.Tensor(self.raw_atoms[0].cell).to(self.device)
+        self.running_cell = self.cell.unsqueeze(0).repeat(self.n_replicas, 1, 1)
         if self.name == "lips":
             dists = compute_distance_matrix_batch(self.cell,self.gt_traj_train)
             self.mean_bond_lens = dists[:, self.bonds[:, 0], self.bonds[:, 1]].mean(dim=0)
@@ -646,13 +647,21 @@ class ImplicitMDSimulator():
         
         old_pressure = vmap(torch.diag)(stress).mean(dim = 1)
         scl_pressure = (1.0 - taupscl * self.compressibility_au / 3.0 * (self.pressure_au - old_pressure))
-        # TODO: make sure we are doing this correctly - updating cell with atom position scaling
-        new_cell = cell
-        new_cell = scl_pressure.unsqueeze(-1).unsqueeze(-1) * new_cell
+        
+        # Volume scaling check
+        vol_scale = torch.det(scl_pressure.unsqueeze(-1).unsqueeze(-1) * torch.eye(3, device=self.device))
+        max_vol_change = 1.01  # Allow maximum 1% change in volume per step
+        min_vol_change = 1 / max_vol_change
+        vol_scale = torch.clamp(vol_scale, min_vol_change, max_vol_change)
+
+        # Adjust the scaling factor to respect the volume constraint
+        scl_pressure = scl_pressure * (vol_scale / torch.det(scl_pressure.unsqueeze(-1).unsqueeze(-1) * torch.eye(3, device=self.device))) ** (1/3)
+
+        # Apply scaling to cell
+        new_cell = scl_pressure.unsqueeze(-1).unsqueeze(-1) * cell
         M = torch.linalg.solve(cell, new_cell)
         radii = torch.bmm(radii, M)
         cell = new_cell
-        # self.atoms.set_cell(cell, scale_atoms=True)
 
         # one step velocity verlet
 
@@ -674,14 +683,17 @@ class ImplicitMDSimulator():
         # cannot use self.masses in the line above.
 
         velocities = p / self.masses
-        energy, forces = self.force_calc(radii, cell, retain_grad = retain_grad)
+        try:
+            energy, forces = self.force_calc(radii, cell, retain_grad = retain_grad)
+        except:
+            import pdb; pdb.set_trace()
         accel = forces / self.masses
         
         velocities = velocities + 0.5 * self.dt * accel
 
         # # dump frames
         if self.step%self.n_dump == 0:
-            # print(self.step, self.thermo_log(energy, forces, cell))
+            print(self.step, self.thermo_log(energy, forces, cell))
             print(self.step, self.thermo_log(energy, forces, cell), file=self.f)
             step = self.step if self.train else (self.epoch+1) * self.step #don't overwrite previous epochs at inference time
             try:    
@@ -726,7 +738,8 @@ class ImplicitMDSimulator():
             #     #half-step outside loop to ensure symplecticity
             #     self.velocities = self.velocities + self.dt/2*(forces/self.masses - self.gamma*self.velocities) + self.noise_f/torch.sqrt(torch.tensor(2.0).to(self.device))*torch.randn_like(self.velocities)
             zeta = self.zeta
-            cell = self.cell.unsqueeze(0).repeat(self.n_replicas, 1, 1)
+            cell = self.running_cell
+            
             #Run MD
             print("Start MD trajectory", file=self.f)
             for step in tqdm(range(self.nsteps)):
@@ -766,6 +779,7 @@ class ImplicitMDSimulator():
                     
             self.zeta = zeta
             self.forces = forces
+            self.running_cell = cell
             self.stacked_radii = torch.stack(self.running_radii[::self.n_dump])
             # compute instability metric (either bond length deviation, min intermolecular distance, or RDF MAE)
             self.instability_per_replica = self.stability_criterion(self.stacked_radii)

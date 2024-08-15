@@ -34,10 +34,11 @@ class WaterRDFMAE(torch.nn.Module):
         self.lattices = torch.tensor(gt_data.f.lengths[0]).float()
 
 
-    def forward(self, stacked_radii):
+    def forward(self, stacked_radii, lattices = None):
         #Expected shape of stacked_radii is [Timesteps, N_replicas, N_atoms, 3]
         max_maes = []
         rdf_list = []
+        # TODO: use lattices if provided
         for i in range(stacked_radii.shape[1]): #explicit loop since vmap makes some numpy things weird
             rdfs, _ = get_water_rdfs(stacked_radii[:, i], self.ptypes[:stacked_radii.shape[-2]], self.lattices, self.bins, self.device)
             #compute MAEs of all element-conditioned RDFs
