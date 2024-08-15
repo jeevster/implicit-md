@@ -83,14 +83,14 @@ class NPT:
         )
         self.frac_traceless = 0.0  # volume may change but shape may not
 
-        self.calculator = TIP3P(rc = 5.0)
-        for atoms in self.atoms:
-            # zero out off-diagonal elements of cell
-            atoms.set_cell(np.diag(atoms.get_cell().diagonal()))
-            atoms.set_calculator(self.calculator)
-            atoms.constraints = FixBondLengths([(3 * i + j, 3 * i + (j + 1) % 3)
-                                    for i in range(int(len(atoms) / 3))
-                                    for j in [0, 1, 2]])
+        # self.calculator = TIP3P(rc = 5.0)
+        # for atoms in self.atoms:
+        #     # zero out off-diagonal elements of cell
+        #     atoms.set_cell(np.diag(atoms.get_cell().diagonal()))
+        #     atoms.set_calculator(self.calculator)
+        #     atoms.constraints = FixBondLengths([(3 * i + j, 3 * i + (j + 1) % 3)
+        #                             for i in range(int(len(atoms) / 3))
+        #                             for j in [0, 1, 2]])
 
         self.initialize()
         
@@ -305,10 +305,10 @@ class NPT:
         self._calculate_q_future(self.forces)
         self.velocities = torch.bmm(self.q_future - self.q_past, self.h / (2 * dt))
 
-        for atoms, pos, cell, vel in zip(self.atoms, self.radii, self.cell, self.velocities):
-            atoms.set_positions(pos.cpu().numpy())
-            atoms.set_cell(cell.cpu().numpy())
-            atoms.set_velocities(vel.cpu().numpy())
+        # for atoms, pos, cell, vel in zip(self.atoms, self.radii, self.cell, self.velocities):
+        #     atoms.set_positions(pos.cpu().numpy())
+        #     atoms.set_cell(cell.cpu().numpy())
+        #     atoms.set_velocities(vel.cpu().numpy())
 
         return self.radii, self.velocities, self.forces, self._getbox()
 
@@ -400,14 +400,14 @@ class NPT:
         return energy.squeeze()
 
     def get_forces(self, retain_grad=False):
-        # _, force = self.energy_force_func(
-        #     self.radii, self.cell, retain_grad=retain_grad
-        # )
+        _, force = self.energy_force_func(
+            self.radii, self.cell, retain_grad=retain_grad
+        )
 
 
-        forces = torch.tensor(np.stack([atoms.get_forces() for atoms in self.atoms])).to(torch.float32).to(self.device)
+        # force = torch.tensor(np.stack([atoms.get_forces() for atoms in self.atoms])).to(torch.float32).to(self.device)
 
-        return forces
+        return force
 
     def get_kinetic_energy(self):
         return 0.5 * (self.masses * torch.square(self.velocities)).sum(
