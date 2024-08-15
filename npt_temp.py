@@ -224,7 +224,7 @@ class NPT:
     def step(self, retain_grad=False):
         """Perform a single time step.
 
-        Assumes that the forces anfd stresses are up to date, and that
+        Assumes that the forces and stresses are up to date, and that
         the positions and momenta have not been changed since last
         timestep.
         """
@@ -251,6 +251,10 @@ class NPT:
                     * (stress - self.externalstress)
                 )
             )
+
+        # clamp delta eta to avoid instability
+        deltaeta = torch.clamp(deltaeta, -1e-6, 1e-6)
+
 
         if self.frac_traceless == 1:
             eta_future = self.eta_past + self.mask * self._makeuppertriangular(deltaeta)
