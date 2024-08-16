@@ -112,6 +112,10 @@ class BoltzmannEstimator():
         radii_traj = torch.stack(self.simulator.running_radii)
         
         stacked_radii = radii_traj[::self.simulator.n_dump] #take i.i.d samples for RDF loss
+        if self.simulator.integrator == 'Berendsen':
+            stacked_cell = torch.stack(self.simulator.running_cell)[::self.simulator.n_dump]
+            stacked_cell = vmap(vmap(torch.diag))(stacked_cell) # shape of n_timesteps, n_replicas, 3, 3
+
         if self.simulator.mode == 'learning':
             #save replicas
             np.save(os.path.join(self.simulator.save_dir, f'stacked_radii_epoch{self.simulator.epoch}.npy'), stacked_radii.cpu())
@@ -288,6 +292,9 @@ class BoltzmannEstimator():
         else:
             stacked_radii = stacked_radii[:, mask]
             stacked_radii = stacked_radii.reshape(-1, self.simulator.n_atoms, 3)
+            if self.simulator.integrator == 'Berendsen':
+                stacked_cell = stacked_cell[:, mask]
+                stacked_cell = stacked_cell.reshape(-1, 3, 3)
             if self.simulator.name == 'water':
                 #extract all local neighborhoods of n_molecules molecules (centered around each atom)
         
@@ -339,10 +346,11 @@ class BoltzmannEstimator():
                 indices = [torch.cat([x[0].unsqueeze(0).to(self.simulator.device) for x in torch.where(bond_lens == value)[0:2]]) for value in full_list]
                 local_stacked_radii = torch.stack([local_stacked_radii[idx[0], idx[1]] for idx in indices])
                 stacked_radii = torch.stack([stacked_radii[idx[0]] for idx in indices])
+                if self.simulator.integrator == 'Berendsen':
+                    stacked_cell = torch.stack([stacked_cell[idx[0]] for idx in indices])
+
                 atomic_indices = torch.stack([atomic_indices[idx[0], idx[1]] for idx in indices])
                 bond_lens = full_list
-
-
 
                 np.save(os.path.join(self.simulator.save_dir, f'local_stacked_radii_epoch{self.simulator.epoch}.npy'), local_stacked_radii.cpu())
                 np.save(os.path.join(self.simulator.save_dir, f'local_rdfs_epoch{self.simulator.epoch}.npy'), rdfs.cpu())
@@ -363,6 +371,8 @@ class BoltzmannEstimator():
             if self.simulator.shuffle:   
                 shuffle_idx = torch.randperm(stacked_radii.shape[0])
                 stacked_radii = stacked_radii[shuffle_idx]
+                if self.simulator.integrator == 'Berendsen':
+                    stacked_cell = stacked_cell[shuffle_idx]
                 if self.simulator.name == 'water':
                     atomic_indices = atomic_indices[shuffle_idx]
                     bond_lens = bond_lens[shuffle_idx]
@@ -389,11 +399,14 @@ class BoltzmannEstimator():
                 end = bsize*(i+1)
                 with torch.enable_grad():
                     radii_in = stacked_radii[start:end]
+                    if self.simulator.integrator == 'Berendsen':
+                        cell_in = stacked_cell[start:end]
+                    else:
+                        cell_in = None
                     if self.simulator.name == 'water':
                         atomic_indices_in = atomic_indices[start:end]
                     radii_in.requires_grad = True
-                    # TODO: need to input cells for NPT training
-                    energy_force_output = self.simulator.force_calc(radii_in, retain_grad = True, output_individual_energies = self.simulator.name == 'water')
+                    energy_force_output = self.simulator.force_calc(radii_in, cell = cell_in, retain_grad = True, output_individual_energies = self.simulator.name == 'water')
                     if len(energy_force_output) == 2:
                         #global energy
                         energy = energy_force_output[0] 

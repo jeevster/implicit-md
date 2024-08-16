@@ -296,6 +296,8 @@ class ImplicitMDSimulator():
         self.checkpoint_zetas.append(self.zeta)
         self.original_radii = self.radii.clone()
         self.original_velocities = self.velocities.clone()
+        self.original_cell = self.cell.clone()
+        
         self.original_zeta = self.zeta.clone()
         self.all_radii = []
         self.all_cell = []
@@ -501,6 +503,8 @@ class ImplicitMDSimulator():
             self.zeta = torch.where(reset_replicas.unsqueeze(-1).unsqueeze(-1), self.original_zeta.detach().clone(), self.zeta.detach().clone()).requires_grad_(True)
             if self.integrator == 'NPT':
                 self.npt_integrator.set_state(self.original_npt_state, reset_replicas)
+            if self.integrator == 'Berendsen':
+                self.current_cell = torch.where(reset_replicas.unsqueeze(-1).unsqueeze(-1), self.original_cell, self.current_cell)
 
             #update stability times for each replica
             if not self.train:
@@ -721,6 +725,8 @@ class ImplicitMDSimulator():
         self.original_zeta = self.zeta.clone()
         if self.integrator == 'NPT':
             self.original_npt_state = self.npt_integrator.get_state()
+        if self.integrator == 'Berendsen':
+            self.original_cell = self.current_cell.clone()
         #log checkpoint states for resetting
         if not self.all_unstable:
             self.checkpoint_radii.append(self.original_radii)
@@ -1285,7 +1291,7 @@ if __name__ == "__main__":
             np.save(os.path.join(results_dir, 'full_traj.npy'), full_traj)
             np.save(os.path.join(results_dir, 'full_cell.npy'), full_cell)
             
-            if epoch % 5 == 0:# and epoch > 0.75 * params.n_epochs: #to save time
+            if epoch % 20 == 0:# and epoch > 0.75 * params.n_epochs: #to save time
                 if name == "md17" or name == "md22":
                     hparams_logging = calculate_final_metrics(simulator, params, device, results_dir, energy_maes, force_maes, gt_rdf, gt_adf, gt_vacf, all_vacfs_per_replica = all_vacfs_per_replica)
                 elif name == "water":

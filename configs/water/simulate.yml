@@ -5,19 +5,19 @@ dr: 0.012
 stability_criterion: rdf
 imd_tol: 3.0
 max_frac_unstable_threshold: 0.95
-integrator: Berendsen
+integrator: NoseHoover
 integrator_config: {"ttime": 20., "ptime": 2000., "gamma": 0.1, "taut": 20, "taup": 2000, "compressibility_au": 72.84, "pressure_au": 0.0025 , "fix_com": True} # corresponds to 1 atm (compressibility calculated at 20C and 1 bar from https://www.linkedin.com/pulse/water-bulk-modulus-compressibility-nikhilesh-mukherjee/ )
-eval_model: post_cycle1_pbcfix_Berendsen_copy2
+eval_model: pre_pbcfix_long_copy3
 results_dir: 'results_water_localneighborhoods'
 exp_name: "TEST_pbcfix"
 model: gemnet_t
 temperature: 300.
 eq_steps: 0
 n_replicas: 5
-n_epochs: 500
+n_epochs: 1000
 # timestep expt params
 timestep: 1
-n_dump: 100
+n_dump: 1000
 steps: 1000
 
 
