@@ -48,6 +48,7 @@ class BondLengthDeviation(torch.nn.Module):
         if self.name == 'lips': #account for non-cubic cell
             dists = torch.stack([compute_distance_matrix_batch(self.cell,radii) for radii in stacked_radii])
             bond_lens = dists[:, :, self.bonds[:, 0], self.bonds[:, 1]]
+            # todo: wrap coords?
         else:
             if self.name == 'water':
                 #only keep local bonds

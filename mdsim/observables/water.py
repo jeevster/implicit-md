@@ -34,12 +34,13 @@ class WaterRDFMAE(torch.nn.Module):
         self.lattices = torch.tensor(gt_data.f.lengths[0]).float()
 
 
-    def forward(self, stacked_radii):
+    def forward(self, stacked_radii, lattices):
         #Expected shape of stacked_radii is [Timesteps, N_replicas, N_atoms, 3]
+        # Expected shape of lattices is N_replicas x 3 x 3
         max_maes = []
         rdf_list = []
         for i in range(stacked_radii.shape[1]): #explicit loop since vmap makes some numpy things weird
-            rdfs, _ = get_water_rdfs(stacked_radii[:, i], self.ptypes[:stacked_radii.shape[-2]], self.lattices, self.bins, self.device)
+            rdfs, _ = get_water_rdfs(stacked_radii[:, i], self.ptypes[:stacked_radii.shape[-2]], torch.diag(lattices[i]).cpu(), self.bins, self.device)
             #compute MAEs of all element-conditioned RDFs
             max_maes.append(torch.max(torch.cat([self.xlim*torch.abs(rdf-gt_rdf).mean().unsqueeze(-1) for rdf, gt_rdf in zip(rdfs.values(), self.gt_rdfs.values())])))
             rdf_list.append(torch.cat([rdf.flatten() for rdf in rdfs.values()]))
@@ -131,6 +132,8 @@ def distance_pbc_select(x, lattices, indices0, indices1):
 def get_water_rdfs(data_seq, ptypes, lattices, bins, device='cpu'):
     """
     get atom-type conditioned water RDF curves.
+    data_seq: torch.Tensor, shape [Timesteps, N_atoms, 3]
+    lattices: torch.Tensor, either shape [3] (shared lattice) or [N_timesteps, 3] (per-timestep lattices - must be same length as data_seq, used for NPT simulations)
     """
     data_seq = data_seq.to(device).float()
     lattices = lattices.to(device).float()
@@ -139,6 +142,12 @@ def get_water_rdfs(data_seq, ptypes, lattices, bins, device='cpu'):
         'O': ptypes == 8
     }
     pairs = [('O', 'O'), ('H', 'H'), ('H', 'O')]
+        
+    if len(lattices.shape) != 1:
+        assert len(lattices.shape) == 2 and lattices.shape[0] == data_seq.shape[0]
+        lattices = lattices.unsqueeze(1) # now shape is [N_Timesteps, 1, 3]
+    else:
+        lattices = lattices.unsqueeze(0).unsqueeze(0).repeat(data_seq.shape[0], 1, 1) # now shape is [N_Timesteps, 1, 3]
     
     data_seq = ((data_seq / lattices) % 1) * lattices #coords are wrapped
     all_rdfs = {}
@@ -148,29 +157,22 @@ def get_water_rdfs(data_seq, ptypes, lattices, bins, device='cpu'):
         type1, type2 = pairs[idx]    
         indices0 = type2indices[type1].to(device)
         indices1 = type2indices[type2].to(device)
-        #Original Method
-        data_pdist = distance_pbc_select(data_seq, lattices, indices0, indices1)
-        data_pdist = data_pdist.flatten().cpu().numpy()
-        data_shape = data_pdist.shape[0]
-        data_pdist = data_pdist[data_pdist != 0]
-        data_hist, _ = np.histogram(data_pdist, bins)
-        rho_data = data_shape / torch.prod(lattices).cpu().numpy()
-        Z_data = rho_data * 4 / 3 * np.pi * (bins[1:] ** 3 - bins[:-1] ** 3)
-        data_rdf = data_hist / Z_data
 
-        #New Method
+
+        #New Method (separate RDF for each timestep so we can compute variance - and also for NPT simulations)
         data_pdist = distance_pbc_select(data_seq, lattices, indices0, indices1)
         data_pdist = data_pdist.cpu().numpy()
-        data_shape = data_pdist.shape[0]
+        data_shape = data_pdist.shape[1]
         data_hists = np.stack([np.histogram(dist, bins)[0] for dist in data_pdist])
-        rho_data = data_shape / torch.prod(lattices).cpu().numpy()
+        rho_data = data_shape / torch.prod(lattices, dim = -1)
+        rho_data = rho_data.cpu().numpy()
         Z_data = rho_data * 4 / 3 * np.pi * (bins[1:] ** 3 - bins[:-1] ** 3)
         data_rdfs = data_hists / Z_data
-        data_rdfs = data_rdfs / data_rdfs.sum(1, keepdims=True) * data_rdf.sum()#normalize to match original sum
         data_rdf_mean = data_rdfs.mean(0)
         data_rdf_var = data_rdfs.var(0)
         all_rdfs[type1 + type2] = torch.Tensor([data_rdf_mean]).to(device)
         all_rdfs_vars[type1 + type2] = torch.Tensor([data_rdf_var]).to(device)
+
     return all_rdfs, all_rdfs_vars
 
 
@@ -187,14 +189,14 @@ def find_water_rdfs_diffusivity_from_file(base_path: str, size: str, params, dev
     oxygen_atoms_mask = atom_types==8
     lattices = torch.tensor(gt_data.f.lengths[0]).float()
     gt_traj = torch.tensor(gt_data.f.unwrapped_coords)
-    gt_data_continuous = np.load(os.path.join(base_path, 'contiguous-water', '90k', 'train/nequip_npz.npz'))
+    gt_data_continuous = np.load(os.path.join(base_path, 'contiguous-water', '10k', 'test/nequip_npz.npz'))
     gt_traj_continuous = torch.tensor(gt_data_continuous.f.unwrapped_coords)
     gt_diffusivity, gt_msd = get_smoothed_diffusivity(gt_traj_continuous[0::100, atom_types==8]) # track diffusivity of oxygen atoms, unit is A^2/ps
     gt_diffusivity = gt_diffusivity[:100].to(device)
     gt_msd = gt_msd[:100].to(device)
     #recording frequency of underlying data is 10 fs. 
     #Want to match frequency of our data collection which is params.n_dump*params.integrator_config["dt"]
-    keep_freq = math.ceil(params.n_dump*params.timestep / 10)
+    keep_freq = math.ceil(params.n_dump*params.timestep / 10) # TODO: this shouldn't need to change based on n_dump since we are only computing static properties below this point
     gt_rdfs = get_water_rdfs(gt_traj[::keep_freq], atom_types, lattices, bins, device)
     #local rdfs
     gt_local_neighborhoods = torch.cat([n_closest_molecules(gt_traj[::keep_freq], i, n_closest, torch.diag(lattices))[0] for i in range(64)])

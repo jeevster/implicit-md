@@ -2,7 +2,7 @@ import torch
 import os
 import yaml
 from mdsim.models.schnet import SchNetWrap
-from mdsim.models.dimenet_plus_plus import DimeNetPlusPlusWrap
+# from mdsim.models.dimenet_plus_plus import DimeNetPlusPlusWrap
 from mdsim.models.forcenet import ForceNet
 from mdsim.models.gemnet.gemnet import GemNetT
 from mdsim.common.registry import registry
@@ -37,8 +37,14 @@ def load_pretrained_model(model_type, path = None, ckpt_epoch = -1, cycle = None
         checkpoint = {k: v.to(device) for k,v in torch.load(ckpt_and_config_path, map_location = torch.device("cpu"))['state_dict'].items()}
     #checkpoint =  torch.load(ckpt_path, map_location = device)["state_dict"]
     try:
+        # removing "module." from the keys (comes from training model with nn.DataParallel)
         new_dict = {k[7:]: v for k, v in checkpoint.items()}
-        model.load_state_dict(new_dict)
+        try:
+            model.load_state_dict(new_dict)
+        except:
+            if 'atomic_mass' in new_dict:
+                del new_dict['atomic_mass']
+            model.load_state_dict(new_dict)
     except:
         model.load_state_dict(checkpoint)
 

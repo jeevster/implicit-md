@@ -68,6 +68,7 @@ OFFSET_LIST = [
     [1, 1, 1],
 ]
 
+
 def extract_cycle_epoch(s):
     # Regular expression to match the pattern
     pattern = r"post_cycle(\d+)(?:_epoch(\d+))?"

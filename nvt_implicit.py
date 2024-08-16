@@ -41,6 +41,7 @@ from nequip.utils.torch_geometric import Batch, Dataset
 from nequip.utils import atomic_write, load_file
 from ase.neighborlist import natural_cutoffs, NeighborList
 from mdsim.md.ase_utils import OCPCalculator
+from mdsim.md.integrator import get_stress
 from mdsim.common.registry import registry
 from mdsim.common.utils import extract_cycle_epoch, save_checkpoint, cleanup_atoms_batch, setup_imports, setup_logging, compute_bond_lengths, data_to_atoms, atoms_to_batch, atoms_to_state_dict, convert_atomic_numbers_to_types, process_gradient, compare_gradients, initialize_velocities, dump_params_to_yml
 from mdsim.common.custom_radius_graph import detach_numpy
@@ -64,6 +65,7 @@ from mdsim.common.utils import (
 )
 from mdsim.common.flags import flags
 from boltzmann_estimator import BoltzmannEstimator
+from npt_temp import NPT
 
 MAX_SIZES = {'md17': '10k', 'md22': '100percent', 'water': '10k', 'lips': '20k'}
 
@@ -195,10 +197,11 @@ class ImplicitMDSimulator():
         self.integrator_config =  config['integrator_config']
         self.dt = config["timestep"] * units.fs
         self.temp = config["temperature"]
+        
         print(f"Simulation Temperature: {self.temp}")
         
         # adjust units.
-        if self.integrator in ['NoseHoover', 'NoseHooverChain', 'Langevin']:
+        if self.integrator in ['NoseHoover', 'NoseHooverChain', 'Langevin', 'Berendsen', 'NPT']:
             self.temp *= units.kB
         self.targeEkin = 0.5 * (3.0 * self.n_atoms) * self.temp
         
@@ -211,6 +214,18 @@ class ImplicitMDSimulator():
         #Langevin thermostat stuff
         self.gamma = self.integrator_config["gamma"] / (1000*units.fs)
         self.noise_f = (2.0 * self.gamma/self.masses * self.temp * self.dt).sqrt().to(self.device)
+
+        # Berendsen thermostat stuff
+        self.taup = self.integrator_config["taup"] * units.fs
+        self.taut = self.integrator_config["taut"] * units.fs
+        self.compressibility_au = self.integrator_config["compressibility_au"]
+        self.pressure_au = torch.tensor([self.integrator_config["pressure_au"]]).to(self.device)
+        self.fix_com = self.integrator_config["fix_com"]
+
+        # NPT thermostat Stuff
+        self.ptime = self.integrator_config["ptime"] * units.fs
+        bulk_modulus = 2 * units.GPa # bulk modulus of water
+        self.pfactor = self.ptime **2 * bulk_modulus
 
         self.nsteps = params.steps
         self.eq_steps = params.eq_steps
@@ -234,6 +249,7 @@ class ImplicitMDSimulator():
 
         self.raw_atoms = [data_to_atoms(dataset.__getitem__(i)) for i in samples]
         self.cell = torch.Tensor(self.raw_atoms[0].cell).to(self.device)
+        self.running_cell = self.cell.unsqueeze(0).repeat(self.n_replicas, 1, 1)
         if self.name == "lips":
             dists = compute_distance_matrix_batch(self.cell,self.gt_traj_train)
             self.mean_bond_lens = dists[:, self.bonds[:, 0], self.bonds[:, 1]].mean(dim=0)
@@ -282,6 +298,7 @@ class ImplicitMDSimulator():
         self.original_velocities = self.velocities.clone()
         self.original_zeta = self.zeta.clone()
         self.all_radii = []
+        self.all_cell = []
         
         #create batch of atoms to be operated on
         self.r_max_key = "r_max" if self.model_type == "nequip" else "cutoff"
@@ -297,6 +314,24 @@ class ImplicitMDSimulator():
             self.atoms_batch['atom_types'] = self.final_atom_types
             del self.atoms_batch['ptr']
             del self.atoms_batch['atomic_numbers']
+
+        # NPT Integrator
+        cell = self.cell.unsqueeze(0).repeat(self.n_replicas, 1, 1)
+        if self.integrator == 'NPT':
+            self.npt_integrator = NPT(self.raw_atoms, 
+                                    self.radii, 
+                                    self.velocities, 
+                                    self.masses, 
+                                    cell, 
+                                    self.pbc, 
+                                    self.atomic_numbers, 
+                                    self.force_calc, 
+                                    self.dt, 
+                                    self.temp, 
+                                    self.pressure_au, 
+                                    self.ttime * units.fs, 
+                                    self.pfactor)
+            self.original_npt_state = self.npt_integrator.get_state()
             
         self.diameter_viz = params.diameter_viz
         self.exp_name = params.exp_name
@@ -442,6 +477,8 @@ class ImplicitMDSimulator():
             self.radii = self.original_radii
             self.velocities = self.original_velocities
             self.zeta = self.original_zeta
+            if self.integrator == 'NPT':
+                self.npt_integrator.set_state(self.original_npt_state)
 
         else:
             if self.first_simulation: #random replica reset
@@ -462,6 +499,9 @@ class ImplicitMDSimulator():
             self.radii = torch.where(exp_reset_replicas, self.original_radii.detach().clone(), self.radii.detach().clone()).requires_grad_(True)
             self.velocities = torch.where(exp_reset_replicas, self.original_velocities.detach().clone(), self.velocities.detach().clone()).requires_grad_(True)
             self.zeta = torch.where(reset_replicas.unsqueeze(-1).unsqueeze(-1), self.original_zeta.detach().clone(), self.zeta.detach().clone()).requires_grad_(True)
+            if self.integrator == 'NPT':
+                self.npt_integrator.set_state(self.original_npt_state, reset_replicas)
+
             #update stability times for each replica
             if not self.train:
                 self.stable_time = torch.where(reset_replicas, self.stable_time, self.stable_time + self.ps_per_epoch)
@@ -469,17 +509,33 @@ class ImplicitMDSimulator():
         return num_unstable_replicas / self.n_replicas
 
 
-    def force_calc(self, radii, retain_grad = False, output_individual_energies = False):
+    def force_calc(self, radii, cell = None, retain_grad = False, output_individual_energies = False):
         batch_size = radii.shape[0]
         batch = torch.arange(batch_size).repeat_interleave(self.n_atoms).to(self.device)
         with torch.enable_grad():
             if not radii.requires_grad:
                 radii.requires_grad = True
+            
+            if self.pbc:
+                # wrap
+                if cell is not None:
+                    diag = vmap(torch.diag)(cell).unsqueeze(1)
+                else:
+                    diag = torch.diag(self.cell)
+                radii = ((radii / diag) % 1) * diag  - diag/2
+            
             #assign radii and batch
             self.atoms_batch['pos'] = radii.reshape(-1, 3)
             self.atoms_batch['batch'] = batch
-            #make these match the number of replicas (different from n_replicas when doing bottom-up stuff)
-            self.atoms_batch['cell'] = self.atoms_batch['cell'][0].unsqueeze(0).repeat(batch_size, 1, 1)
+        
+            if cell is not None:
+                # update cell for NPT
+                self.atoms_batch['cell'] = cell
+            
+            #make cell and pbc match the number of replicas (different from n_replicas when doing bottom-up stuff)
+            else:
+                self.atoms_batch['cell'] = self.atoms_batch['cell'][0].unsqueeze(0).repeat(batch_size, 1, 1)
+
             self.atoms_batch['pbc'] = self.atoms_batch['pbc'][0].unsqueeze(0).repeat(batch_size, 1)
             all_energies = None
             if self.model_type == "nequip":
@@ -522,7 +578,7 @@ class ImplicitMDSimulator():
         # make half a step in velocity
         velocities = velocities + 0.5 * self.dt * (accel - zeta * velocities)
         # make a full step in accelerations
-        energy, forces = self.force_calc(radii, retain_grad)
+        energy, forces = self.force_calc(radii, retain_grad = retain_grad)
         accel = forces / self.masses
         # make a half step in self.zeta
         zeta = zeta + 0.5 * self.dt * (1/self.Q) * (KE_0 - self.targeEkin)
@@ -536,7 +592,7 @@ class ImplicitMDSimulator():
             (1 + 0.5 * self.dt * zeta)
         # dump frames
         if self.step%self.n_dump == 0:
-            print(self.step, self.thermo_log(energy), file=self.f)
+            print(self.step, self.thermo_log(energy, forces, self.cell), file=self.f)
             step  = self.step if self.train else (self.epoch+1) * self.step #don't overwrite previous epochs at inference time
             try:   
                 self.t.append(self.create_frame(frame = step/self.n_dump))
@@ -548,19 +604,105 @@ class ImplicitMDSimulator():
         #full step in position
         radii = radii.detach() + self.dt*velocities
         #calculate force at new position
-        energy, forces = self.force_calc(radii, retain_grad)
+        energy, forces = self.force_calc(radii, retain_grad = retain_grad)
         noise = torch.randn_like(velocities)
         #full step in velocities
         velocities = velocities + self.dt*(forces/self.masses - self.gamma * velocities) + self.noise_f * noise
         # # dump frames
         if self.step%self.n_dump == 0:
-            print(self.step, self.thermo_log(energy), file=self.f)
+            print(self.step, self.thermo_log(energy, forces, self.cell), file=self.f)
             step  = self.step if self.train else (self.epoch+1) * self.step #don't overwrite previous epochs at inference time
             try:    
-                self.t.append(self.create_frame(frame = self.step/self.n_dump))
+                self.t.append(self.create_frame(frame = step/self.n_dump))
             except:
                 pass
         return radii, velocities, forces, noise
+
+    
+    def forward_berendsen(self, radii, velocities, forces, cell, retain_grad = False):
+        """
+        Berendsen thermostat for NPT simulation. Adapted from https://wiki.fysik.dtu.dk/ase/_modules/ase/md/nptberendsen.html#NPTBerendsen.
+        """
+
+        # scale velocities based on current temperature
+        
+        tautscl = self.dt / self.taut
+        p_dof = 3*self.n_atoms
+        ke = 1/2 * (self.masses*torch.square(velocities)).sum(axis = (1,2)).unsqueeze(-1)
+        old_temperature = (2*ke/p_dof) / units.kB
+
+        temp = torch.tensor(self.temp).to(self.device)
+        scl_temperature = torch.sqrt(1.0 + ((temp/units.kB) / old_temperature - 1.0) * tautscl).unsqueeze(-1)
+        
+        # Limit the velocity scaling to reasonable values
+        scl_temperature = torch.clamp(scl_temperature, 0.9, 1.1)
+        
+        p = self.masses * velocities
+        p = scl_temperature * p
+        velocities = p / self.masses
+
+        # scale positions and cell
+        taupscl = self.dt / self.taup
+        # calculate stress
+        stress = get_stress(radii, velocities, forces, self.masses, cell)
+        
+        old_pressure = vmap(torch.diag)(stress).mean(dim = 1)
+        scl_pressure = (1.0 - taupscl * self.compressibility_au / 3.0 * (self.pressure_au - old_pressure))
+        
+        # Volume scaling check
+        vol_scale = torch.det(scl_pressure.unsqueeze(-1).unsqueeze(-1) * torch.eye(3, device=self.device))
+        max_vol_change = 1.01  # Allow maximum 1% change in volume per step
+        min_vol_change = 1 / max_vol_change
+        vol_scale = torch.clamp(vol_scale, min_vol_change, max_vol_change)
+
+        # Adjust the scaling factor to respect the volume constraint
+        scl_pressure = scl_pressure * (vol_scale / torch.det(scl_pressure.unsqueeze(-1).unsqueeze(-1) * torch.eye(3, device=self.device))) ** (1/3)
+
+        # Apply scaling to cell
+        new_cell = scl_pressure.unsqueeze(-1).unsqueeze(-1) * cell
+        M = torch.linalg.solve(cell, new_cell)
+        radii = torch.bmm(radii, M)
+        cell = new_cell
+
+        # one step velocity verlet
+
+        p = self.masses * velocities
+        p += 0.5 * self.dt * forces
+
+        if self.fix_com:
+            # calculate the center of mass
+            # momentum and subtract it
+            psum = p.sum(axis=1, keepdims=True) / p.shape[1]
+            p = p - psum
+
+        radii = radii + self.dt * p / self.masses
+
+        # We need to store the momenta on the atoms before calculating
+        # the forces, as in a parallel Asap calculation atoms may
+        # migrate during force calculations, and the momenta need to
+        # migrate along with the atoms.  For the same reason, we
+        # cannot use self.masses in the line above.
+
+        velocities = p / self.masses
+        try:
+            energy, forces = self.force_calc(radii, cell, retain_grad = retain_grad)
+        except:
+            import pdb; pdb.set_trace()
+        accel = forces / self.masses
+        
+        velocities = velocities + 0.5 * self.dt * accel
+
+        # # dump frames
+        if self.step%self.n_dump == 0:
+            print(self.step, self.thermo_log(energy, forces, cell))
+            print(self.step, self.thermo_log(energy, forces, cell), file=self.f)
+            step = self.step if self.train else (self.epoch+1) * self.step #don't overwrite previous epochs at inference time
+            try:    
+                self.t.append(self.create_frame(frame = step/self.n_dump))
+            except:
+                pass
+
+        return radii, velocities, forces, cell
 
     #main MD loop
     def solve(self):
@@ -576,6 +718,8 @@ class ImplicitMDSimulator():
         self.original_radii = self.radii.clone()
         self.original_velocities = self.velocities.clone()
         self.original_zeta = self.zeta.clone()
+        if self.integrator == 'NPT':
+            self.original_npt_state = self.npt_integrator.get_state()
         #log checkpoint states for resetting
         if not self.all_unstable:
             self.checkpoint_radii.append(self.original_radii)
@@ -595,6 +739,8 @@ class ImplicitMDSimulator():
             #     #half-step outside loop to ensure symplecticity
             #     self.velocities = self.velocities + self.dt/2*(forces/self.masses - self.gamma*self.velocities) + self.noise_f/torch.sqrt(torch.tensor(2.0).to(self.device))*torch.randn_like(self.velocities)
             zeta = self.zeta
+            cell = self.running_cell
+            
             #Run MD
             print("Start MD trajectory", file=self.f)
             for step in tqdm(range(self.nsteps)):
@@ -602,10 +748,22 @@ class ImplicitMDSimulator():
                 #MD Step
                 if self.integrator == 'NoseHoover':
                     radii, velocities, forces, zeta = self.forward_nosehoover(self.radii, self.velocities, forces, zeta, retain_grad = False)
+            
                 elif self.integrator == 'Langevin':
                     radii, velocities, forces, noise = self.forward_langevin(self.radii, self.velocities, forces, retain_grad = False)
+                elif self.integrator == 'Berendsen':
+                    radii, velocities, forces, cell = self.forward_berendsen(self.radii, self.velocities, forces, cell, retain_grad = False)
+                elif self.integrator == 'NPT':
+                    radii, velocities, forces, cell = self.npt_integrator.step(retain_grad = False)
+                     
+                    if step % self.n_dump == 0:
+                        print(self.npt_integrator.log())
+                        print(self.npt_integrator.log(), file=self.f)
+                        step  = self.step if self.train else (self.epoch+1) * self.step #don't overwrite previous epochs at inference time
+                        self.t.append(self.create_frame(frame = step/self.n_dump, cell = cell[0]))
+                    
                 else:
-                    raise RuntimeError("Must choose either NoseHoover or Langevin as integrator")
+                    raise RuntimeError("Must choose either NoseHoover, Langevin, or Berendsen as integrator")
                 
                 #save trajectory for gradient calculation
                 if step >= self.eq_steps:# and step % self.n_dump == 0:
@@ -617,21 +775,29 @@ class ImplicitMDSimulator():
                 
                     if step % self.n_dump == 0 and not self.train:
                         self.all_radii.append(radii.detach().cpu()) #save whole trajectory without resetting at inference time
+                        self.all_cell.append(vmap(torch.diag)(cell).detach().cpu())
                 self.radii.copy_(radii)
                 self.velocities.copy_(velocities)
                     
-            self.zeta = zeta
-            self.forces = forces
+                self.zeta = zeta
+                self.forces = forces
+                # update running cell
+                if self.integrator == 'NPT' or self.integrator == 'Berendsen':
+                    self.running_cell = cell
             self.stacked_radii = torch.stack(self.running_radii[::self.n_dump])
-            #compute instability metric (either bond length deviation, min intermolecular distance, or RDF MAE)
-            self.instability_per_replica = self.stability_criterion(self.stacked_radii)
+            # compute instability metric (either bond length deviation, min intermolecular distance, or RDF MAE)
+            if isinstance(self.stability_criterion, WaterRDFMAE) or isinstance(self.stability_criterion, LiPSRDFMAE):
+                self.instability_per_replica = self.stability_criterion(self.stacked_radii, self.running_cell)
+            else:
+                self.instability_per_replica = self.stability_criterion(self.stacked_radii)
             if isinstance(self.instability_per_replica, tuple):
                 self.instability_per_replica = self.instability_per_replica[-1]
             self.mean_instability = self.instability_per_replica.mean()
             if self.pbc:
                 self.mean_bond_length_dev = self.bond_length_dev(self.stacked_radii)[1].mean()
-                self.mean_rdf_mae = self.rdf_mae(self.stacked_radii)[-1].mean()
+                self.mean_rdf_mae = self.rdf_mae(self.stacked_radii, self.running_cell)[-1].mean()
             self.stacked_vels = torch.cat(self.running_vels)
+
         
         if self.train:
             try:
@@ -674,17 +840,18 @@ class ImplicitMDSimulator():
         shutil.copyfile(checkpoint_path, os.path.join(self.save_dir, 'ckpt.pth' if self.model_type == 'nequip' else 'ckpt.pt'))
         self.curr_model_path = checkpoint_path
 
-    def create_frame(self, frame):
+    def create_frame(self, frame, cell = None):
         # Particle positions, velocities, diameter
         radii = self.radii[0]
         if self.pbc:
+            c = self.cell if cell is None else cell
             #wrap for visualization purposes
             if self.name == 'lips': #account for non-cubic cell
-                frac_radii = cart2frac(radii, self.cell)
+                frac_radii = cart2frac(radii, c)
                 frac_radii = frac_radii % 1.0 #wrap
-                radii = frac2cart(frac_radii, self.cell)
+                radii = frac2cart(frac_radii, c)
             else:
-                radii = ((radii / torch.diag(self.cell)) % 1) * torch.diag(self.cell)  - torch.diag(self.cell)/2 #wrap coords (last subtraction is for cell alignment in Ovito)
+                radii = ((radii / torch.diag(c)) % 1) * torch.diag(c)  - torch.diag(c)/2 #wrap coords (last subtraction is for cell alignment in Ovito)
         partpos = detach_numpy(radii).tolist()
         velocities = detach_numpy(self.velocities[0]).tolist()
         diameter = 10*self.diameter_viz*np.ones((self.n_atoms,))
@@ -697,7 +864,7 @@ class ImplicitMDSimulator():
         s.particles.velocity = velocities
         s.particles.diameter = diameter
         
-        cell = torch.Tensor(self.atoms.cell)
+        cell = torch.Tensor(c).cpu()
         s.configuration.box=[cell[0][0], cell[1][1], cell[2][2], 0, 0, 0]
         s.configuration.step = self.dt
 
@@ -706,15 +873,30 @@ class ImplicitMDSimulator():
             s.bonds.group = detach_numpy(self.bonds)
         return s
     
-    def thermo_log(self, pe):
+    def thermo_log(self, pe, forces, cell = None):
         #Log energies and instabilities
         p_dof = 3*self.n_atoms
         ke = 1/2 * (self.masses*torch.square(self.velocities)).sum(axis = (1,2)).unsqueeze(-1)
         temp = (2*ke/p_dof).mean() / units.kB
-        instability = self.stability_criterion(self.radii.unsqueeze(0))
+
+        # pressure calculation
+        if cell is None:
+            cell = self.cell
+        if len(cell.shape) == 2:
+            cell = cell.unsqueeze(0).repeat(self.n_replicas, 1, 1)
+        stress_tensor = get_stress(self.radii, self.velocities, forces, self.masses, cell)
+        volume = torch.linalg.det(cell)
+        pressure = vmap(torch.diag)(stress_tensor).mean(dim = 1)
+
+        if isinstance(self.stability_criterion, WaterRDFMAE) or isinstance(self.stability_criterion, LiPSRDFMAE):
+            instability = self.stability_criterion(self.radii.unsqueeze(0), self.running_cell)
+        else:
+            instability = self.stability_criterion(self.radii.unsqueeze(0))
         if isinstance(instability, tuple):
             instability = instability[-1]
         results_dict = {"Temperature": temp.item(),
+                        "Pressure": pressure.mean().item(),
+                        "Volume": volume.mean().item(),
                         "Potential Energy": pe.mean().item(),
                         "Total Energy": (ke+pe).mean().item(),
                         "Momentum Magnitude": torch.norm(torch.sum(self.masses*self.velocities, axis =-2)).item(),
@@ -722,7 +904,7 @@ class ImplicitMDSimulator():
                                                       if self.pbc else instability.mean().item()}
         if self.pbc:
             results_dict['Minimum Intermolecular Distance'] = instability.mean().item()
-            results_dict['RDF MAE'] = self.rdf_mae(self.radii.unsqueeze(0))[-1].mean().item()
+            results_dict['RDF MAE'] = self.rdf_mae(self.radii.unsqueeze(0), self.running_cell)[-1].mean().item()
         return results_dict
 
 if __name__ == "__main__":
@@ -769,7 +951,7 @@ if __name__ == "__main__":
         pretrained_model_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{size}_{lmax_string}{model_type}") 
     
     elif 'k' in config["eval_model"] or 'percent' in config["eval_model"]:#load energies/forces model trained on a different dataset size
-        new_size = config["eval_model"]
+        new_size = config["eval_model"].split("k")[0] + "k"
         pretrained_model_path = os.path.join(config['model_dir'], model_type, f"{name}-{molecule}_{new_size}_{lmax_string}{model_type}")
 
     elif 'lmax' in config["eval_model"]:#load energies/forces model trained with a different lmax
@@ -838,6 +1020,10 @@ if __name__ == "__main__":
         gt_rdf_package, gt_rdf_local_package, gt_diffusivity, gt_msd, gt_adf, oxygen_atoms_mask = find_water_rdfs_diffusivity_from_file(data_path, MAX_SIZES[name], params, device)
         gt_rdf, gt_rdf_var = gt_rdf_package
         gt_rdf_local, gt_rdf_var_local = gt_rdf_local_package
+        # temp = torch.tensor([1]).to(device)
+        # gt_rdf, gt_rdf_var, gt_rdf_local, gt_rdf_var_local, gt_diffusivity, gt_msd, gt_adf = temp, temp, temp, temp, temp, temp, temp
+        # gt_rdf_package = (gt_rdf, gt_rdf_var)
+        # gt_rdf_local_package = (gt_rdf_local, gt_rdf_var_local)
     elif name == 'lips':
         gt_rdf, gt_diffusivity = find_lips_rdfs_diffusivity_from_file(data_path, MAX_SIZES[name], params, device)
         gt_rdf_var = torch.ones_like(gt_rdf)
@@ -1046,11 +1232,11 @@ if __name__ == "__main__":
         lrs.append(simulator.optimizer.param_groups[0]['lr'])
         #energy/force error
         if epoch == 0 or (simulator.optimizer.param_groups[0]['lr'] > 0 and params.train): #don't compute it unless we are in the learning phase
-            #energy_rmse, force_rmse, energy_mae, force_mae = simulator.energy_force_error()
-            energy_rmse = 0
-            force_rmse = 0
-            energy_mae = 0
-            force_mae = 0
+            energy_rmse, force_rmse, energy_mae, force_mae = simulator.energy_force_error()
+            # energy_rmse = 0
+            # force_rmse = 0
+            # energy_mae = 0
+            # force_mae = 0
             energy_rmses.append(energy_rmse)
             force_rmses.append(force_rmse)
             energy_maes.append(energy_mae)
@@ -1087,9 +1273,16 @@ if __name__ == "__main__":
         writer.add_scalar('Gradient Cosine Similarity (Observable vs Energy-Force)', grad_cosine_similarity, global_step=epoch+1)
         writer.add_scalar('Gradient Ratios (Observable vs Energy-Force)', ratios, global_step=epoch+1)
 
+
         #add hyperparams and final metrics at inference time (do it every 5 epochs in case we time-out before the end)
         if not params.train:
-            if epoch % 5 == 0 and epoch > 175: #to save time
+            # save trajectory every epoch
+            full_traj = torch.stack(simulator.all_radii)
+            full_cell = torch.stack(simulator.all_cell)
+            np.save(os.path.join(results_dir, 'full_traj.npy'), full_traj)
+            np.save(os.path.join(results_dir, 'full_cell.npy'), full_cell)
+            
+            if epoch % 5 == 0:# and epoch > 0.75 * params.n_epochs: #to save time
                 if name == "md17" or name == "md22":
                     hparams_logging = calculate_final_metrics(simulator, params, device, results_dir, energy_maes, force_maes, gt_rdf, gt_adf, gt_vacf, all_vacfs_per_replica = all_vacfs_per_replica)
                 elif name == "water":

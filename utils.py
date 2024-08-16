@@ -22,7 +22,9 @@ from torch.utils.tensorboard.summary import hparams
 def calculate_final_metrics(simulator, params, device, results_dir, energy_maes, force_maes, gt_rdf, gt_adf=None, gt_vacf=None, gt_diffusivity=None, oxygen_atoms_mask=None, all_vacfs_per_replica=None):
     np.save(os.path.join(results_dir, f'replicas_stable_time.npy'), simulator.stable_time.cpu().numpy())
     full_traj = torch.stack(simulator.all_radii)
+    full_cell = torch.stack(simulator.all_cell)
     np.save(os.path.join(results_dir, 'full_traj.npy'), full_traj)
+    np.save(os.path.join(results_dir, 'full_cell.npy'), full_cell)
     hyperparameters = {
         'lr': params.lr,
         'ef_loss_weight': params.energy_force_loss_weight
@@ -30,7 +32,7 @@ def calculate_final_metrics(simulator, params, device, results_dir, energy_maes,
     steps_per_epoch = int(simulator.nsteps/simulator.n_dump)
     stable_steps = simulator.stable_time * steps_per_epoch
     stable_trajs = [full_traj[:int(upper_step_limit), i] for i, upper_step_limit in enumerate(stable_steps)]
-    stable_trajs_stacked = torch.cat(stable_trajs)
+    stable_cells = [full_cell[:int(upper_step_limit), i] for i, upper_step_limit in enumerate(stable_steps)]
     xlim = params.max_rdf_dist
     n_bins = int(xlim/params.dr)
     bins = np.linspace(1e-6, xlim, n_bins + 1) # for computing h(r)
@@ -66,7 +68,8 @@ def calculate_final_metrics(simulator, params, device, results_dir, energy_maes,
 
     elif params.name == "water":
         #TODO: compute rdfs per-replica like we did for MD17/MD22
-        final_rdfs = [get_water_rdfs(traj, simulator.rdf_mae.ptypes, simulator.rdf_mae.lattices, simulator.rdf_mae.bins, device)[0] for traj in stable_trajs]
+        final_rdfs = [get_water_rdfs(traj, simulator.rdf_mae.ptypes, cell, simulator.rdf_mae.bins, device)[0] for traj, cell in zip(stable_trajs, stable_cells)]
+        
         final_rdfs_by_key = {k: torch.stack([final_rdf[k] for final_rdf in final_rdfs]) for k in gt_rdf.keys()}
         final_rdf_maes = {k: xlim* torch.abs(gt_rdf[k] - final_rdfs_by_key[k]).mean(-1).squeeze(-1) for k in gt_rdf.keys()}
         #Recording frequency is 1 ps for diffusion coefficient
@@ -81,8 +84,8 @@ def calculate_final_metrics(simulator, params, device, results_dir, energy_maes,
         np.save(os.path.join(results_dir, "all_msds.npy"), np.array(all_msds, dtype=object), allow_pickle=True)
 
         #TODO: compute O-O-conditioned ADF instead of full ADF
-        final_adfs = torch.stack([DifferentiableADF(simulator.n_atoms, simulator.bonds, simulator.cell, params, device)(traj[::2].to(device)) for traj in stable_trajs])
-        final_adf_maes = torch.abs(gt_adf-final_adfs).mean(-1)
+        # final_adfs = torch.stack([DifferentiableADF(simulator.n_atoms, simulator.bonds, simulator.cell, params, device)(traj[::2].to(device)) for traj in stable_trajs])
+        # final_adf_maes = torch.abs(gt_adf-final_adfs).mean(-1)
         final_metrics = {
             'Energy MAE': energy_maes[-1],
             'Force MAE': force_maes[-1],
@@ -94,8 +97,8 @@ def calculate_final_metrics(simulator, params, device, results_dir, energy_maes,
             'Std Dev OO RDF MAE': final_rdf_maes['OO'].std().item(),
             'Std Dev HO RDF MAE': final_rdf_maes['HO'].std().item(),
             'Std Dev HH RDF MAE': final_rdf_maes['HH'].std().item(),
-            'Mean ADF MAE': final_adf_maes.mean().item(),
-            'Std Dev ADF MAE': final_adf_maes.std().item(),
+            # 'Mean ADF MAE': final_adf_maes.mean().item(),
+            # 'Std Dev ADF MAE': final_adf_maes.std().item(),
             'Mean Diffusivity MAE (10^-9 m^2/s)': diffusivity_maes.mean().item(),
             'Std Dev Diffusivity MAE (10^-9 m^2/s)': diffusivity_maes.std().item()
         }
@@ -103,7 +106,7 @@ def calculate_final_metrics(simulator, params, device, results_dir, energy_maes,
         for key, final_rdfs in final_rdfs_by_key.items():
             np.save(os.path.join(results_dir, f"final_{key}_rdfs.npy"), final_rdfs.squeeze(1).cpu())
             np.save(os.path.join(results_dir, f"final_{key}_rdf_maes.npy"), final_rdf_maes[key].cpu())
-        np.save(os.path.join(results_dir, "final_adfs.npy"), final_adfs.cpu().detach().numpy())
+        # np.save(os.path.join(results_dir, "final_adfs.npy"), final_adfs.cpu().detach().numpy())
         np.save(os.path.join(results_dir, "final_diffusivities.npy"), last_diffusivities.cpu().detach().numpy())
 
     #save final metrics to JSON

@@ -6,7 +6,7 @@ https://github.com/Open-Catalyst-Project/ocp
 import torch
 from torch import nn
 from torch_geometric.nn import radius_graph
-from torch_geometric.nn.acts import swish
+
 from torch_geometric.nn.inits import glorot_orthogonal
 from torch_geometric.nn.models.dimenet import (
     BesselBasisLayer,
@@ -40,7 +40,7 @@ class InteractionPPBlock(torch.nn.Module):
         num_radial,
         num_before_skip,
         num_after_skip,
-        act=swish,
+        act=torch.nn.functional.silu,
     ):
         super(InteractionPPBlock, self).__init__()
         self.act = act
@@ -139,7 +139,7 @@ class OutputPPBlock(torch.nn.Module):
         out_emb_channels,
         out_channels,
         num_layers,
-        act=swish,
+        act=torch.nn.functional.silu,
     ):
         super(OutputPPBlock, self).__init__()
         self.act = act
@@ -193,7 +193,7 @@ class DimeNetPlusPlus(torch.nn.Module):
         num_output_layers: (int, optional): Number of linear layers for the
             output blocks. (default: :obj:`3`)
         act: (function, optional): The activation funtion.
-            (default: :obj:`swish`)
+            (default: :obj:`torch.nn.functional.silu`)
     """
 
     url = "https://github.com/klicperajo/dimenet/raw/master/pretrained"
@@ -213,7 +213,7 @@ class DimeNetPlusPlus(torch.nn.Module):
         num_before_skip=1,
         num_after_skip=2,
         num_output_layers=3,
-        act=swish,
+        act=torch.nn.functional.silu,
     ):
         super(DimeNetPlusPlus, self).__init__()
 
@@ -273,6 +273,8 @@ class DimeNetPlusPlus(torch.nn.Module):
 
     def triplets(self, edge_index, cell_offsets, num_nodes):
         row, col = edge_index  # j->i
+        row = row.to(torch.long)
+        col = col.to(torch.long)
 
         value = torch.arange(row.size(0), device=row.device)
         adj_t = SparseTensor(
@@ -374,14 +376,16 @@ class DimeNetPlusPlusWrap(DimeNetPlusPlus):
             edge_index = out["edge_index"]
             dist = out["distances"]
             offsets = out["offsets"]
-            edge_index = (edge_index[0].to(torch.long), edge_index[1].to(torch.long))
+
             j, i = edge_index
         else:
             edge_index = radius_graph(pos, r=self.cutoff, batch=batch)
-            edge_index = (edge_index[0].to(torch.long), edge_index[1].to(torch.long))
             j, i = edge_index
             dist = (pos[i] - pos[j]).pow(2).sum(dim=-1).sqrt()
-        
+
+        j = j.to(torch.long)
+        i = i.to(torch.long)
+
         _, _, idx_i, idx_j, idx_k, idx_kj, idx_ji = self.triplets(
             edge_index,
             data.cell_offsets,

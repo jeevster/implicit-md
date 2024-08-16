@@ -2,12 +2,12 @@
 #SBATCH -N 1
 #SBATCH -C gpu&hbm80g             # Request 80GB GPU
 #SBATCH -G 1               # Request 1 GPU
-#SBATCH -q regular
+#SBATCH -q debug
 #SBATCH -J Test
 #SBATCH --mail-user=sanjeevr@umich.edu
 #SBATCH --mail-type=ALL
 #SBATCH -o /global/cfs/projectdirs/m4319/sanjeevr/logs/implicit-md-%j.out
-#SBATCH -t 24:00:00
+#SBATCH -t 00:10:00
 #SBATCH -A m4319_g
 
 # Define the path to your Python script
