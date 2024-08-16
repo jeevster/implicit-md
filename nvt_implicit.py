@@ -296,7 +296,7 @@ class ImplicitMDSimulator():
         self.checkpoint_zetas.append(self.zeta)
         self.original_radii = self.radii.clone()
         self.original_velocities = self.velocities.clone()
-        self.original_cell = self.cell.clone()
+        self.original_cell = self.cell.clone().unsqueeze(0).repeat(self.n_replicas, 1, 1)
         
         self.original_zeta = self.zeta.clone()
         self.all_radii = []
@@ -481,6 +481,8 @@ class ImplicitMDSimulator():
             self.zeta = self.original_zeta
             if self.integrator == 'NPT':
                 self.npt_integrator.set_state(self.original_npt_state)
+            if self.integrator == 'Berendsen':
+                self.current_cell = self.original_cell
 
         else:
             if self.first_simulation: #random replica reset
@@ -741,7 +743,7 @@ class ImplicitMDSimulator():
         #Initialize forces/potential of starting configuration
         with torch.no_grad():
             self.step = -1
-            _, forces = self.force_calc(self.radii)
+            _, forces = self.force_calc(self.radii, self.original_cell)
             # if self.integrator == 'Langevin':
             #     #half-step outside loop to ensure symplecticity
             #     self.velocities = self.velocities + self.dt/2*(forces/self.masses - self.gamma*self.velocities) + self.noise_f/torch.sqrt(torch.tensor(2.0).to(self.device))*torch.randn_like(self.velocities)
@@ -755,7 +757,6 @@ class ImplicitMDSimulator():
                 #MD Step
                 if self.integrator == 'NoseHoover':
                     radii, velocities, forces, zeta = self.forward_nosehoover(self.radii, self.velocities, forces, zeta, retain_grad = False)
-            
                 elif self.integrator == 'Langevin':
                     radii, velocities, forces, noise = self.forward_langevin(self.radii, self.velocities, forces, retain_grad = False)
                 elif self.integrator == 'Berendsen':
@@ -770,7 +771,7 @@ class ImplicitMDSimulator():
                         self.t.append(self.create_frame(frame = step/self.n_dump, cell = cell))
                     
                 else:
-                    raise RuntimeError("Must choose either NoseHoover, Langevin, or Berendsen as integrator")
+                    raise RuntimeError("Must choose either NoseHoover, Langevin, Berendsen, or NPT as integrator")
                 
                 #save trajectory for gradient calculation
                 if step >= self.eq_steps:# and step % self.n_dump == 0:
@@ -789,7 +790,7 @@ class ImplicitMDSimulator():
                     
                 self.zeta = zeta
                 self.forces = forces
-                # update running cell
+                # update current cell
                 if self.integrator == 'NPT' or self.integrator == 'Berendsen':
                     self.current_cell = cell
             self.stacked_radii = torch.stack(self.running_radii[::self.n_dump])

@@ -41,10 +41,10 @@ eq_steps: 0
 steps: 1000
 n_dump: 100
 n_dump_vacf: 2
-n_replicas: 2
+n_replicas: 10
 minibatch_size: 4
 adjoint: True
-only_learn_if_unstable_threshold_reached: False
+only_learn_if_unstable_threshold_reached: True
 only_train_on_unstable_replicas: False
 allow_off_policy_updates: False
 gradient_clipping: True
