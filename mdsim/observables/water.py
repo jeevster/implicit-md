@@ -31,16 +31,15 @@ class WaterRDFMAE(torch.nn.Module):
         DATAPATH = os.path.join(base_path, 'water', '1k', 'val/nequip_npz.npz')
         gt_data = np.load(DATAPATH, allow_pickle=True)
         self.ptypes = torch.tensor(gt_data.f.atom_types)
-        self.lattices = torch.tensor(gt_data.f.lengths[0]).float()
 
 
     def forward(self, stacked_radii, lattices):
         #Expected shape of stacked_radii is [Timesteps, N_replicas, N_atoms, 3]
-        # Expected shape of lattices is N_replicas x 3 x 3
+        # Expected shape of lattices is [Timesteps, N_replicas, 3]
         max_maes = []
         rdf_list = []
         for i in range(stacked_radii.shape[1]): #explicit loop since vmap makes some numpy things weird
-            rdfs, _ = get_water_rdfs(stacked_radii[:, i], self.ptypes[:stacked_radii.shape[-2]], torch.diag(lattices[i]).cpu(), self.bins, self.device)
+            rdfs, _ = get_water_rdfs(stacked_radii[:, i], self.ptypes[:stacked_radii.shape[-2]], lattices[:, i], self.bins, self.device)
             #compute MAEs of all element-conditioned RDFs
             max_maes.append(torch.max(torch.cat([self.xlim*torch.abs(rdf-gt_rdf).mean().unsqueeze(-1) for rdf, gt_rdf in zip(rdfs.values(), self.gt_rdfs.values())])))
             rdf_list.append(torch.cat([rdf.flatten() for rdf in rdfs.values()]))
@@ -159,7 +158,7 @@ def get_water_rdfs(data_seq, ptypes, lattices, bins, device='cpu'):
         indices1 = type2indices[type2].to(device)
 
 
-        #New Method (separate RDF for each timestep so we can compute variance - and also for NPT simulations)
+        #New Method (separate RDF for each timestep so we can compute variance - and also for NPT simulations with changing cell)
         data_pdist = distance_pbc_select(data_seq, lattices, indices0, indices1)
         data_pdist = data_pdist.cpu().numpy()
         data_shape = data_pdist.shape[1]

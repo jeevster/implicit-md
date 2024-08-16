@@ -249,7 +249,7 @@ class ImplicitMDSimulator():
 
         self.raw_atoms = [data_to_atoms(dataset.__getitem__(i)) for i in samples]
         self.cell = torch.Tensor(self.raw_atoms[0].cell).to(self.device)
-        self.running_cell = self.cell.unsqueeze(0).repeat(self.n_replicas, 1, 1)
+        self.current_cell = self.cell.unsqueeze(0).repeat(self.n_replicas, 1, 1)
         if self.name == "lips":
             dists = compute_distance_matrix_batch(self.cell,self.gt_traj_train)
             self.mean_bond_lens = dists[:, self.bonds[:, 0], self.bonds[:, 1]].mean(dim=0)
@@ -698,7 +698,7 @@ class ImplicitMDSimulator():
             print(self.step, self.thermo_log(energy, forces, cell), file=self.f)
             step = self.step if self.train else (self.epoch+1) * self.step #don't overwrite previous epochs at inference time
             try:    
-                self.t.append(self.create_frame(frame = step/self.n_dump))
+                self.t.append(self.create_frame(frame = step/self.n_dump, cell = cell))
             except:
                 pass
 
@@ -710,6 +710,7 @@ class ImplicitMDSimulator():
         self.running_dists = []
         self.running_vels = []
         self.running_accs = []
+        self.running_cell = []
         self.last_h_radii = []
         self.last_h_velocities = []
         self.running_radii = []
@@ -739,7 +740,7 @@ class ImplicitMDSimulator():
             #     #half-step outside loop to ensure symplecticity
             #     self.velocities = self.velocities + self.dt/2*(forces/self.masses - self.gamma*self.velocities) + self.noise_f/torch.sqrt(torch.tensor(2.0).to(self.device))*torch.randn_like(self.velocities)
             zeta = self.zeta
-            cell = self.running_cell
+            cell = self.current_cell
             
             #Run MD
             print("Start MD trajectory", file=self.f)
@@ -760,7 +761,7 @@ class ImplicitMDSimulator():
                         print(self.npt_integrator.log())
                         print(self.npt_integrator.log(), file=self.f)
                         step  = self.step if self.train else (self.epoch+1) * self.step #don't overwrite previous epochs at inference time
-                        self.t.append(self.create_frame(frame = step/self.n_dump, cell = cell[0]))
+                        self.t.append(self.create_frame(frame = step/self.n_dump, cell = cell))
                     
                 else:
                     raise RuntimeError("Must choose either NoseHoover, Langevin, or Berendsen as integrator")
@@ -770,6 +771,7 @@ class ImplicitMDSimulator():
                     self.running_radii.append(radii.detach().clone())
                     self.running_vels.append(velocities.detach().clone())
                     self.running_accs.append((forces/self.masses).detach().clone())
+                    self.running_cell.append(vmap(torch.diag)(cell).detach().clone())
                     if self.integrator == "Langevin":
                         self.running_noise.append(noise)
                 
@@ -783,11 +785,12 @@ class ImplicitMDSimulator():
                 self.forces = forces
                 # update running cell
                 if self.integrator == 'NPT' or self.integrator == 'Berendsen':
-                    self.running_cell = cell
+                    self.current_cell = cell
             self.stacked_radii = torch.stack(self.running_radii[::self.n_dump])
+            self.stacked_cell = torch.stack(self.running_cell[::self.n_dump])
             # compute instability metric (either bond length deviation, min intermolecular distance, or RDF MAE)
             if isinstance(self.stability_criterion, WaterRDFMAE) or isinstance(self.stability_criterion, LiPSRDFMAE):
-                self.instability_per_replica = self.stability_criterion(self.stacked_radii, self.running_cell)
+                self.instability_per_replica = self.stability_criterion(self.stacked_radii, self.stacked_cell)
             else:
                 self.instability_per_replica = self.stability_criterion(self.stacked_radii)
             if isinstance(self.instability_per_replica, tuple):
@@ -795,7 +798,7 @@ class ImplicitMDSimulator():
             self.mean_instability = self.instability_per_replica.mean()
             if self.pbc:
                 self.mean_bond_length_dev = self.bond_length_dev(self.stacked_radii)[1].mean()
-                self.mean_rdf_mae = self.rdf_mae(self.stacked_radii, self.running_cell)[-1].mean()
+                self.mean_rdf_mae = self.rdf_mae(self.stacked_radii, self.stacked_cell)[-1].mean()
             self.stacked_vels = torch.cat(self.running_vels)
 
         
@@ -844,7 +847,7 @@ class ImplicitMDSimulator():
         # Particle positions, velocities, diameter
         radii = self.radii[0]
         if self.pbc:
-            c = self.cell if cell is None else cell
+            c = self.cell if cell is None else cell[0]
             #wrap for visualization purposes
             if self.name == 'lips': #account for non-cubic cell
                 frac_radii = cart2frac(radii, c)
@@ -889,7 +892,7 @@ class ImplicitMDSimulator():
         pressure = vmap(torch.diag)(stress_tensor).mean(dim = 1)
 
         if isinstance(self.stability_criterion, WaterRDFMAE) or isinstance(self.stability_criterion, LiPSRDFMAE):
-            instability = self.stability_criterion(self.radii.unsqueeze(0), self.running_cell)
+            instability = self.stability_criterion(self.radii.unsqueeze(0), vmap(torch.diag)(self.current_cell).unsqueeze(0))
         else:
             instability = self.stability_criterion(self.radii.unsqueeze(0))
         if isinstance(instability, tuple):
@@ -904,7 +907,7 @@ class ImplicitMDSimulator():
                                                       if self.pbc else instability.mean().item()}
         if self.pbc:
             results_dict['Minimum Intermolecular Distance'] = instability.mean().item()
-            results_dict['RDF MAE'] = self.rdf_mae(self.radii.unsqueeze(0), self.running_cell)[-1].mean().item()
+            results_dict['RDF MAE'] = self.rdf_mae(self.radii.unsqueeze(0), vmap(torch.diag)(self.current_cell).unsqueeze(0))[-1].mean().item()
         return results_dict
 
 if __name__ == "__main__":
