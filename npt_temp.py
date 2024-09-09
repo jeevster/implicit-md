@@ -269,10 +269,6 @@ class NPT:
                 )
             )
 
-        # clamp delta eta to avoid instability
-        deltaeta = torch.clamp(deltaeta, -1e-6, 1e-6)
-
-
         if self.frac_traceless == 1:
             eta_future = self.eta_past + self.mask * self._makeuppertriangular(deltaeta)
         else:
@@ -396,7 +392,7 @@ class NPT:
 
 
     def get_potential_energy(self):
-        energy, _ = self.energy_force_func(self.radii)
+        energy, _ = self.energy_force_func(self.radii, self.cell)
         return energy.squeeze()
 
     def get_forces(self, retain_grad=False):

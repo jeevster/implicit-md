@@ -700,7 +700,7 @@ class ImplicitMDSimulator():
 
         # # dump frames
         if self.step%self.n_dump == 0:
-            print(self.step, self.thermo_log(energy, forces, cell))
+            # print(self.step, self.thermo_log(energy, forces, cell))
             print(self.step, self.thermo_log(energy, forces, cell), file=self.f)
             step = self.step if self.train else (self.epoch+1) * self.step #don't overwrite previous epochs at inference time
             try:    
