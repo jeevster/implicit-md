@@ -28,3 +28,4 @@ test.gsd
 ground_truth/
 *.gsd
 *.mp4
+MODELPATH/
