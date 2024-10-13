@@ -24,16 +24,17 @@ TODO
 - ```configs/```: Contains configuration files for the three systems considered in the paper: Aspirin (MD17), ac-Ala3-NHMe (MD22), and Water. For StABlE Training, each system has a ```train.yml``` and ```simulate.yml``` for training and simulation evaluation respectively.
   
 ## Abstract
-Neural network interatomic potentials (NNIPs) are an attractive alternative to ab-initio methods for molecular dynamics (MD) simulations. However, they can produce unstable simulations which sample unphysical states, limiting their usefulness for modeling phenomena occurring over longer timescales. To address these challenges, we present Stability-Aware Boltzmann Estimator (StABlE) Training, a multi-modal training procedure which combines conventional supervised training from quantum-mechanical energies and forces with reference system observables, to produce stable and accurate NNIPs. StABlE Training iteratively runs MD simulations to seek out unstable regions, and corrects the instabilities via supervision with a reference observable. The training procedure is enabled by the Boltzmann Estimator, which allows efficient computation of gradients required to train neural networks to system observables, and can detect both global and local instabilities. We demonstrate our methodology across organic molecules, tetrapeptides, and condensed phase systems, along with using three modern NNIP architectures. In all three cases, StABlE-trained models achieve significant improvements in simulation stability and recovery of structural and dynamic observables. In some cases, StABlE-trained models outperform conventional models trained on datasets 50 times larger. As a general framework applicable across NNIP architectures and systems, StABlE Training is a powerful tool for training stable and accurate NNIPs, particularly in the absence of large reference datasets.
+Machine learning force fields (MLFFs) are an attractive alternative to ab-initio methods for molecular dynamics (MD) simulations. However, they can produce unstable simulations, limiting their ability to model phenomena occurring over longer timescales and compromising the quality of estimated observables. To address these challenges, we present Stability-Aware Boltzmann Estimator (StABlE) Training, a multi-modal training procedure which leverages joint supervision from reference quantum-mechanical calculations and system observables. StABlE Training iteratively runs many MD simulations in parallel to seek out unstable regions, and corrects the instabilities via supervision with a reference observable. We achieve efficient end-to-end automatic differentiation through MD simulations using our Boltzmann Estimator, a generalization of implicit differentiation techniques to a broader class of stochastic algorithms. Unlike existing techniques based on active learning, our approach requires no additional ab-initio energy and forces calculations to correct instabilities. We demonstrate our methodology across organic molecules, tetrapeptides, and condensed phase systems, using three modern MLFF architectures. StABlE-trained models achieve significant improvements in simulation stability, data efficiency, and agreement with reference observables. By incorporating observables into the training process alongside first-principles calculations, StABlE Training can be viewed as a general semi-empirical framework applicable across MLFF architectures and systems. This makes it a powerful tool for training stable and accurate MLFFs, particularly in the absence of large reference datasets.
 
 ## Citation
 
 ```bibtex
-@misc{raja2024stabilityaware,
-  title={Stability-Aware Training of Neural Network Interatomic Potentials with Differentiable Boltzmann Estimators}, 
-  author={Sanjeev Raja and Ishan Amin and Fabian Pedregosa and Aditi S. Krishnapriyan},
-  year={2024},
-  eprint={2402.13984},
-  archivePrefix={arXiv},
-  primaryClass={cs.LG}
+@misc{raja2024stabilityawaretrainingmachinelearning,
+      title={Stability-Aware Training of Machine Learning Force Fields with Differentiable Boltzmann Estimators}, 
+      author={Sanjeev Raja and Ishan Amin and Fabian Pedregosa and Aditi S. Krishnapriyan},
+      year={2024},
+      eprint={2402.13984},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG},
+      url={https://arxiv.org/abs/2402.13984}, 
 }

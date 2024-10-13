@@ -22,6 +22,8 @@ class ForceCalculator:
         n_atoms,
         atomic_numbers,
         atoms_batch,
+        pbc,
+        cell,
         device,
     ):
         self.model = model
@@ -31,6 +33,8 @@ class ForceCalculator:
         self.n_atoms = n_atoms
         self.atoms_batch = atoms_batch
         self.atomic_numbers = atomic_numbers
+        self.pbc = pbc
+        self.cell = cell
         self.device = device
 
     def calculate_energy_force(
@@ -53,6 +57,13 @@ class ForceCalculator:
         with torch.enable_grad():
             if not radii.requires_grad:
                 radii.requires_grad = True
+
+            # Wrap positions: this is crucial for stable simulation of systems with PBC
+            # see the (now fixed) bug in the FairChem repo: https://github.com/FAIR-Chem/fairchem/pull/783
+            if self.pbc:
+                diag = torch.diag(self.cell)
+                radii = ((radii / diag) % 1) * diag - diag / 2
+
             # assign radii and batch
             self.atoms_batch["pos"] = radii.reshape(-1, 3)
             self.atoms_batch["batch"] = batch

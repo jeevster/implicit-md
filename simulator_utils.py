@@ -156,16 +156,6 @@ def calculate_final_metrics(
             allow_pickle=True,
         )
 
-        # TODO: compute O-O-conditioned ADF instead of full ADF
-        final_adfs = torch.stack(
-            [
-                DifferentiableADF(
-                    simulator.n_atoms, simulator.bonds, simulator.cell, params, device
-                )(traj[::2].to(device))
-                for traj in stable_trajs
-            ]
-        )
-        final_adf_maes = torch.abs(gt_adf - final_adfs).mean(-1)
         final_metrics = {
             "Energy MAE": energy_maes[-1],
             "Force MAE": force_maes[-1],
@@ -177,8 +167,6 @@ def calculate_final_metrics(
             "Std Dev OO RDF MAE": final_rdf_maes["OO"].std().item(),
             "Std Dev HO RDF MAE": final_rdf_maes["HO"].std().item(),
             "Std Dev HH RDF MAE": final_rdf_maes["HH"].std().item(),
-            "Mean ADF MAE": final_adf_maes.mean().item(),
-            "Std Dev ADF MAE": final_adf_maes.std().item(),
             "Mean Diffusivity MAE (10^-9 m^2/s)": diffusivity_maes.mean().item(),
             "Std Dev Diffusivity MAE (10^-9 m^2/s)": diffusivity_maes.std().item(),
         }
@@ -192,10 +180,7 @@ def calculate_final_metrics(
                 os.path.join(results_dir, f"final_{key}_rdf_maes.npy"),
                 final_rdf_maes[key].cpu(),
             )
-        np.save(
-            os.path.join(results_dir, "final_adfs.npy"),
-            final_adfs.cpu().detach().numpy(),
-        )
+
         np.save(
             os.path.join(results_dir, "final_diffusivities.npy"),
             last_diffusivities.cpu().detach().numpy(),
