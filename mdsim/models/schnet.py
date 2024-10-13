@@ -119,7 +119,12 @@ class SchNetWrap(SchNet):
             h = self.lin2(h)
 
             batch = torch.zeros_like(z) if batch is None else batch
-            energy = scatter(h, batch, dim=0, reduce=self.readout)
+            # why is readout not a string when we load in a SchNet model?
+            if not isinstance(self.readout, str):
+                readout = "add"
+            else:
+                readout = self.readout
+            energy = scatter(h, batch, dim=0, reduce=readout)
 
         else:
             energy = super(SchNetWrap, self).forward(z, pos, batch)

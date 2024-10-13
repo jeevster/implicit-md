@@ -166,7 +166,7 @@ def find_water_rdfs_diffusivity_from_file(base_path: str, size: str, params, dev
     lattices = torch.tensor(gt_data.f.lengths[0]).float()
     gt_traj = torch.tensor(gt_data.f.unwrapped_coords)
     gt_data_continuous = np.load(
-        os.path.join(base_path, "contiguous-water", "90k", "train/nequip_npz.npz")
+        os.path.join(base_path, "contiguous-water", "10k", "test/nequip_npz.npz")
     )
     gt_traj_continuous = torch.tensor(gt_data_continuous.f.unwrapped_coords)
     gt_diffusivity, gt_msd = get_smoothed_diffusivity(
@@ -243,27 +243,15 @@ def get_water_rdfs(data_seq, ptypes, lattices, bins, device="cpu"):
         type1, type2 = pairs[idx]
         indices0 = type2indices[type1].to(device)
         indices1 = type2indices[type2].to(device)
-        # Original Method
-        data_pdist = distance_pbc_select(data_seq, lattices, indices0, indices1)
-        data_pdist = data_pdist.flatten().cpu().numpy()
-        data_shape = data_pdist.shape[0]
-        data_pdist = data_pdist[data_pdist != 0]
-        data_hist, _ = np.histogram(data_pdist, bins)
-        rho_data = data_shape / torch.prod(lattices).cpu().numpy()
-        Z_data = rho_data * 4 / 3 * np.pi * (bins[1:] ** 3 - bins[:-1] ** 3)
-        data_rdf = data_hist / Z_data
 
-        # New Method
         data_pdist = distance_pbc_select(data_seq, lattices, indices0, indices1)
         data_pdist = data_pdist.cpu().numpy()
-        data_shape = data_pdist.shape[0]
+        data_shape = data_pdist.shape[1]
         data_hists = np.stack([np.histogram(dist, bins)[0] for dist in data_pdist])
-        rho_data = data_shape / torch.prod(lattices).cpu().numpy()
+        rho_data = data_shape / torch.prod(lattices, dim=-1)
+        rho_data = rho_data.cpu().numpy()
         Z_data = rho_data * 4 / 3 * np.pi * (bins[1:] ** 3 - bins[:-1] ** 3)
         data_rdfs = data_hists / Z_data
-        data_rdfs = (
-            data_rdfs / data_rdfs.sum(1, keepdims=True) * data_rdf.sum()
-        )  # normalize to match original sum
         data_rdf_mean = data_rdfs.mean(0)
         all_rdfs[type1 + type2] = torch.Tensor([data_rdf_mean]).to(device)
     return all_rdfs

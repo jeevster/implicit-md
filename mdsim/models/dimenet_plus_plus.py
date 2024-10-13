@@ -274,6 +274,8 @@ class DimeNetPlusPlus(torch.nn.Module):
 
     def triplets(self, edge_index, cell_offsets, num_nodes):
         row, col = edge_index  # j->i
+        row = row.to(torch.long)
+        col = col.to(torch.long)
 
         value = torch.arange(row.size(0), device=row.device)
         adj_t = SparseTensor(
@@ -382,6 +384,9 @@ class DimeNetPlusPlusWrap(DimeNetPlusPlus):
             edge_index = (edge_index[0].to(torch.long), edge_index[1].to(torch.long))
             j, i = edge_index
             dist = (pos[i] - pos[j]).pow(2).sum(dim=-1).sqrt()
+
+        j = j.to(torch.long)
+        i = i.to(torch.long)
 
         _, _, idx_i, idx_j, idx_k, idx_kj, idx_ji = self.triplets(
             edge_index,
