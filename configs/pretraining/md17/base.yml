@@ -3,7 +3,7 @@ trainer: trainer
 name: md17
 
 dataset:
-  src: /data/ishan-amin/implicit_data/md17
+  src: DATAPATH/md17
   name: md17
   size: 10k
   molecule: aspirin
