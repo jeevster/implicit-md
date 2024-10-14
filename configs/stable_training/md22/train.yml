@@ -1,21 +1,20 @@
-#TODO: specify different integrator configs for different molecules based on MD22 paper
-src: /data/sanjeevr #/pscratch/sd/s/sanjeevr
+src: /data/sanjeevr # source of the data
 name: md22
-size: 5percent
+size: 25percent
 molecule: ac_Ala3_NHMe
 normalize_labels: False
 checkpoint_epoch: -1 #which model to start from
 model: nequip
 l_max: 1
 log_dir: /home/sanjeevr/implicit-md #/global/cfs/projectdirs/m4319/sanjeevr
-results_dir: 'results_md22_correctedlogging_l=1'
-model_dir: /data/sanjeevr/MODELPATH #/pscratch/sd/s/sanjeevr/MODELPATH
+results_dir: stable_training_results
+model_dir: /home/sanjeevr/implicit-md/qm_pretrained_checkpoints # location of the pretrained models
 seed: 123
 dr: 0.02
 max_rdf_dist: 15
 dv: 0.1
 angle_range: [0, 180]
-exp_name: "stable_to_unstable_movie" #"TEST_lmax1_10percent_resumestrategy0.25_learn_continuous"
+exp_name: "testing"
 integrator: NoseHoover
 integrator_config: {"ttime": 20., "gamma": 0.1}
 timestep: 0.5

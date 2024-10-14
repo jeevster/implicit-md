@@ -5,7 +5,7 @@ bond_dev_tol: 0.5
 max_frac_unstable_threshold: 0.99
 integrator: Langevin
 eval_model: post
-temperature: 500.
+temperature: 700.
 steps: 2000 # 1 picosecond per epoch
 timestep: 0.5
 n_replicas: 256 #can do more at inference?
