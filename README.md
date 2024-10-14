@@ -12,7 +12,7 @@ TODO
 - ```pretraining.py```: Top-level script for traditional energy/forces QM training of NNIPs. This should be run to convergence prior to StABlE Training. 
 - To train a SchNet model on aspirin 1k, run ```python pretraining.py --mode train --config-yml configs/pretraining/md17/schnet.yml --molecule aspirin --size 1k```. 
 - To train a Nequip model on ac-Ala3-NHMe 1k, run ```python pretraining.py --mode train --config-yml configs/pretraining/md22/nequip.yml --molecule ac_Ala3_NHMe --size 1k --nequip```. 
-- To train a GemNet-T model on Water 1k, run ```python pretraining.py --mode train --config-yml configs/pretraining/water/gemnet-T.yml --size 1k```. [TODO] we have provided checkpoints for all of these pretrained models in ```checkpoints/```.
+- To train a GemNet-T model on Water 1k, run ```python pretraining.py --mode train --config-yml configs/pretraining/water/gemnet-T.yml --size 1k```. We have provided checkpoints for all of these pretrained models in ```qm_pretrained_checkpoints/```.
 
 ## StABlE Training
 ```stable_training.py``` is the top-level script for running the StABlE Training algorithm.
@@ -21,7 +21,7 @@ TODO
 - To finetune a SchNet model pretrained on aspirin, run ```python stable_training.py --config-yml configs/stable_training/md17/train.yml```.
 - To finetune the NequIP model pretrained on Ac-Ala3-NHMe, run ```python stable_training.py --config-yml configs/stable_training/md22/train.yml```. 
 - For the GemNet-T model pretrained on water, run ```python stable_training.py --config-yml configs/stable_training/water/train.yml```. 
-- [TODO] we have also provided the StABlE-trained checkpoints for each model/system in ```checkpoints/``` so that you can directly run the evaluation scripts (see next).
+- We have also provided the StABlE-trained checkpoints for each model/system in ```stable_training_results/``` so that you can directly run the evaluation scripts (see next).
 
 ## Evaluation
 - To evaluate the final performance of the StABlE-trained model in MD simulations, run the same scripts with the ```simulate.yml``` config. For example, ```python stable_training.py --config-yml configs/stable_training/md17/simulate.yml --eval_model [EVAL_MODEL]```.

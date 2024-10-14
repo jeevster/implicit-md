@@ -318,6 +318,8 @@ class Simulator:
             self.n_atoms,
             self.atomic_numbers,
             self.atoms_batch,
+            self.pbc,
+            self.cell,
             self.device,
         )
 
