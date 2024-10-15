@@ -19,9 +19,10 @@ from mdsim.common.utils import EV_TO_KCAL_MOL
 def download(data_path):
     url = "https://zenodo.org/record/7196767/files/water.npy?download=1"
     request.urlretrieve(url, os.path.join(data_path, "water.npy"))
+    print("Data downloaded.")
 
 
-def write_to_lmdb(data_path, db_path, time_split):
+def write_to_lmdb(data_path, db_path, size, contiguous):
     a2g = AtomsToGraphs(
         max_neigh=1000,
         radius=4.0,
@@ -44,28 +45,39 @@ def write_to_lmdb(data_path, db_path, time_split):
     energy = all_data["energy"]
     force = all_data["forces"]
 
-    if time_split:
-        test = np.arange(90000, n_points)
-    else:
-        train_val_pool, test = train_test_split(
-            np.arange(n_points),
-            train_size=n_points - 10000,
-            test_size=10000,
-            random_state=123,
+    size_dict = {"1k": 1000, "10k": 10000, "90k": 90000}
+    lim = size_dict[size]
+
+    train_size = int(0.95 * lim)
+    val_size = int(0.05 * lim)
+    test_size = 10000
+
+    for dataset_size, train_size, val_size in zip([size], [train_size], [val_size]):
+        print(
+            f"processing water dataset with size {dataset_size}, train size {train_size}, val size {val_size}, test size {test_size}"
         )
 
-    for dataset_size, train_size, val_size in zip(
-        ["1k", "10k", "90k"], [950, 9500, 85500], [50, 500, 4500]
-    ):
-        print(f"processing dataset with size {dataset_size}.")
-        # time split
-        if time_split:
-            train = np.arange(train_size)
-            val = np.arange(train_size, train_size + val_size)
-            dataset_size = dataset_size + "_time_split"
+        if contiguous:
+            # extract contiguous samples so we can compute dynamical observables
+            train = np.linspace(0, train_size - 1, train_size, dtype=np.int32)
+            val = np.linspace(
+                train_size, train_size + val_size - 1, val_size, dtype=np.int32
+            )
+            test = np.linspace(
+                train_size + val_size,
+                train_size + val_size + test_size - 1,
+                test_size,
+                dtype=np.int32,
+            )
         else:
+            train_val_pool, test = train_test_split(
+                np.arange(n_points),
+                train_size=n_points - test_size,
+                test_size=test_size,
+                random_state=123,
+            )
             size = train_size + val_size
-            train_val = train_val_pool[:size]
+            train_val = train_val_pool[: train_size + val_size]
             train, val = train_test_split(
                 train_val, train_size=train_size, test_size=val_size, random_state=123
             )
@@ -139,10 +151,10 @@ def write_to_lmdb(data_path, db_path, time_split):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_path", type=str, default="./DATAPATH/lips")
-    parser.add_argument("--db_path", type=str, default="./DATAPATH/lips")
-    parser.add_argument(
-        "--time_split", action="store_true", help="split data by time order"
-    )
+    parser.add_argument("--data_path", type=str, default="./DATAPATH/water")
+    parser.add_argument("--db_path", type=str, default="./DATAPATH/water")
+    parser.add_argument("--size", type=str, default="1k")
+    parser.add_argument("--contiguous", action="store_true")
+
     args = parser.parse_args()
-    write_to_lmdb(args.data_path, args.db_path, args.time_split)
+    write_to_lmdb(args.data_path, args.db_path, args.size, args.contiguous)

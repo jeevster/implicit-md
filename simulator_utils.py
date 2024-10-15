@@ -293,7 +293,7 @@ def energy_force_gradient(simulator):
 
 def energy_force_error(simulator):
     """
-    Compute the energy/force errors of the simulator's NNIP model on a test set of structures
+    Compute the energy/force errors of the simulator's MLFF model on a test set of structures
     Returns a dictionary containing the error metrics.
     """
     if simulator.model_type == "nequip":
@@ -348,7 +348,7 @@ def energy_force_error(simulator):
 
 def save_checkpoint(simulator, best=False, name_=None):
     """
-    Saves a checkpoint of the current state of the simulator's NNIP model
+    Saves a checkpoint of the current state of the simulator's MLFF model
     """
     if simulator.model_type == "nequip":
         if name_ is not None:

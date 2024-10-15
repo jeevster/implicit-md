@@ -166,7 +166,7 @@ def find_water_rdfs_diffusivity_from_file(base_path: str, size: str, params, dev
     lattices = torch.tensor(gt_data.f.lengths[0]).float()
     gt_traj = torch.tensor(gt_data.f.unwrapped_coords)
     gt_data_continuous = np.load(
-        os.path.join(base_path, "contiguous-water", "10k", "test/nequip_npz.npz")
+        os.path.join(base_path, "contiguous-water", "1k", "test/nequip_npz.npz")
     )
     gt_traj_continuous = torch.tensor(gt_data_continuous.f.unwrapped_coords)
     gt_diffusivity, gt_msd = get_smoothed_diffusivity(

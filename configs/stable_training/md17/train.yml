@@ -1,4 +1,4 @@
-src: /data/sanjeevr # source of the data
+src: DATAPATH # source of the data
 name: md17
 size: 1k
 molecule: aspirin

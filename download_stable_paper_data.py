@@ -23,69 +23,69 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    # Aspirin 1k (MD17)
-    command = [
-        "python",
-        "data/md17.py",
-        "--molecule",
-        "aspirin",
-        "--data_path",
-        os.path.join(args.download_path, "md17"),
-        "--db_path",
-        os.path.join(args.download_path, "md17"),
-        "--size",
-        "1k",
-    ]
+    # # Aspirin 1k (MD17)
+    # command = [
+    #     "python",
+    #     "data/md17.py",
+    #     "--molecule",
+    #     "aspirin",
+    #     "--data_path",
+    #     os.path.join(args.download_path, "md17"),
+    #     "--db_path",
+    #     os.path.join(args.download_path, "md17"),
+    #     "--size",
+    #     "1k",
+    # ]
 
-    subprocess.run(command, check=True)
+    # subprocess.run(command, check=True)
 
-    # Aspirin (MD17) 1k Contiguous
-    command = [
-        "python",
-        "data/md17.py",
-        "--molecule",
-        "aspirin",
-        "--data_path",
-        os.path.join(args.download_path, "contiguous-md17"),
-        "--db_path",
-        os.path.join(args.download_path, "contiguous-md17"),
-        "--size",
-        "1k",
-        "--contiguous",
-    ]
-    subprocess.run(command, check=True)
+    # # Aspirin (MD17) 1k Contiguous
+    # command = [
+    #     "python",
+    #     "data/md17.py",
+    #     "--molecule",
+    #     "aspirin",
+    #     "--data_path",
+    #     os.path.join(args.download_path, "contiguous-md17"),
+    #     "--db_path",
+    #     os.path.join(args.download_path, "contiguous-md17"),
+    #     "--size",
+    #     "1k",
+    #     "--contiguous",
+    # ]
+    # subprocess.run(command, check=True)
 
-    # ac-Ala3-NHMe (MD22) 25%
-    command = [
-        "python",
-        "data/md22.py",
-        "--molecule",
-        "ac_Ala3_NHMe",
-        "--data_path",
-        os.path.join(args.download_path, "md22"),
-        "--db_path",
-        os.path.join(args.download_path, "md22"),
-        "--size",
-        "25percent",
-    ]
+    # # ac-Ala3-NHMe (MD22) 25%
+    # command = [
+    #     "python",
+    #     "data/md22.py",
+    #     "--molecule",
+    #     "ac_Ala3_NHMe",
+    #     "--data_path",
+    #     os.path.join(args.download_path, "md22"),
+    #     "--db_path",
+    #     os.path.join(args.download_path, "md22"),
+    #     "--size",
+    #     "25percent",
+    # ]
 
-    subprocess.run(command, check=True)
+    # subprocess.run(command, check=True)
 
-    # ac-Ala3-NHMe (MD22) 25% Contiguous
-    command = [
-        "python",
-        "data/md22.py",
-        "--molecule",
-        "ac_Ala3_NHMe",
-        "--data_path",
-        os.path.join(args.download_path, "contiguous-md22"),
-        "--db_path",
-        os.path.join(args.download_path, "contiguous-md22"),
-        "--size",
-        "25percent",
-        "--contiguous",
-    ]
-    subprocess.run(command, check=True)
+    # # ac-Ala3-NHMe (MD22) 25% Contiguous
+    # command = [
+    #     "python",
+    #     "data/md22.py",
+    #     "--molecule",
+    #     "ac_Ala3_NHMe",
+    #     "--data_path",
+    #     os.path.join(args.download_path, "contiguous-md22"),
+    #     "--db_path",
+    #     os.path.join(args.download_path, "contiguous-md22"),
+    #     "--size",
+    #     "25percent",
+    #     "--contiguous",
+    # ]
+    # subprocess.run(command, check=True)
 
     # Water 1k
     command = [

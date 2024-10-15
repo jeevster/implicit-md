@@ -1,4 +1,4 @@
-src: /data/sanjeevr # source of the data
+src: DATAPATH # source of the data
 name: md22
 size: 25percent
 molecule: ac_Ala3_NHMe

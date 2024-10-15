@@ -1,4 +1,4 @@
-src:  /data/sanjeevr
+src:  DATAPATH # source of the data
 name: water
 size: 1k
 normalize_labels: False

@@ -1,14 +1,6 @@
-results/
-results_polylj/
-results_nnip/
-results_nnip_new/
-results_nnip_new_dynamics/
-results_nnip_continuous/
-results_nnip_continuous_new/
-results_nnip_continuous_new_water/
-results_nnip_continuous_dynamics/
-results_nnip_continuous_dynamics_new/
+
 Boltzmann_Estimators_Figures/
+mdsim.egg-info
 results*
 test_lj*
 landscapes/
@@ -29,3 +21,6 @@ ground_truth/
 *.gsd
 *.mp4
 MODELPATH/
+DATAPATH/
+wandb/
+stable_training_results/

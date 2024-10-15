@@ -33,7 +33,7 @@ from simulator_utils import create_frame, thermo_log
 
 class Simulator:
     """
-    Simulator class which performs forward MD simulations with a neural network interatomic potential (NNIP).
+    Simulator class which performs forward MD simulations with a neural network interatomic potential (MLFF).
     This class stores all attributes about the simulations, including the current states of all the replicas,
     and whether or not they have become unstable.
     """
@@ -467,7 +467,7 @@ class Simulator:
 
     def solve(self):
         """
-        Performs a forward Molecular Dynamics simulation with the Simulator's NNIP calculator, saving the trajectory for
+        Performs a forward Molecular Dynamics simulation with the Simulator's MLFF calculator, saving the trajectory for
         the subsequent Boltzmann estimator computation, and tracking and logging various metrics along the way.
         At the end of the simulation, checks whether each replica has become unstable.
         """
