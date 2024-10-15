@@ -18,7 +18,6 @@ We have provided checkpoints for all of the pretrained models in ```qm_pretraine
 ## StABlE Training
 ```stable_training.py``` is the top-level script for running the StABlE algorithm to finetune the pretrained models.
 
-- Training: run the script with the ```train.yml``` config. 
 - To finetune a SchNet model pretrained on aspirin, run ```python stable_training.py --config-yml configs/stable_training/md17/train.yml```.
 - To finetune the NequIP model pretrained on Ac-Ala3-NHMe, run ```python stable_training.py --config-yml configs/stable_training/md22/train.yml```. 
 - For the GemNet-T model pretrained on water, run ```python stable_training.py --config-yml configs/stable_training/water/train.yml```. 

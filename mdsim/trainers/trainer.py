@@ -476,8 +476,12 @@ class Trainer(ABC):
             self.model.load_state_dict(new_dict)
         elif distutils.initialized() and first_key.split(".")[1] != "module":
             new_dict = {f"module.{k}": v for k, v in checkpoint["state_dict"].items()}
+            if "module.atomic_mass" in checkpoint["state_dict"]:
+                del checkpoint["state_dict"]["module.atomic_mass"]
             self.model.load_state_dict(new_dict)
         else:
+            if "module.atomic_mass" in checkpoint["state_dict"]:
+                del checkpoint["state_dict"]["module.atomic_mass"]
             self.model.load_state_dict(checkpoint["state_dict"])
 
         if "optimizer" in checkpoint:

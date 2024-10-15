@@ -8,7 +8,7 @@ eval_model: post
 temperature: 700.
 steps: 2000 # 1 picosecond per epoch
 timestep: 0.5
-n_replicas: 256 #can do more at inference?
+n_replicas: 256
 n_dump: 2000
 n_epochs: 1000 #corresponding to 1 ns
 

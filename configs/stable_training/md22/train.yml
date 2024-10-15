@@ -8,7 +8,7 @@ model: nequip
 l_max: 1
 log_dir: /home/sanjeevr/implicit-md #/global/cfs/projectdirs/m4319/sanjeevr
 results_dir: stable_training_results
-model_dir: /home/sanjeevr/implicit-md/qm_pretrained_checkpoints # location of the pretrained models
+model_dir: qm_pretrained_checkpoints # location of the pretrained models
 seed: 123
 dr: 0.02
 max_rdf_dist: 15
@@ -37,7 +37,7 @@ n_dump: 50
 n_dump_vacf: 2
 n_replicas: 16
 minibatch_size: 40
-adjoint: True
+adjoint: False
 only_learn_if_unstable_threshold_reached: True
 only_train_on_unstable_replicas: False
 gradient_clipping: True
