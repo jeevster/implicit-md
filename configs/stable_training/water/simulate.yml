@@ -1,10 +1,12 @@
 includes:
-- configs/water/train.yml
+- configs/stable_training/water/train.yml
 train: False
 dr: 0.012 #coarser histogram because of local environments
 stability_criterion: rdf
 imd_tol: 3.0
 max_frac_unstable_threshold: 0.95
+eval_model: post_cycle1_epoch10
+results_dir: paper_stable_training_results
 temperature: 300.
 timestep: 1
 eq_steps: 0

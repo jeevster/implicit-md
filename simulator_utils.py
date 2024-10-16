@@ -82,8 +82,8 @@ def calculate_final_metrics(
         ).to(device)
         final_vacf_maes = torch.abs(gt_vacf.unsqueeze(0) - final_vacfs).mean(-1)
         final_metrics = {
-            "Energy MAE": energy_maes[-1],
-            "Force MAE": force_maes[-1],
+            "Energy MAE (kcal/mol)": energy_maes[-1],
+            "Force MAE (kcal/mol-A)": force_maes[-1],
             "Mean Stability (ps)": simulator.stable_time.mean().item(),
             "Std Dev Stability (ps)": simulator.stable_time.std().item(),
             "Mean RDF MAE": final_rdf_maes.mean().item(),
@@ -109,7 +109,7 @@ def calculate_final_metrics(
                 simulator.rdf_mae.lattices,
                 simulator.rdf_mae.bins,
                 device,
-            )[0]
+            )
             for traj in stable_trajs
         ]
         final_rdfs_by_key = {

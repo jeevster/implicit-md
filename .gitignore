@@ -23,4 +23,5 @@ ground_truth/
 MODELPATH/
 DATAPATH/
 wandb/
+paper_stable_training_results/
 stable_training_results/

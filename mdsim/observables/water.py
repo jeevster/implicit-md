@@ -253,5 +253,5 @@ def get_water_rdfs(data_seq, ptypes, lattices, bins, device="cpu"):
         Z_data = rho_data * 4 / 3 * np.pi * (bins[1:] ** 3 - bins[:-1] ** 3)
         data_rdfs = data_hists / Z_data
         data_rdf_mean = data_rdfs.mean(0)
-        all_rdfs[type1 + type2] = torch.Tensor([data_rdf_mean]).to(device)
+        all_rdfs[type1 + type2] = torch.Tensor(np.array(([data_rdf_mean]))).to(device)
     return all_rdfs

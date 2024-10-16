@@ -33,7 +33,7 @@ from simulator_utils import create_frame, thermo_log
 
 class Simulator:
     """
-    Simulator class which performs forward MD simulations with a neural network interatomic potential (MLFF).
+    Simulator class which performs forward MD simulations with a machine learning force field (MLFF).
     This class stores all attributes about the simulations, including the current states of all the replicas,
     and whether or not they have become unstable.
     """
@@ -567,8 +567,9 @@ class Simulator:
                 # update state
                 self.radii.copy_(radii)
                 self.velocities.copy_(velocities)
-                self.zeta.copy_(zeta)
                 self.forces.copy_(forces)
+                if self.integrator_type == "NoseHoover":
+                    self.zeta.copy_(zeta)
 
             ######### End MD ###########
 

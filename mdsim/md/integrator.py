@@ -97,13 +97,14 @@ class Langevin:
             .to(self.device)
         )
 
-    def step(self, radii, velocities, forces, retain_grad=False):
+    def step(self, radii, velocities, forces, zeta=None, retain_grad=False):
         """
         Make a step forward in time with the Langevin integrator.
         Args:
             radii (torch.Tensor): Atom positions (Shape: (N_replicas, N_atoms, 3))
             velocities (torch.Tensor): Atom velocities (Shape: (N_replicas, N_atoms, 3))
             forces (torch.Tensor): Atomic forces (Shape: (N_replicas, N_atoms, 3))
+            zeta (torch.Tensor): Dummy parameter for compatibility with Nose-Hoover
             retain_grad (bool): Whether to store the computational graph
                                 of the force calculation (default: False)
         Returns:

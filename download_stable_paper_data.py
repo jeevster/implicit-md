@@ -1,10 +1,10 @@
 """
-Downloads all datasets used in "Stability-Aware Training of Neural Network Interatomic 
-Potentials with Differentiable Boltzmann Estimators" (https://arxiv.org/abs/2402.13984).
+Downloads all datasets used in "Stability-Aware Training of Machine Learning Force Fields 
+with Differentiable Boltzmann Estimators" (https://arxiv.org/abs/2402.13984).
 
-1. Aspirin (1k samples) from MD17
-2. Ac-Ala3-NHMe (25% of dataset - 14,890 samples) from MD22
-3. Water (1k samples) from Forces are Not Enough (https://arxiv.org/abs/2210.07237)
+1. Aspirin from MD17
+2. Ac-Ala3-NHMe from MD22
+3. Water from Forces are Not Enough (https://arxiv.org/abs/2210.07237)
 
 """
 
