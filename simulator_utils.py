@@ -8,6 +8,7 @@ from tqdm import tqdm
 from torch_cluster import radius_graph
 from collections import OrderedDict
 from nequip.utils import atomic_write
+from nequip.utils.torch_geometric import Batch
 from nequip.data import AtomicData
 from mdsim.md.ase_utils import OCPCalculator
 from mdsim.common.utils import process_gradient
@@ -212,6 +213,15 @@ def energy_force_gradient(simulator):
             for data in tqdm(simulator.train_dataloader):
                 # Do any target rescaling
                 data = data.to(simulator.device)
+                data = Batch(
+                    batch=data.batch,
+                    ptr=data.ptr,
+                    pos=data.pos,
+                    cell=data.cell,
+                    atomic_numbers=data.atomic_numbers,
+                    force=data.force,
+                    y=data.y,
+                )
                 data = AtomicData.to_AtomicDataDict(data)
                 actual_batch_size = int(data["pos"].shape[0] / simulator.n_atoms)
                 data["cell"] = (
@@ -297,9 +307,7 @@ def energy_force_error(simulator):
     Returns a dictionary containing the error metrics.
     """
     if simulator.model_type == "nequip":
-        data_config = (
-            f"configs/{simulator.name}/nequip_data_cfg/{simulator.molecule}.yml"
-        )
+        data_config = f"configs/stable_training/{simulator.name}/nequip_data_cfg/{simulator.molecule}.yml"
         # call nequip evaluation script
         os.system(
             f"nequip-evaluate --train-dir {os.path.dirname(simulator.curr_model_path)} \

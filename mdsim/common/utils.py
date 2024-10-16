@@ -115,7 +115,7 @@ def powerlaw_inv_cdf(y, power, y_min):
 
 
 def dump_params_to_yml(params, filepath):
-    with open(os.path.join(filepath, "observable_finetuning_config.yml"), "w") as f:
+    with open(os.path.join(filepath, "stable_training_config.yml"), "w") as f:
         yaml.dump(params, f)
 
 

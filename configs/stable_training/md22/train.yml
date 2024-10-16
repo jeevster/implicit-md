@@ -6,7 +6,7 @@ normalize_labels: False
 checkpoint_epoch: -1 #which model to start from
 model: nequip
 l_max: 1
-log_dir: /home/sanjeevr/implicit-md #/global/cfs/projectdirs/m4319/sanjeevr
+log_dir: ./
 results_dir: stable_training_results
 model_dir: qm_pretrained_checkpoints # location of the pretrained models
 seed: 123
