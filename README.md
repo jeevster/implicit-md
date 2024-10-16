@@ -29,12 +29,6 @@ We have provided checkpoints for all of the pretrained models in ```qm_pretraine
 - At the conclusion of evaluation, a file called ```final_metrics.json``` will be written to the ```log_dir``` specified in the config file, containing metrics relating to stability and observable accuracy of the simulation. [TODO] specify which eval_model to use for each setting. 
 - By default, the evaluation scripts will use the pretrained checkpoints in ```paper_stable_training_results/```. To use models you have trained yourself, change the ```results_dir``` argument in the simulation config.
 
-## Important Files
-- ```simulator.py```: Defines the ```Simulator``` class which performs MD simulations with a machine learning force field (MLFF).
-- ```boltzmann_estimator.py```: Defines the ```BoltzmannEstimator``` class which computes the local and global N-sample Boltzmann Estimators (derived in the paper) necessary to train MLFFs to observables.
-- ```mdsim/```: Contains main components of the MD engine, including MLFF model architectures, calculators, integrators, and observables. Largely built upon the [MDsim](https://github.com/kyonofx/MDsim) repo.
-- ```configs/```: Contains configuration files for the three systems considered in the paper: Aspirin (MD17), ac-Ala3-NHMe (MD22), and Water. For StABlE Training, each system has a ```train.yml``` and ```simulate.yml``` for training and simulation evaluation respectively.
-  
 ## Citation
 If you use this code in your research, please cite our paper.
 
