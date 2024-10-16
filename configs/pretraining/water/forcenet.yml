@@ -1,5 +1,5 @@
 includes:
-- configs/water/base.yml
+- configs/pretraining/water/base.yml
 
 model:
   name: forcenet
