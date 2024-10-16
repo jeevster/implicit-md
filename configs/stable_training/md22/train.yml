@@ -24,7 +24,7 @@ eval_model: lmax=2
 stability_criterion: bond_length_deviation
 training_observable: rdf
 obs_loss_weight: 1
-energy_force_loss_weight: 1
+energy_force_loss_weight: 10
 diffusion_window: 1000
 vacf_window: 100
 ic_stddev: 0.0
@@ -35,7 +35,7 @@ eq_steps: 0
 steps: 2000 # 1 picosecond per epoch
 n_dump: 50
 n_dump_vacf: 2
-n_replicas: 16
+n_replicas: 48
 minibatch_size: 40
 adjoint: False
 only_learn_if_unstable_threshold_reached: True

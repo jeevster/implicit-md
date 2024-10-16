@@ -259,7 +259,7 @@ def energy_force_gradient(simulator):
                 with torch.cuda.amp.autocast(
                     enabled=simulator.trainer.scaler is not None
                 ):
-                    for key in batch.keys:
+                    for key in batch.keys():
                         if isinstance(batch[key], torch.Tensor):
                             batch[key] = batch[key].to(simulator.device)
                     out = simulator.trainer._forward(batch)

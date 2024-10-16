@@ -91,7 +91,7 @@ class Simulator:
                 outer_layer = getattr(outer_layer, "model", None)
         for param in self.model.parameters():
             param.requires_grad = True
-        self.model_config = deepcopy(model_config)
+        self.model_config = model_config
 
         # initialize datasets
         self.DATAPATH_TRAIN = os.path.join(
@@ -345,7 +345,7 @@ class Simulator:
         torch.set_num_threads(10)
 
         molecule_for_name = self.name if self.name == "water" else self.molecule
-        name = f"IMPLICIT_{self.model_type}_{molecule_for_name}_{params.exp_name}_lr={params.lr}_efweight={params.energy_force_loss_weight}"
+        name = f"{self.model_type}_{molecule_for_name}_{params.exp_name}_lr={params.lr}_efweight={params.energy_force_loss_weight}"
         self.save_dir = (
             os.path.join(self.results_dir, name)
             if self.train

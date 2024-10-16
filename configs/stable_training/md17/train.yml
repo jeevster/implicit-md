@@ -39,7 +39,7 @@ n_dump_vacf: 2
 n_replicas: 128
 minibatch_size: 40
 adjoint: False
-only_learn_if_unstable_threshold_reached: False
+only_learn_if_unstable_threshold_reached: True
 only_train_on_unstable_replicas: False
 gradient_clipping: True
 grad_clip_norm_threshold: 1.0

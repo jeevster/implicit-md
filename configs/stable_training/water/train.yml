@@ -41,7 +41,7 @@ n_dump_vacf: 2
 n_replicas: 8
 minibatch_size: 4
 adjoint: False
-only_learn_if_unstable_threshold_reached: False
+only_learn_if_unstable_threshold_reached: True
 only_train_on_unstable_replicas: False
 gradient_clipping: True
 grad_clip_norm_threshold: 1.0
@@ -49,7 +49,7 @@ shuffle: True
 optimizer: SGD
 reset_probability: 0.0
 n_epochs: 500
-lr: 0.001
+lr: 0.003
 max_times_reduce_lr: 2 
 
 

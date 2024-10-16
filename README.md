@@ -12,7 +12,7 @@ Repository to reproduce results in the paper [Stability-Aware Training of Machin
 We have provided checkpoints for all of the pretrained models in ```qm_pretrained_checkpoints/```. However, you can also train the models from scratch. Model checkpoints will be placed in ```./MODELPATH```.
 - ```pretraining.py```: Top-level script for traditional energy/forces QM training of MLFFs. This should be run to convergence prior to StABlE Training. 
 - To train a SchNet model on aspirin 1k, run ```python pretraining.py --mode train --config-yml configs/pretraining/md17/schnet.yml --molecule aspirin --size 1k```. 
-- To train a Nequip model on ac-Ala3-NHMe 1k, run ```python pretraining.py --mode train --config-yml configs/pretraining/md22/nequip.yml --molecule ac_Ala3_NHMe --size 1k --nequip```. 
+- To train a Nequip model on ac-Ala3-NHMe 1k, run ```python pretraining.py --mode train --config-yml configs/pretraining/md22/nequip/ac_Ala3_NHMe.yml --molecule ac_Ala3_NHMe --size 1k --nequip```. 
 - To train a GemNet-T model on Water 1k, run ```python pretraining.py --mode train --config-yml configs/pretraining/water/gemnet-T.yml --size 1k```. 
 
 ## StABlE Training

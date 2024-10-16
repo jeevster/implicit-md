@@ -51,7 +51,7 @@ model:
   rbf:
     name: gaussian
   regress_forces: true
-  scale_file: configs/water/gemnet-T-scale.json
+  scale_file: configs/pretraining/water/gemnet-T-scale.json
 noddp: false
 optim:
   batch_size: 1

@@ -59,12 +59,12 @@ if __name__ == "__main__":
     results_dir = (
         os.path.join(
             params.results_dir,
-            f"IMPLICIT_{model_type}_{molecule_for_name}_{params.exp_name}_lr={params.lr}_efweight={params.energy_force_loss_weight}",
+            f"{model_type}_{molecule_for_name}_{params.exp_name}_lr={params.lr}_efweight={params.energy_force_loss_weight}",
         )
         if params.train
         else os.path.join(
             params.results_dir,
-            f"IMPLICIT_{model_type}_{molecule_for_name}_{params.exp_name}_lr={params.lr}_efweight={params.energy_force_loss_weight}",
+            f"{model_type}_{molecule_for_name}_{params.exp_name}_lr={params.lr}_efweight={params.energy_force_loss_weight}",
             "inference",
             params.eval_model,
         )
@@ -117,7 +117,7 @@ if __name__ == "__main__":
     ):  # load observable finetuned model at some point in training
         pretrained_model_path = os.path.join(
             params.results_dir,
-            f"IMPLICIT_{model_type}_{molecule_for_name}_{params.exp_name}_lr={params.lr}_efweight={params.energy_force_loss_weight}",
+            f"{model_type}_{molecule_for_name}_{params.exp_name}_lr={params.lr}_efweight={params.energy_force_loss_weight}",
         )
         if (
             "cycle" in config["eval_model"]
